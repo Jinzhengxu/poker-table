@@ -674,6 +674,93 @@ test('亮牌：下一手开始后重置，牌又藏回去了', () => {
   room.shutdown();
 });
 
+// ==================== 房主离开后的行为 ====================
+
+test('房主离座后，人机留在桌上，房主转给下一个真人（不是人机）', () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: d, config: { autoNextHand: false } });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  const guest = stubClient(); room.attach(guest); room.hello(guest, null); room.sit(guest, 4, '客人');
+  room.addBot(host, 1);
+  room.addBot(host, 2);
+
+  room.stand(host);
+
+  assert.ok(room.seats[1] && room.seats[2], '人机应该还在桌上');
+  const newHost = room.players.get(room.seats[4]);
+  assert.equal(newHost.isHost, true, '房主应该转给剩下的真人');
+  assert.equal(room.players.get(room.seats[1]).isHost, false, '人机不该拿到房主');
+  room.shutdown();
+});
+
+test('房主离开后 LLM 配置还在，新房主可以接手改配置', () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: d, config: { autoNextHand: false } });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  const guest = stubClient(); room.attach(guest); room.hello(guest, null); room.sit(guest, 4, '客人');
+  room.setBotConfig(host, { provider: 'deepseek', apiKey: 'sk-original-aaaa1111' });
+  room.addBot(host, 1);
+
+  room.stand(host);
+
+  assert.equal(d.hasLLM, true, 'LLM 配置存在进程内存里，跟房主在不在无关');
+  assert.equal(
+    room.setBotConfig(guest, { provider: 'kimi', apiKey: 'sk-newhost-bbbb2222' }).ok, true,
+    '接手的新房主应该能改配置'
+  );
+  room.shutdown();
+});
+
+test('没有任何连接时不开新手牌（否则一桌人机会自己打到进程重启，白烧 API）', async () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({
+    botDriver: d,
+    config: { autoNextHand: true, autoNextHandMs: 20, actionTimeoutMs: 60000 },
+  });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  room.addBot(host, 1);
+  room.addBot(host, 2);
+  room.addBot(host, 3);
+
+  room.stand(host);
+  room.detach(host);                       // 关掉浏览器
+  assert.equal(room.clients.size, 0);
+
+  const hands = room.handNo;
+  const decisions = d.stats.rule + d.stats.llm;
+  await new Promise((r) => setTimeout(r, 400));
+
+  assert.equal(room.handNo, hands, '无人观战时不该继续开新手牌');
+  assert.equal(d.stats.rule + d.stats.llm, decisions, '无人观战时不该继续调用人机');
+
+  room.shutdown();
+});
+
+test('有人连回来后自动恢复开局', async () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({
+    botDriver: d,
+    config: { autoNextHand: true, autoNextHandMs: 20, actionTimeoutMs: 60000 },
+  });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  room.addBot(host, 1);
+  room.addBot(host, 2);
+  room.stand(host);
+  room.detach(host);
+
+  const paused = room.handNo;
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(room.handNo, paused, '先确认确实停住了');
+
+  const back = stubClient();
+  room.attach(back);
+  room.hello(back, null);                  // 有人打开网页
+  await new Promise((r) => setTimeout(r, 400));
+
+  assert.ok(room.handNo > paused, '有人观战后应该自动继续');
+  room.shutdown();
+});
+
 // ==================== 小工具 ====================
 
 test('clamp：取整并夹进区间', () => {

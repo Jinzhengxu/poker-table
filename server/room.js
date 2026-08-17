@@ -238,6 +238,8 @@ export class Room {
     player.connected = true;
     this.#clearDropTimer(player);
     client.send({ t: 'welcome', playerId: player.id, token: player.token, seat: player.seat });
+    // 有人回来了：如果之前因为没观众停在等待状态（比如一桌人机），现在可以继续
+    this.#maybeAutoStart();
     this.broadcast();
     return { ok: true };
   }
@@ -947,16 +949,30 @@ export class Room {
     this.#scheduleNextHand();
   }
 
+  /**
+   * 牌桌前面还有没有人。
+   *
+   * 人机没有连接，所以 clients 里全是真人（在座的或纯观战的）。
+   * 一个连接都没有 = 没有任何人在看，这时候还继续自动开局的话，
+   * 一桌人机会自己打到进程重启为止——接了 LLM 就是持续烧钱。
+   */
+  #hasAudience() {
+    return this.clients.size > 0;
+  }
+
   #scheduleNextHand() {
     this.#clearNextHandTimer();
     if (!this.config.autoNextHand) return;
     if (this.#eligiblePlayers().length < 2) return;
+    // 没人看就不开新的一手。等有人连上来（hello）会重新触发。
+    if (!this.#hasAudience()) return;
     const delay = this.config.autoNextHandMs;
     this.nextHandAt = Date.now() + delay;
     this.nextHandTimer = setTimeout(() => {
       this.nextHandTimer = null;
       this.nextHandAt = null;
-      if (this.#eligiblePlayers().length >= 2 && !this.#handLive()) {
+      // 等待期间人可能全走了，落地前再确认一次
+      if (this.#eligiblePlayers().length >= 2 && !this.#handLive() && this.#hasAudience()) {
         this.startHand();
       } else {
         this.broadcast();
