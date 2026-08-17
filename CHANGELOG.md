@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them to the code defaults. Validation ranges match the settings panel exactly —
   an invalid value is logged with its legal range and falls back instead of being
   silently accepted. New `server/config.js`.
+- Bots are swept off the table once the last human gives up their seat, and the
+  table (hand, log, chat) is wiped with them. Bots never stand up on their own
+  and never inherit the host role, so a table left to them could not be cleared
+  by anyone. A disconnected player still holds their seat — the sweep waits for
+  the 15-minute grace period, matching the existing rule that hands do not deal
+  while nobody is watching. `SPEC.md` §8.4.5.
 - `.env.example` documenting every environment variable, and pass-through of the
   bot settings in `docker-compose.yml`.
 - English `README.md`, with the original Chinese documentation moved to

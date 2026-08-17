@@ -78,6 +78,9 @@ function clampInt(v, lo, hi) {
 }
 
 export class Room {
+  /** 正在清场时置真：#sweepBotsIfEmpty 会调 #vacate，而 #vacate 又会调回清场 */
+  #sweepingBots = false;
+
   /**
    * @param {object} [opts]
    * @param {object} [opts.config] 覆盖 DEFAULT_CONFIG 的初始配置
@@ -319,7 +322,10 @@ export class Room {
     const wasHost = p.isHost;
     p.isHost = false;
     if (wasHost) this.#ensureHost();
-    if (!p.connected) this.#deletePlayer(p);
+    // 人机没有 token 也不会重连，离座之后没有任何东西再引用它
+    if (!p.connected || p.bot) this.#deletePlayer(p);
+    // 刚走的可能是最后一个真人，那就把剩下的人机也一起清掉
+    this.#sweepBotsIfEmpty();
   }
 
   /** 房主不存在时，转给座位号最小的在座玩家（SPEC §7） */
@@ -614,6 +620,43 @@ export class Room {
     return { ok: true, seat: s };
   }
 
+  /**
+   * 真人走光后自动清场：把留在桌上的人机全部请下桌，牌桌回到初始状态。
+   *
+   * 人机自己不会站起来，也当不了房主（见 #ensureHost）。没有这一步的话，
+   * 最后一个真人一走，剩下的一桌人机就永远占着座位、谁也踢不掉——下一个
+   * 打开网页的人看到的是一桌不认识的机器人、别人的筹码和别人的日志。
+   *
+   * 判据是**座位上还有没有真人**，跟他连没连着无关：掉线的人在保护期内
+   * 还占着座位，人机要等他回来（`DISCONNECT_GRACE_MS` 到点后由
+   * #dropDisconnected 走同一条路清场）。纯观战的连接不算人在桌上。
+   */
+  #sweepBotsIfEmpty() {
+    if (this.#sweepingBots) return; // 下面的 #vacate 会再调回来
+    const bots = [];
+    for (const id of this.seats) {
+      if (!id) continue;
+      const p = this.players.get(id);
+      if (!p) continue;
+      if (!p.bot) return; // 还有真人在座，什么都不做
+      bots.push(p);
+    }
+    if (bots.length === 0) return; // 本来就是空桌，没有人机要清
+
+    this.#sweepingBots = true;
+    try {
+      for (const p of bots) this.#vacate(p);
+    } finally {
+      this.#sweepingBots = false;
+    }
+
+    // 牌局、日志、聊天全部归零：下一个人进来看到的是一张干净的桌子
+    this.#clearTableState();
+    this.log = [];
+    this.chat = [];
+    this.#pushLog('真人都离开了，已请走所有人机并清空牌桌');
+  }
+
   /** 取消正在飞行中的人机请求（手牌结束、被踢、重置时） */
   #cancelBot() {
     if (this.botAbort) {
@@ -705,10 +748,8 @@ export class Room {
     if (this.chat.length > MAX_CHAT) this.chat.splice(0, this.chat.length - MAX_CHAT);
   }
 
-  /** 重置牌桌：清空牌局，所有人筹码回到 startingStack */
-  reset(client) {
-    const { err } = this.#requireHost(client);
-    if (err) return err;
+  /** 把牌局状态清回初始值。不动座位、筹码、日志与聊天。 */
+  #clearTableState() {
     this.#cancelBot();
     this.#clearActionTimer();
     this.#clearNextHandTimer();
@@ -721,6 +762,14 @@ export class Room {
     this.bbSeat = null;
     this.handSeatOwners = new Map();
     this.eventCursor = 0;
+    this.shownSeats.clear();
+  }
+
+  /** 重置牌桌：清空牌局，所有人筹码回到 startingStack */
+  reset(client) {
+    const { err } = this.#requireHost(client);
+    if (err) return err;
+    this.#clearTableState();
     for (const id of this.seats) {
       if (!id) continue;
       const p = this.players.get(id);

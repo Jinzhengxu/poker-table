@@ -113,6 +113,13 @@ the other players**, and never reaches the log. A restart clears it; tick
 > server: a bot needs its own hole cards to decide, so a browser-driven bot would
 > hand one player the bot's cards.
 
+**Bots leave when the humans do.** The moment the last human gives up their seat,
+every bot is shown the door and the table is wiped — hand, log and chat. Bots
+never stand up on their own and never inherit the host role, so without this the
+last human out would leave a table of robots nobody has the authority to remove.
+A player who merely drops offline still holds their seat: the bots wait for them,
+and the sweep happens when the disconnect grace period runs out.
+
 ### Equity
 
 Before every decision the server runs a Monte Carlo equity estimate and puts it in

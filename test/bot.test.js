@@ -1170,9 +1170,11 @@ test('没有任何连接时不开新手牌（否则一桌人机会自己打到�
   room.addBot(host, 2);
   room.addBot(host, 3);
 
-  room.stand(host);
-  room.detach(host);                       // 关掉浏览器
+  // 只关浏览器、不离座：座位在掉线保护期内还留着，所以人机不会被清场，
+  // 桌上确实是「人机随时能开打」的局面，正好用来验证没人看就不开牌。
+  room.detach(host);
   assert.equal(room.clients.size, 0);
+  assert.ok(room.seats[1] && room.seats[2] && room.seats[3], '人机还在桌上');
 
   const hands = room.handNo;
   const decisions = d.stats.rule + d.stats.llm;
@@ -1193,8 +1195,7 @@ test('有人连回来后自动恢复开局', async () => {
   const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
   room.addBot(host, 1);
   room.addBot(host, 2);
-  room.stand(host);
-  room.detach(host);
+  room.detach(host);                       // 关掉浏览器，座位留着
 
   const paused = room.handNo;
   await new Promise((r) => setTimeout(r, 200));
@@ -1206,6 +1207,111 @@ test('有人连回来后自动恢复开局', async () => {
   await new Promise((r) => setTimeout(r, 400));
 
   assert.ok(room.handNo > paused, '有人观战后应该自动继续');
+  room.shutdown();
+});
+
+// ==================== 只剩人机时自动清场 ====================
+
+test('最后一个真人离座后，人机全部被请下桌，牌桌清空', () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: d, config: { autoNextHand: false } });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  room.addBot(host, 1);
+  room.addBot(host, 2);
+  const botIds = [room.seats[1], room.seats[2]];
+  room.sendChat(host, '我先走了');
+
+  room.stand(host);                        // 人还连着，只是不坐了
+
+  assert.deepEqual(room.seats, new Array(8).fill(null), '座位应该全空');
+  for (const id of botIds) {
+    assert.equal(room.players.has(id), false, '人机的玩家记录也要清掉，不然只涨不降');
+  }
+  assert.equal(room.hand, null);
+  assert.equal(room.handNo, 0, '牌桌要回到初始状态');
+  assert.equal(room.chat.length, 0, '聊天也清空');
+  assert.equal(room.log.length, 1, '日志只留清场这一条');
+  room.shutdown();
+});
+
+test('牌局进行中最后一个真人离座：牌局收掉，人机也一起走', () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({
+    botDriver: d,
+    config: { autoNextHand: false, actionTimeoutMs: 60000 },
+  });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  room.addBot(host, 1);
+  room.addBot(host, 2);
+  assert.equal(room.start(host).ok, true);
+  assert.equal(room.handNo, 1);
+
+  room.stand(host);
+
+  assert.deepEqual(room.seats, new Array(8).fill(null), '座位应该全空');
+  assert.equal(room.hand, null, '进行中的牌局要被收掉');
+  assert.equal(room.handNo, 0);
+  assert.equal(room.actionTimer, null, '行动计时器不能留着空转');
+  assert.equal(room.nextHandTimer, null);
+  assert.equal(room.buildStateFor(null).table.phase, 'waiting');
+  room.shutdown();
+});
+
+test('真人只是掉线（座位还留着）时不清场，人机等他回来', () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: d, config: { autoNextHand: false } });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  room.addBot(host, 1);
+  room.addBot(host, 2);
+
+  room.detach(host);                       // 关掉浏览器，不是离座
+
+  assert.ok(room.seats[1] && room.seats[2], '掉线保护期内人机不该被清');
+  assert.equal(room.players.get(room.seats[0]).connected, false);
+  room.shutdown();
+});
+
+test('桌上还有别的真人时不清场（哪怕他掉线了）', () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: d, config: { autoNextHand: false } });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  const guest = stubClient(); room.attach(guest); room.hello(guest, null); room.sit(guest, 4, '客人');
+  room.addBot(host, 1);
+  room.detach(guest);                      // 客人掉线，但座位还在
+
+  room.stand(host);
+
+  assert.ok(room.seats[1], '还有真人占着座位，人机就该留着');
+  assert.ok(room.seats[4], '掉线的客人还占着座位');
+  room.shutdown();
+});
+
+test('纯观战的连接不算人在桌上，照样清场', () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: d, config: { autoNextHand: false } });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  room.addBot(host, 1);
+  const watcher = stubClient(); room.attach(watcher); room.hello(watcher, null);
+
+  room.stand(host);
+
+  assert.deepEqual(room.seats, new Array(8).fill(null), '观众不入座就不算人在桌上');
+  room.shutdown();
+});
+
+test('清场后新人坐下就是一张干净的桌子，还能重新加人机', () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: d, config: { autoNextHand: false } });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  room.addBot(host, 1);
+  room.stand(host);
+
+  const next = stubClient(); room.attach(next); room.hello(next, null);
+  assert.equal(room.sit(next, 0, '新人').ok, true);
+  const p = room.players.get(room.seats[0]);
+  assert.equal(p.isHost, true, '新人应该直接是房主');
+  assert.equal(p.chips, room.config.startingStack);
+  assert.equal(room.addBot(next, 1).ok, true, '清场之后还能照常加人机');
   room.shutdown();
 });
 
