@@ -38,6 +38,19 @@ const CAT_NAMES = [
   '同花顺',   // 8
 ];
 
+/** cat -> 英文名，前端结算大屏拿它当主标题（大写、拉开字距更有牌桌味） */
+const CAT_NAMES_EN = [
+  'HIGH CARD',        // 0
+  'PAIR',             // 1
+  'TWO PAIR',         // 2
+  'THREE OF A KIND',  // 3
+  'STRAIGHT',         // 4
+  'FLUSH',            // 5
+  'FULL HOUSE',       // 6
+  'FOUR OF A KIND',   // 7
+  'STRAIGHT FLUSH',   // 8
+];
+
 /** score 的进制基数：score = cat*15^5 + ranks[0]*15^4 + ... + ranks[4]*15 */
 const BASE = 15;
 const POW = [
@@ -86,6 +99,12 @@ function computeScore(cat, ranks) {
 function catName(cat, ranks) {
   if (cat === CATEGORY.STRAIGHT_FLUSH && ranks[0] === 14) return '皇家同花顺';
   return CAT_NAMES[cat];
+}
+
+/** 牌型英文名，皇家同花顺同样单独处理 */
+function catNameEn(cat, ranks) {
+  if (cat === CATEGORY.STRAIGHT_FLUSH && ranks[0] === 14) return 'ROYAL FLUSH';
+  return CAT_NAMES_EN[cat];
 }
 
 /**
@@ -163,6 +182,7 @@ function evaluate5(cards) {
     ranks,
     best: [...cards],
     name: catName(cat, ranks),
+    nameEn: catNameEn(cat, ranks),
     score: computeScore(cat, ranks),
   };
 }
@@ -191,7 +211,7 @@ function combinations5(n) {
 /**
  * 评估 5..7 张牌，返回最优的 5 张牌型。
  * @param {string[]} cards 5..7 张牌
- * @returns {{cat:number, ranks:number[], best:string[], name:string, score:number}}
+ * @returns {{cat:number, ranks:number[], best:string[], name:string, nameEn:string, score:number}}
  *   ranks 长度固定 5，不足补 0；语义见 SPEC §4。
  *   best 为真正组成该牌型的 5 张**原始牌字符串**。
  */

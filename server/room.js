@@ -430,11 +430,20 @@ export class Room {
     return { ok: true };
   }
 
-  /** 给某个座位补充筹码：仅房主，仅两手牌之间 */
+  /**
+   * 给某个座位补充筹码：仅房主。
+   *
+   * 时机上只卡一条线：**这个座位正参与当前这手牌**时不能补。
+   * 原因是 Hand 开局时把各家筹码快照进去了，结算又会用 chipsAfter 覆写回来，
+   * 这中间加的钱会被悄悄抹掉，还会让引擎和房间对不上账。
+   *
+   * 反过来，输光筹码的人本来就进不了下一手（#eligiblePlayers 要求 chips > 0），
+   * 也就不在 handSeatOwners 里，所以**任何时候都能补**，不用等一手打完 ——
+   * 自动开局开着的时候，那个空隙短得根本抢不到。
+   */
   addChips(client, seat, amount) {
     const { err } = this.#requireHost(client);
     if (err) return err;
-    if (this.#handLive()) return { ok: false, code: 'HAND_IN_PROGRESS', msg: '牌局进行中不能补充筹码' };
     const s = clampInt(seat, 0, MAX_SEATS - 1);
     if (s === null) return { ok: false, code: 'ILLEGAL_ACTION', msg: '座位号不合法' };
     const amt = clampInt(amount, 1, 100000000);
@@ -442,6 +451,13 @@ export class Room {
     const id = this.seats[s];
     const p = id ? this.players.get(id) : null;
     if (!p) return { ok: false, code: 'NOT_SEATED', msg: '该座位没有人' };
+    if (this.#handLive() && this.handSeatOwners.get(s) === p.id) {
+      return {
+        ok: false,
+        code: 'HAND_IN_PROGRESS',
+        msg: `${p.name} 正在这手牌里，等这手打完再补`,
+      };
+    }
     p.chips += amt;
     this.#pushLog(`房主给 ${p.name} 补充了 ${amt} 筹码`);
     this.#maybeAutoStart();
@@ -951,6 +967,9 @@ export class Room {
       const out = { t: 'event', kind: e.kind, text: e.text };
       if (e.seat !== undefined && e.seat !== null) out.seat = e.seat;
       if (e.amount !== undefined && e.amount !== null) out.amount = e.amount;
+      // 动作类型（fold/check/call/bet/raise/allin）：前端靠它给每种动作配不同音效。
+      // sanitizeEvent 已经把它挑出来了，这里必须一并转发，漏掉的话前端只能听个响。
+      if (typeof e.type === 'string') out.type = e.type;
       for (const c of this.clients) {
         if (c.playerId) c.send(out);
       }
@@ -1237,7 +1256,10 @@ export class Room {
         seat: s,
         name: p.name,
         avatar: p.avatar || makeAvatar(p.name || '?'),
-        chips: hp ? hp.chips : p.chips,
+        // 牌局进行中以引擎的筹码为准（下注是在引擎那份数据上扣的）；
+        // 一手打完之后要用房间这份 —— #finishHand 已经把 chipsAfter 写回来了，
+        // 而且结算窗口里补的码只加在房间这份上，继续读 hp.chips 会让补码"看起来没生效"。
+        chips: (live && hp) ? hp.chips : p.chips,
         committedRound: hp ? hp.committedRound : 0,
         committedTotal: hp ? hp.committedTotal : 0,
         state,
@@ -1252,11 +1274,17 @@ export class Room {
         lastAction: hp && hp.lastAction
           ? { type: hp.lastAction.type, amount: hp.lastAction.amount ?? 0, label: actionLabel(hp.lastAction) }
           : null,
+        // 现在能不能给这个座位补码。跟 addChips 的判定是同一条规则，
+        // 前端直接照着用就行 —— 让它自己推容易推错：全下的人在引擎里筹码是 0，
+        // 光看 chips 会当成"破产了"，其实人家正押着底池。
+        canRebuy: !(live && inThisHand),
         wonThisHand: Number.isFinite(payout) ? payout : 0,
         isWinner: Array.isArray(this.result?.winners)
           ? this.result.winners.some((w) => w && w.seat === s)
           : false,
         handName: showdownEntry?.handName ?? null,
+        handNameEn: showdownEntry?.handNameEn ?? null,
+        handRank: showdownEntry?.handRank ?? null,
       };
     }
 

@@ -513,7 +513,10 @@ export class Hand {
       } else {
         pots.forEach((pot, i) => {
           winnings.set(seat, (winnings.get(seat) || 0) + pot.amount);
-          winners.push({ seat, amount: pot.amount, potIndex: i, handName: null, best: null });
+          winners.push({
+            seat, amount: pot.amount, potIndex: i,
+            handName: null, handNameEn: null, handRank: null, best: null
+          });
         });
       }
     } else {
@@ -529,6 +532,8 @@ export class Hand {
           seat,
           cards: p.holeCards.slice(),
           handName: e.name,
+          handNameEn: e.nameEn,
+          handRank: e.cat,
           best: e.best.slice(),
           score: e.score
         };
@@ -556,7 +561,10 @@ export class Hand {
           if (amount <= 0) return;
           winnings.set(seat, (winnings.get(seat) || 0) + amount);
           const e = evals.get(seat);
-          winners.push({ seat, amount, potIndex: i, handName: e.name, best: e.best.slice() });
+          winners.push({
+            seat, amount, potIndex: i,
+            handName: e.name, handNameEn: e.nameEn, handRank: e.cat, best: e.best.slice()
+          });
         });
       });
     }

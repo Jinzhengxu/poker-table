@@ -44,6 +44,7 @@
   // 注意：这是明文存在 localStorage 的，只在你自己信任的设备上勾"记住 key"。
   var LS_BOT = 'poker_bot_cfg';
   var LS_MUTED = 'poker_muted';
+  var LS_MUSIC = 'poker_music';
 
   // ============================ 小工具 ============================
 
@@ -96,6 +97,8 @@
     mySeat: null,
     clockOffset: 0,           // serverNow - Date.now()
     muted: lsGet(LS_MUTED) === '1',
+    // 背景音乐默认开着；受自动播放策略限制，实际要等第一次点击才真的响
+    musicOn: lsGet(LS_MUSIC) !== '0',
     raiseOpen: false,
     raiseMin: 0,
     raiseMax: 0,
@@ -104,6 +107,8 @@
     pendingTimer: null,
     lastActingKey: '',
     shownResultHand: -1,
+    resultOverlayHand: -1,    // 结算大屏已经为哪一手弹过
+    resultHideTimer: null,
     logSeen: null,
     chatSeen: null,
     chatUnread: 0,
@@ -126,6 +131,7 @@
     D.metaBlinds = $('#metaBlinds');
     D.metaHost = $('#metaHost');
     D.btnSound = $('#btnSound');
+    D.btnMusic = $('#btnMusic');
     D.btnSide = $('#btnSide');
     D.sideBadge = $('#sideBadge');
 
@@ -139,7 +145,14 @@
     D.potMain = $('#potMain');
     D.potSide = $('#potSide');
     D.board = $('#board');
-    D.resultBanner = $('#resultBanner');
+    D.resultOverlay = $('#resultOverlay');
+    D.roHandEn = $('#roHandEn');
+    D.roHandCn = $('#roHandCn');
+    D.roVerdict = $('#roVerdict');
+    D.roAmount = $('#roAmount');
+    D.roDetail = $('#roDetail');
+    D.roCards = $('#roCards');
+    D.roOthers = $('#roOthers');
     D.nextHandTip = $('#nextHandTip');
 
     D.heroCards = $('#heroCards');
@@ -161,6 +174,7 @@
     D.btnRaiseCancel = $('#btnRaiseCancel');
     D.idleBar = $('#idleBar');
     D.btnStart = $('#btnStart');
+    D.btnRebuy = $('#btnRebuy');
     D.btnSitOut = $('#btnSitOut');
     D.btnStand = $('#btnStand');
     D.btnJoin = $('#btnJoin');
@@ -218,24 +232,91 @@
     while (D.toasts.children.length > 4) D.toasts.removeChild(D.toasts.firstChild);
   }
 
-  // ============================ 音效（WebAudio 合成） ============================
+  // ============================ 音效（WebAudio 实时合成，不引外部音频文件） ============================
 
   var audioCtx = null;
+  var masterGain = null;
+  var limiterNode = null;
+  var noiseBuf = null;
 
-  function ensureAudio() {
-    if (S.muted) return null;
+  /**
+   * 总音量。下面每个音效里的 gain 只是彼此之间的**相对**配比（0.02~0.09 那种小数），
+   * 真正的响度由这里统一放大。放大之后叠音会超过 1.0，所以链路末端挂了个压缩器当限幅，
+   * 削掉峰值而不是硬削波（硬削波听起来就是"滋啦"一声）。
+   */
+  var MASTER_GAIN = 4.6;
+
+  /**
+   * 同一批事件的排队游标（ctx.currentTime 基准）。
+   * 服务端一次 flush 会连着发好几条事件（前注 ×N、大小盲、发牌…），
+   * 不排队的话十几声会叠在同一毫秒上，听起来只是"噗"的一记爆音。
+   */
+  var burstAt = 0;
+
+  /**
+   * 拿到（必要时创建并唤醒）音频上下文。
+   * 跟静音无关 —— 音效静音和背景音乐是两个开关，
+   * 关掉音效不该把音乐也一并掐掉，所以"建上下文"和"要不要出声"分开。
+   */
+  function audio() {
     try {
       if (!audioCtx) {
         var AC = window.AudioContext || window.webkitAudioContext;
         if (!AC) return null;
         audioCtx = new AC();
+        masterGain = audioCtx.createGain();
+        masterGain.gain.value = MASTER_GAIN;
+        // 限幅器：发牌/全下这种一口气十几声的场面会叠出过载，交给它压住。
+        // 这几个是常量设置，直接赋 .value —— 用 setValueAtTime 的话，
+        // 上下文此刻还是 suspended（等用户手势），排在 currentTime=0 的自动化不会生效。
+        var limiter = audioCtx.createDynamicsCompressor();
+        limiter.threshold.value = -8;
+        limiter.knee.value = 6;
+        limiter.ratio.value = 14;
+        limiter.attack.value = 0.003;
+        limiter.release.value = 0.22;
+        masterGain.connect(limiter);
+        limiter.connect(audioCtx.destination);
+        limiterNode = limiter;
       }
       if (audioCtx.state === 'suspended' && audioCtx.resume) audioCtx.resume();
       return audioCtx;
     } catch (e) { return null; }
   }
 
-  function tone(freq, dur, delay, gain, type) {
+  /** 音效专用入口：静音时直接不出声 */
+  function ensureAudio() {
+    if (S.muted) return null;
+    return audio();
+  }
+
+  /** 1 秒白噪声缓冲：发牌的"唰"、筹码的"叮"、敲桌子的"咚"都由它整形而来 */
+  function ensureNoise(ctx) {
+    if (noiseBuf) return noiseBuf;
+    var len = Math.floor(ctx.sampleRate);
+    var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    var ch = buf.getChannelData(0);
+    for (var i = 0; i < len; i++) ch[i] = Math.random() * 2 - 1;
+    noiseBuf = buf;
+    return buf;
+  }
+
+  /**
+   * 给这一声在时间轴上排个位子，返回相对"现在"的延迟（秒）。
+   * 同一批事件依次调用会自动往后排；最多排到 0.8 秒之后，免得音画脱节。
+   */
+  function slot(gap) {
+    var ctx = ensureAudio();
+    if (!ctx) return 0;
+    var now = ctx.currentTime;
+    if (burstAt < now) burstAt = now;
+    var at = Math.min(burstAt, now + 0.8);
+    burstAt = at + (gap == null ? 0.09 : gap);
+    return at - now;
+  }
+
+  /** 纯音；给了 to 就从 freq 滑到 to */
+  function tone(freq, dur, delay, gain, type, to) {
     var ctx = ensureAudio();
     if (!ctx) return;
     try {
@@ -244,20 +325,438 @@
       var g = ctx.createGain();
       osc.type = type || 'sine';
       osc.frequency.setValueAtTime(freq, t0);
+      if (to) osc.frequency.exponentialRampToValueAtTime(Math.max(20, to), t0 + dur);
       g.gain.setValueAtTime(0.0001, t0);
       g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain || 0.04), t0 + 0.012);
       g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
       osc.connect(g);
-      g.connect(ctx.destination);
+      g.connect(masterGain);
       osc.start(t0);
       osc.stop(t0 + dur + 0.03);
     } catch (e) { /* 音频失败不影响功能 */ }
   }
 
-  function sndTurn() { tone(784, 0.10, 0, 0.05, 'sine'); tone(1046, 0.10, 0.13, 0.042, 'sine'); }
-  function sndChip() { tone(230, 0.05, 0, 0.028, 'triangle'); }
-  function sndCard() { tone(480, 0.045, 0, 0.02, 'sine'); }
-  function sndWin() { tone(523, 0.16, 0, 0.045); tone(659, 0.16, 0.09, 0.045); tone(784, 0.24, 0.18, 0.045); }
+  /** 噪声脉冲：{delay, dur, gain, type, freq, sweepTo, q, attack} */
+  function noise(o) {
+    var ctx = ensureAudio();
+    if (!ctx) return;
+    try {
+      o = o || {};
+      var t0 = ctx.currentTime + (o.delay || 0);
+      var dur = o.dur || 0.06;
+      var src = ctx.createBufferSource();
+      src.buffer = ensureNoise(ctx);
+      var flt = ctx.createBiquadFilter();
+      flt.type = o.type || 'bandpass';
+      flt.frequency.setValueAtTime(o.freq || 2000, t0);
+      if (o.sweepTo) flt.frequency.exponentialRampToValueAtTime(Math.max(60, o.sweepTo), t0 + dur);
+      flt.Q.value = (o.q == null) ? 1 : o.q;
+      var g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, o.gain || 0.05), t0 + (o.attack || 0.004));
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      src.connect(flt);
+      flt.connect(g);
+      g.connect(masterGain);
+      // 每次从缓冲的随机位置取样，免得听出是同一段循环
+      src.start(t0, Math.random() * 0.8, dur + 0.05);
+      src.stop(t0 + dur + 0.05);
+    } catch (e) { /* 音频失败不影响功能 */ }
+  }
+
+  // ---- 音色积木 ----
+
+  /** 一张牌擦过桌面：高频噪声往下扫 */
+  function cardFlick(delay, gain) {
+    noise({ delay: delay, dur: 0.075, gain: gain || 0.055, freq: 3200, sweepTo: 900, q: 0.8, attack: 0.003 });
+  }
+
+  /** 一张牌拍在绒布上：擦声 + 一点低频"啪" */
+  function cardSlap(delay) {
+    cardFlick(delay, 0.06);
+    noise({ delay: (delay || 0) + 0.012, dur: 0.09, gain: 0.05, type: 'lowpass', freq: 420, q: 0.7 });
+  }
+
+  /** 一枚筹码落下：塑料体的低频 + 一点高频"叮"，频率随机化避免机械感 */
+  function chipHit(delay, gain) {
+    var k = (gain == null) ? 1 : gain;
+    noise({ delay: delay, dur: 0.045, gain: 0.05 * k, freq: 2400 + Math.random() * 1600, q: 3 });
+    tone(150 + Math.random() * 60, 0.05, delay, 0.03 * k, 'triangle');
+  }
+
+  // ---- 对外的具体音效 ----
+
+  /** 按钮按下的一记轻响 */
+  function sndClick(strong) {
+    noise({ dur: 0.022, gain: 0.03, freq: strong ? 1500 : 2200, q: 2.5 });
+    tone(strong ? 420 : 620, 0.03, 0, 0.018, 'square');
+  }
+
+  /** 发底牌：一人一张地转两圈 */
+  function sndDeal(players) {
+    var d = slot(0.16);
+    var n = clamp(players || 4, 2, 8) * 2;
+    for (var i = 0; i < n; i++) cardFlick(d + i * 0.062, 0.045);
+  }
+
+  /** 翻牌 / 转牌 / 河牌：n 张依次拍在桌上 */
+  function sndBoard(n) {
+    var d = slot(0.14);
+    for (var i = 0; i < n; i++) cardSlap(d + i * 0.11);
+  }
+
+  /** 推筹码 */
+  function sndChips(n, gain) {
+    var d = slot(0.12);
+    var c = clamp(n || 3, 1, 8);
+    for (var i = 0; i < c; i++) chipHit(d + i * 0.035 + Math.random() * 0.012, gain);
+  }
+
+  /** 过牌：指关节在桌上敲两下 */
+  function sndCheck() {
+    var d = slot(0.14);
+    noise({ delay: d, dur: 0.075, gain: 0.06, type: 'lowpass', freq: 260, q: 1.2 });
+    noise({ delay: d + 0.115, dur: 0.075, gain: 0.05, type: 'lowpass', freq: 240, q: 1.2 });
+  }
+
+  /** 弃牌：牌被推出去的一记闷响 */
+  function sndFold() {
+    var d = slot(0.12);
+    noise({ delay: d, dur: 0.16, gain: 0.045, type: 'lowpass', freq: 1400, sweepTo: 300, q: 0.6 });
+  }
+
+  /** 加注 / 下注：推筹码 + 一个上扬的短音 */
+  function sndRaise() {
+    sndChips(5);
+    tone(330, 0.14, 0.02, 0.03, 'triangle', 495);
+  }
+
+  /** 全下：一大堆筹码倒下去，底下垫一层推力 */
+  function sndAllin() {
+    var d = slot(0.5);
+    for (var i = 0; i < 14; i++) chipHit(d + i * 0.032 + Math.random() * 0.02, 0.85);
+    tone(110, 0.5, d, 0.05, 'sawtooth', 220);
+    tone(220, 0.45, d + 0.05, 0.028, 'triangle', 440);
+  }
+
+  /** 轮到自己：两声清脆提示 */
+  function sndTurn() {
+    tone(784, 0.11, 0, 0.05, 'sine');
+    tone(1046, 0.13, 0.13, 0.045, 'sine');
+  }
+
+  /**
+   * 思考倒计时的"嗒"。只在轮到自己、且时间快用完时一秒一响。
+   * @param {boolean} urgent 最后 3 秒，音更高更硬
+   */
+  function sndTick(urgent) {
+    if (urgent) {
+      tone(1320, 0.055, 0, 0.085, 'square');
+      noise({ dur: 0.022, gain: 0.05, freq: 3400, q: 4 });
+    } else {
+      tone(880, 0.055, 0, 0.045, 'sine');
+      noise({ dur: 0.018, gain: 0.026, freq: 2400, q: 4 });
+    }
+  }
+
+  /** 超时：低沉的一声"到点了" */
+  function sndTimeUp() {
+    tone(196, 0.4, 0, 0.075, 'sawtooth', 110);
+    tone(392, 0.3, 0, 0.035, 'triangle', 220);
+  }
+
+  /** 亮牌 */
+  function sndShowdown() {
+    var d = slot(0.1);
+    cardSlap(d);
+    tone(880, 0.09, d + 0.03, 0.022, 'sine');
+  }
+
+  /** 自己赢：大三和弦上行 + 筹码雨 */
+  function sndWinMine() {
+    var d = slot(0.7);
+    var notes = [523.25, 659.25, 783.99, 1046.5];
+    for (var i = 0; i < notes.length; i++) {
+      tone(notes[i], 0.34, d + i * 0.085, 0.05, 'sine');
+      tone(notes[i] * 2, 0.2, d + i * 0.085, 0.014, 'sine');
+    }
+    for (var j = 0; j < 12; j++) chipHit(d + 0.16 + j * 0.045 + Math.random() * 0.02, 0.7);
+  }
+
+  /** 别人赢：一句短下行，知道结果就行，别吵 */
+  function sndWinOther() {
+    var d = slot(0.35);
+    tone(392, 0.2, d, 0.028, 'sine');
+    tone(294, 0.28, d + 0.11, 0.024, 'sine');
+    for (var i = 0; i < 5; i++) chipHit(d + 0.05 + i * 0.05, 0.5);
+  }
+
+  /**
+   * 大牌型的号角。顺子及以上响一次，四条以上更长更亮。
+   * 跟 sndWinMine/sndWinOther 是叠着放的：那个报"谁赢"，这个报"牌有多大"。
+   * @param {string} hype 'big' | 'mega'
+   */
+  function sndFanfare(hype) {
+    var d = slot(hype === 'mega' ? 0.9 : 0.6);
+    var mega = hype === 'mega';
+    // 大调琶音往上冲，mega 再加一层高八度
+    var notes = mega
+      ? [392, 523.25, 659.25, 783.99, 1046.5, 1318.5]
+      : [523.25, 659.25, 783.99, 1046.5];
+    for (var i = 0; i < notes.length; i++) {
+      var t = d + i * (mega ? 0.075 : 0.07);
+      tone(notes[i], mega ? 0.42 : 0.3, t, mega ? 0.06 : 0.045, 'triangle');
+      if (mega) tone(notes[i] * 2, 0.25, t, 0.02, 'sine');
+    }
+    // 底下垫一记闷鼓，让它砸得实一点
+    noise({ delay: d, dur: 0.28, gain: mega ? 0.08 : 0.05, type: 'lowpass', freq: 220, q: 1 });
+    if (mega) {
+      // 收尾一记镲
+      noise({ delay: d + 0.42, dur: 0.7, gain: 0.045, type: 'highpass', freq: 5200, q: .5 });
+    }
+  }
+
+  /**
+   * 分池时同一手会连发好几条 win 事件，先攒 80ms 再决定放哪一版：
+   * 只要其中有一条是自己的，就按"我赢了"来放。
+   */
+  var winPending = false;
+  var winTimer = null;
+
+  function queueWin(seat) {
+    if (S.mySeat !== null && seat === S.mySeat) winPending = true;
+    if (winTimer) return;
+    winTimer = setTimeout(function () {
+      var mine = winPending;
+      winPending = false;
+      winTimer = null;
+      if (mine) sndWinMine(); else sndWinOther();
+    }, 80);
+  }
+
+  /** 桌上还在牌局里的人数，只用来决定发牌音效响几下 */
+  function livePlayerCount() {
+    var seats = (S.state && Array.isArray(S.state.seats)) ? S.state.seats : [];
+    var n = 0;
+    for (var i = 0; i < seats.length; i++) {
+      var d = seats[i];
+      if (d && !d.sittingOut && d.state !== 'sittingOut') n++;
+    }
+    return n || 4;
+  }
+
+  // ============================ 背景音乐 ============================
+  //
+  // 小酒馆爵士味的慢速循环：ii–V–I–vi 的和弦垫 + 走低音 + 偶尔一颗单音点缀。
+  // 整段是实时合成的 —— 这个项目不引任何外部资源（连字体和图标都是 CSS 画的），
+  // 塞个 mp3 进来会破掉这条线，何况几分钟的音频文件比整个前端还大。
+  //
+  // 走自己的一条总线接进限幅器：既不吃音效那 4.6 倍的增益（会吵死），
+  // 又能被限幅器一起兜住峰值。音效响的时候音乐会被压一下，像侧链闪避，正好。
+
+  /** 每个和弦持续多久（秒）。66 BPM 左右的四拍。 */
+  var MUSIC_CHORD_SECS = 3.6;
+  /** 提前排程的时间窗，比调度心跳长，切后台被节流也不至于断拍 */
+  var MUSIC_LOOKAHEAD = 1.6;
+  var MUSIC_TICK_MS = 400;
+  /** 总音量：压得很低，是背景不是主角 */
+  var MUSIC_LEVEL = 0.16;
+
+  /**
+   * 和弦进行，MIDI 音高（60 = 中央 C）。
+   * Dm9 → G13 → Cmaj9 → Am9，四个和弦之间是级进的声部连接，
+   * 所以循环起来不会有明显的"又从头开始了"的接缝。
+   */
+  var MUSIC_CHORDS = [
+    { bass: 38, notes: [53, 57, 60, 64] },  // Dm9   D2  / F3 A3 C4 E4
+    { bass: 43, notes: [53, 59, 64, 69] },  // G13   G2  / F3 B3 E4 A4
+    { bass: 36, notes: [52, 55, 59, 62] },  // Cmaj9 C2  / E3 G3 B3 D4
+    { bass: 45, notes: [55, 59, 60, 64] }   // Am9   A2  / G3 B3 C4 E4
+  ];
+  /**
+   * 点缀音。刻意避开 F（77）：它在 Cmaj9 上是避免音、在 Am9 上是 b6，
+   * 单独一颗钟琴音敲上去会有点刺。剩下的 A B C D E G 套在四个和弦上都是协和音。
+   */
+  var MUSIC_MELODY = [69, 71, 72, 74, 76, 79, 81];
+
+  var music = {
+    bus: null,
+    timer: null,
+    nextAt: 0,
+    step: 0
+  };
+
+  function midiHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+
+  /** 一颗和弦垫音：两个略微失谐的三角波过低通，慢起慢落 */
+  function musicPad(midi, at, dur, gain) {
+    var ctx = audioCtx;
+    if (!ctx || !music.bus) return;
+    try {
+      var f = midiHz(midi);
+      var flt = ctx.createBiquadFilter();
+      flt.type = 'lowpass';
+      flt.frequency.value = 1500;
+      flt.Q.value = 0.5;
+      var g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(gain, at + 0.9);        // 慢起，不能有攻击感
+      g.gain.setValueAtTime(gain, at + dur * 0.55);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+      flt.connect(g);
+      g.connect(music.bus);
+      for (var d = 0; d < 2; d++) {
+        var osc = ctx.createOscillator();
+        osc.type = 'triangle';
+        osc.frequency.value = f * (d === 0 ? 1 : 1.0035);          // 失谐一点点，音色才不干
+        osc.connect(flt);
+        osc.start(at);
+        osc.stop(at + dur + 0.1);
+      }
+    } catch (e) { /* 音乐挂了不影响牌局 */ }
+  }
+
+  /** 低音：圆一点、带点衰减的拨弦感 */
+  function musicBass(midi, at, dur) {
+    var ctx = audioCtx;
+    if (!ctx || !music.bus) return;
+    try {
+      var osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = midiHz(midi);
+      var g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(0.5, at + 0.06);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+      osc.connect(g);
+      g.connect(music.bus);
+      osc.start(at);
+      osc.stop(at + dur + 0.05);
+    } catch (e) { /* 忽略 */ }
+  }
+
+  /** 点缀单音：钟琴那种小亮点，稀疏地撒 */
+  function musicBell(midi, at) {
+    var ctx = audioCtx;
+    if (!ctx || !music.bus) return;
+    try {
+      var g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(0.22, at + 0.04);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 2.2);
+      g.connect(music.bus);
+      var f = midiHz(midi);
+      [[1, 1], [2, 0.28], [3, 0.1]].forEach(function (h) {          // 泛音堆出金属感
+        var osc = ctx.createOscillator();
+        var hg = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = f * h[0];
+        hg.gain.value = h[1];
+        osc.connect(hg);
+        hg.connect(g);
+        osc.start(at);
+        osc.stop(at + 2.3);
+      });
+    } catch (e) { /* 忽略 */ }
+  }
+
+  /** 排一个和弦：低音 + 四声部垫 + 也许一颗点缀 */
+  function musicScheduleChord(at, step) {
+    var ch = MUSIC_CHORDS[step % MUSIC_CHORDS.length];
+    musicBass(ch.bass, at, MUSIC_CHORD_SECS * 0.9);
+    // 第五拍再补一记低音（八度上方），走起来才像在"走"
+    musicBass(ch.bass + 12, at + MUSIC_CHORD_SECS * 0.5, MUSIC_CHORD_SECS * 0.35);
+    for (var i = 0; i < ch.notes.length; i++) {
+      // 每个声部起音错开几十毫秒，像手指按下去的先后
+      musicPad(ch.notes[i], at + i * 0.035, MUSIC_CHORD_SECS * 1.15, 0.24);
+    }
+    if (Math.random() < 0.55) {
+      var m = MUSIC_MELODY[Math.floor(Math.random() * MUSIC_MELODY.length)];
+      musicBell(m, at + MUSIC_CHORD_SECS * (0.3 + Math.random() * 0.5));
+    }
+  }
+
+  function musicTick() {
+    var ctx = audioCtx;
+    if (!ctx || !music.bus) return;
+    // 切到后台时 setInterval 会被节流，回来别把积压的和弦一口气全排出去
+    if (music.nextAt < ctx.currentTime) music.nextAt = ctx.currentTime + 0.05;
+    while (music.nextAt < ctx.currentTime + MUSIC_LOOKAHEAD) {
+      musicScheduleChord(music.nextAt, music.step);
+      music.nextAt += MUSIC_CHORD_SECS;
+      music.step += 1;
+    }
+  }
+
+  function musicStart() {
+    if (music.timer) return;
+    var ctx = audio();
+    if (!ctx) return;
+    music.bus = ctx.createGain();
+    music.bus.gain.setValueAtTime(0.0001, ctx.currentTime);
+    // 淡入 3 秒：音乐是"慢慢有了"，不是"啪一下开了"
+    music.bus.gain.exponentialRampToValueAtTime(MUSIC_LEVEL, ctx.currentTime + 3);
+    music.bus.connect(limiterNode || ctx.destination);
+    music.nextAt = ctx.currentTime + 0.15;
+    musicTick();
+    music.timer = setInterval(musicTick, MUSIC_TICK_MS);
+  }
+
+  function musicStop() {
+    if (music.timer) { clearInterval(music.timer); music.timer = null; }
+    var bus = music.bus;
+    music.bus = null;
+    if (!bus || !audioCtx) return;
+    // 淡出再断开，免得"咔"一声
+    var t = audioCtx.currentTime;
+    try {
+      bus.gain.cancelScheduledValues(t);
+      bus.gain.setValueAtTime(Math.max(0.0001, bus.gain.value), t);
+      bus.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
+    } catch (e) { /* 忽略 */ }
+    setTimeout(function () { try { bus.disconnect(); } catch (e) { /* 忽略 */ } }, 1500);
+  }
+
+  /** 按当前开关把音乐拉起来或停掉 */
+  function syncMusic() {
+    if (S.musicOn) musicStart(); else musicStop();
+  }
+
+  // ============================ 按下反馈 ============================
+
+  /**
+   * 按钮按下时亮一下。
+   * 行动按钮点完立刻会被 disable（防重复提交），CSS 的 :active 当场就消失了，
+   * 所以这里用 JS 加类：动画自己跑完，"我刚按了哪颗"一定看得见。
+   */
+  function flashPress(el) {
+    if (!el || !el.classList) return;
+    el.classList.remove('press-fx');
+    void el.offsetWidth; // 强制重排，连点也能重新播放动画
+    el.classList.add('press-fx');
+  }
+
+  var ACT_BTN_KEY = {
+    fold: 'btnFold', check: 'btnCheck', call: 'btnCall',
+    bet: 'btnRaise', raise: 'btnRaise', allin: 'btnAllin'
+  };
+  var actedTimer = null;
+
+  /** 行动按钮按下后留一圈金色余晖，按钮被禁用期间也能看出刚才选了什么 */
+  function markActed(type) {
+    var keys = ['btnFold', 'btnCheck', 'btnCall', 'btnRaise', 'btnAllin'];
+    for (var i = 0; i < keys.length; i++) {
+      if (D[keys[i]]) D[keys[i]].classList.remove('acted');
+    }
+    var el = D[ACT_BTN_KEY[type]];
+    if (!el) return;
+    // 键盘快捷键没有 pointerdown，这里补一次闪光；鼠标点过的就别重放了
+    if (!el.classList.contains('press-fx')) flashPress(el);
+    void el.offsetWidth;
+    el.classList.add('acted');
+    if (actedTimer) clearTimeout(actedTimer);
+    actedTimer = setTimeout(function () { el.classList.remove('acted'); actedTimer = null; }, 1400);
+  }
 
   // ============================ WebSocket ============================
 
@@ -392,18 +891,39 @@
   function onServerEvent(m) {
     switch (m.kind) {
       case 'deal':
+        sndDeal(livePlayerCount());
+        break;
       case 'flop':
+        sndBoard(3);
+        break;
       case 'turn':
       case 'river':
-        sndCard();
+        sndBoard(1);
         break;
-      case 'action':
       case 'blind':
       case 'ante':
-        sndChip();
+        sndChips(2, 0.75);
+        break;
+      case 'return':
+        sndChips(2, 0.6);
+        break;
+      case 'action':
+        // 每种动作一个声音，不看屏幕也知道别人干了什么
+        switch (m.type) {
+          case 'fold':  sndFold(); break;
+          case 'check': sndCheck(); break;
+          case 'call':  sndChips(3); break;
+          case 'bet':
+          case 'raise': sndRaise(); break;
+          case 'allin': sndAllin(); break;
+          default:      sndChips(2); break;
+        }
+        break;
+      case 'showdown':
+        sndShowdown();
         break;
       case 'win':
-        sndWin();
+        queueWin(m.seat);
         break;
       default:
         break;
@@ -795,37 +1315,210 @@
     }
     syncCards(D.board, slots, { hl: hl, boardSlot: true });
 
-    // 结算横幅
-    if (D.resultBanner) {
-      if (result && Array.isArray(result.winners) && result.winners.length) {
-        var parts = [];
-        var seen = {};
-        for (var i2 = 0; i2 < result.winners.length; i2++) {
-          var ww = result.winners[i2];
-          if (!ww) continue;
-          var key = ww.seat;
-          if (seen[key] != null) {
-            parts[seen[key]].amount += Number(ww.amount) || 0;
-            if (!parts[seen[key]].handName && ww.handName) parts[seen[key]].handName = ww.handName;
-            continue;
-          }
-          seen[key] = parts.length;
-          parts.push({
-            name: ww.name || ('座位' + ((ww.seat | 0) + 1)),
-            amount: Number(ww.amount) || 0,
-            handName: ww.handName || null
-          });
-        }
-        var txt = parts.map(function (p) {
-          return p.name + ' 赢得 ' + fmt(p.amount) + (p.handName ? '（' + p.handName + '）' : '');
-        }).join('    ');
-        D.resultBanner.textContent = txt;
-        D.resultBanner.hidden = false;
-      } else {
-        D.resultBanner.hidden = true;
-        D.resultBanner.textContent = '';
+    renderResultOverlay(st, Array.isArray(st.seats) ? st.seats : [], result);
+  }
+
+  /** 把 winners 里同一座位的多个底池合并成一条 */
+  function mergeWinners(winners) {
+    var out = [];
+    var idx = {};
+    for (var i = 0; i < winners.length; i++) {
+      var w = winners[i];
+      if (!w || typeof w.seat !== 'number') continue;
+      if (idx[w.seat] == null) {
+        idx[w.seat] = out.length;
+        out.push({
+          seat: w.seat,
+          name: w.name || ('座位' + (w.seat + 1)),
+          amount: 0,
+          handName: null,
+          handNameEn: null,
+          handRank: null,
+          best: null
+        });
       }
+      var e = out[idx[w.seat]];
+      e.amount += Number(w.amount) || 0;
+      if (!e.handName && w.handName) e.handName = w.handName;
+      if (!e.handNameEn && w.handNameEn) e.handNameEn = w.handNameEn;
+      if (e.handRank == null && typeof w.handRank === 'number') e.handRank = w.handRank;
+      if (!e.best && Array.isArray(w.best)) e.best = w.best;
     }
+    out.sort(function (a, b) { return b.amount - a.amount; });
+    return out;
+  }
+
+  /**
+   * 把一手的结算算成"给人看的结论"。
+   *
+   * 输赢判定用的是**本手净收支** ＝ 从底池赢到的 − 真正投进池子的，
+   * 而不是"有没有出现在 winners 里"：分池的时候你可能名列赢家却照样亏钱，
+   * 那种情况写"你赢了"是骗人的。
+   *
+   * @returns {null|{kind:string,verdict:string,amountText:string,detail:string,
+   *                 winners:object[],top:object,inHand:boolean,net:number}}
+   */
+  function handVerdict(st, seats, result) {
+    var winners = (result && Array.isArray(result.winners)) ? mergeWinners(result.winners) : [];
+    if (!winners.length) return null;
+
+    var mine = (S.mySeat !== null) ? (seats[S.mySeat] || null) : null;
+    var myCards = (st.you && Array.isArray(st.you.cards)) ? st.you.cards : [];
+    var inHand = !!(mine && (
+      (Number(mine.committedTotal) || 0) > 0 ||
+      (Number(mine.wonThisHand) || 0) > 0 ||
+      myCards.length > 0
+    ));
+    var net = inHand
+      ? (Number(mine.wonThisHand) || 0) - (Number(mine.committedTotal) || 0)
+      : 0;
+
+    var iWon = false;
+    for (var i = 0; i < winners.length; i++) {
+      if (winners[i].seat === S.mySeat) { iWon = true; break; }
+    }
+    var top = winners[0];
+    var split = winners.length > 1;
+
+    var kind;      // win | lose | even | watch
+    var verdict;
+    if (!inHand) {
+      kind = 'watch';
+      verdict = winners.map(function (w) { return w.name; }).join(' 和 ') + ' 赢了';
+    } else if (iWon && split) {
+      kind = net > 0 ? 'win' : 'even';
+      verdict = '平分底池';
+    } else if (iWon) {
+      kind = 'win';
+      verdict = '你赢了';
+    } else if (net < 0) {
+      kind = 'lose';
+      verdict = '你输了';
+    } else {
+      kind = 'even';
+      verdict = '这手没输没赢';
+    }
+
+    // 金额：自己在牌里就报净收支，旁观就报赢家拿走多少。
+    // 净收支为 0（没下过注就弃了）时不报数字——大大一个 "0" 是噪音不是信息。
+    var amt = inHand ? net : top.amount;
+    var sign = inHand ? (amt > 0 ? '+' : (amt < 0 ? '−' : '')) : '';
+    var amountText = amt === 0 ? '' : sign + fmt(Math.abs(amt));
+
+    // 细节只回答"谁"——"什么牌型"已经是大标题了，别重复
+    var detail;
+    if (split) {
+      detail = winners.map(function (w) { return w.name; }).join('  ·  ') + ' 平分';
+    } else if (inHand && iWon) {
+      detail = '';
+    } else {
+      detail = top.name + (result.wentToShowdown ? ' 拿下' : ' 收下底池');
+    }
+
+    // 结算大屏的主标题：摊了牌就报英文牌型，没摊牌就是没人跟到底
+    var handEn = result.wentToShowdown ? (top.handNameEn || '') : 'UNCONTESTED';
+    var handCn = result.wentToShowdown ? (top.handName || '') : '没人跟到底';
+    // 牌型档次决定特效强度：顺子(4)起算"大牌"，四条(7)起算"炸场"
+    var rank = result.wentToShowdown && typeof top.handRank === 'number' ? top.handRank : -1;
+    var hype = rank >= 7 ? 'mega' : (rank >= 4 ? 'big' : 'plain');
+
+    return {
+      kind: kind,
+      verdict: verdict,
+      amountText: amountText,
+      detail: detail,
+      handEn: handEn,
+      handCn: handCn,
+      hype: hype,
+      winners: winners,
+      top: top,
+      inHand: inHand,
+      net: net
+    };
+  }
+
+  /**
+   * 结算大屏：盖住牌桌把结论砸出来，2.4 秒后自动让开
+   * （或者点一下立刻让开），好让大家还能回看各家亮的牌。
+   */
+  function renderResultOverlay(st, seats, result) {
+    if (!D.resultOverlay) return;
+    var v = handVerdict(st, seats, result);
+    if (!v) {
+      hideResultOverlay();
+      return;
+    }
+
+    // 主标题：英文牌型。data-text 给 CSS 的描边/流光副本用（两层必须同字）
+    D.roHandEn.textContent = v.handEn;
+    D.roHandEn.setAttribute('data-text', v.handEn);
+    // THREE OF A KIND / FOUR OF A KIND / STRAIGHT FLUSH 这些长名字要降一号
+    D.roHandEn.classList.toggle('is-long', v.handEn.length > 11);
+    D.roHandCn.textContent = v.handCn;
+    D.roHandCn.hidden = !v.handCn;
+
+    D.roVerdict.textContent = v.verdict;
+    D.roAmount.textContent = v.amountText;
+    D.roAmount.hidden = !v.amountText;
+    D.roDetail.textContent = v.detail;
+    D.roDetail.hidden = !v.detail;
+
+    // 赢牌的那 5 张，逐张翻出来（没摊牌就没有 best，不显示）
+    D.roCards.textContent = '';
+    var best = Array.isArray(v.top.best) ? v.top.best : [];
+    for (var c = 0; c < best.length; c++) {
+      var cd = makeCardNode(best[c], { mini: true });
+      cd.style.setProperty('--i', String(c));
+      D.roCards.appendChild(cd);
+    }
+    D.roCards.hidden = !best.length;
+
+    // 分池时把每个赢家各拿多少列出来
+    D.roOthers.textContent = '';
+    if (v.winners.length > 1) {
+      for (var k = 0; k < v.winners.length; k++) {
+        var row = elt('div', 'ro-other' + (v.winners[k].seat === S.mySeat ? ' is-me' : ''));
+        row.appendChild(elt('span', 'ro-other-name', v.winners[k].name));
+        row.appendChild(elt('span', 'ro-other-amt', '+' + fmt(v.winners[k].amount)));
+        D.roOthers.appendChild(row);
+      }
+      D.roOthers.hidden = false;
+    } else {
+      D.roOthers.hidden = true;
+    }
+
+    D.resultOverlay.setAttribute('data-kind', v.kind);
+    D.resultOverlay.setAttribute('data-hype', v.hype);
+
+    // 每手只登场一次：之后的快照（亮牌、补充筹码…）不该把它重新弹出来。
+    // 牌型越大留得越久——四条同花顺值得多看两眼。
+    var handNo = Number(st.table && st.table.handNo) || 0;
+    if (S.resultOverlayHand !== handNo) {
+      S.resultOverlayHand = handNo;
+      D.resultOverlay.classList.remove('is-gone');
+      D.resultOverlay.hidden = false;
+      // 重播入场动画：连着两手都是同一档次时，光换文字看不出"又来了一次"
+      D.resultOverlay.classList.remove('is-in');
+      void D.resultOverlay.offsetWidth;
+      D.resultOverlay.classList.add('is-in');
+      if (v.hype !== 'plain') sndFanfare(v.hype);
+      if (S.resultHideTimer) clearTimeout(S.resultHideTimer);
+      S.resultHideTimer = setTimeout(dismissResultOverlay, v.hype === 'plain' ? 2400 : 3400);
+    }
+  }
+
+  /** 大屏退场，但结论仍留在底部状态栏里 */
+  function dismissResultOverlay() {
+    if (S.resultHideTimer) { clearTimeout(S.resultHideTimer); S.resultHideTimer = null; }
+    if (D.resultOverlay) D.resultOverlay.classList.add('is-gone');
+  }
+
+  function hideResultOverlay() {
+    if (S.resultHideTimer) { clearTimeout(S.resultHideTimer); S.resultHideTimer = null; }
+    S.resultOverlayHand = -1;
+    if (!D.resultOverlay) return;
+    D.resultOverlay.hidden = true;
+    D.resultOverlay.classList.remove('is-gone');
   }
 
   function renderHero(st, table, seats, you, cfg) {
@@ -860,6 +1553,10 @@
     // 状态文案
     var statusText = '';
     var strong = false;
+    var verdictKind = '';   // handOver 时的输赢，用来给状态栏上色
+    // 输光筹码：进不了下一手，得补上才能接着打。
+    // canRebuy 由服务端给，别只看 chips —— 全下的时候引擎里的筹码也是 0。
+    var busted = !!(mySeatData && (Number(mySeatData.chips) || 0) <= 0 && mySeatData.canRebuy);
     if (S.conn !== 'online') {
       statusText = (S.conn === 'offline') ? '连接断开，正在重连…' : '正在连接服务器…';
     } else if (S.mySeat === null) {
@@ -870,7 +1567,15 @@
     } else if (typeof table.actingSeat === 'number' && seats[table.actingSeat]) {
       statusText = '等待 ' + (seats[table.actingSeat].name || ('座位' + (table.actingSeat + 1))) + ' 行动';
     } else if (table.phase === 'handOver') {
-      statusText = '本手结束';
+      // 大屏两秒后就让开了，结论留在这儿，整个结算窗口都看得到
+      var hv = handVerdict(st, seats, st.result);
+      if (hv) {
+        statusText = hv.verdict + (hv.amountText ? ' ' + hv.amountText : '')
+          + (hv.detail ? ' · ' + hv.detail : '');
+        verdictKind = hv.kind;
+      } else {
+        statusText = '本手结束';
+      }
     } else if (table.phase === 'waiting') {
       if (table.canStart) statusText = you.isHost ? '人数够了，可以开始' : '等待房主开始';
       else statusText = '等待更多玩家入座（至少 2 人）';
@@ -879,9 +1584,20 @@
     } else {
       statusText = '牌局进行中';
     }
-    if (mySeatData && mySeatData.state === 'folded') statusText = '你已弃牌，等待本手结束';
+    // 弃牌提示只在牌局还没打完时盖过状态文案；结算阶段要让位给输赢结论
+    if (mySeatData && mySeatData.state === 'folded' && table.phase !== 'handOver') {
+      statusText = '你已弃牌，等待本手结束';
+    }
+    // 没筹码是最要紧的事：不补上就一直坐在场外，这条盖过其他提示
+    if (busted && table.phase !== 'handOver') {
+      statusText = you.isHost
+        ? '你的筹码用完了，点「补充筹码」接着打'
+        : '你的筹码用完了，让房主给你补充';
+      verdictKind = '';
+      strong = true;
+    }
     D.heroStatusText.textContent = statusText;
-    D.heroStatusText.className = strong ? 'strong' : '';
+    D.heroStatusText.className = strong ? 'strong' : (verdictKind ? 'v-' + verdictKind : '');
     D.heroTimer.hidden = !myTurn;
     lastTimerSec = -1;   // 让 rAF 立刻把秒数补回状态文案
     D.heroCards.classList.toggle('folded', !!(mySeatData && mySeatData.state === 'folded'));
@@ -903,6 +1619,9 @@
 
     // 空闲按钮
     var seated = S.mySeat !== null;
+    // 输光了就随时能补：服务端只拦"正在这手牌里"的座位，破产的人不在其中
+    D.btnRebuy.hidden = !(seated && busted && you.isHost);
+    if (!D.btnRebuy.hidden) D.btnRebuy.setAttribute('data-seat', String(S.mySeat));
     D.btnStart.hidden = !(seated && you.isHost && table.canStart && !myTurn);
     D.btnSitOut.hidden = !seated;
     D.btnSitOut.textContent = you.sittingOut ? '回到牌桌' : '坐出一手';
@@ -1058,7 +1777,8 @@
     for (var i = 0; i < MAX_SEATS; i++) {
       var d = seats[i];
       if (!d) continue;
-      rows.push(i + ':' + d.name + ':' + d.chips + ':' + (d.connected ? 1 : 0) + ':' + (d.bot ? 1 : 0));
+      rows.push(i + ':' + d.name + ':' + d.chips + ':' + (d.connected ? 1 : 0) + ':' + (d.bot ? 1 : 0)
+        + ':' + (d.canRebuy ? 1 : 0));
     }
     var sig = rows.join('|') + '|' + (isHost ? 'h' : '-');
     if (D.seatAdmin.__sig === sig) return;
@@ -1071,12 +1791,15 @@
     for (var s = 0; s < MAX_SEATS; s++) {
       var data = seats[s];
       if (!data) continue;
-      var row = elt('div', 'sa-row');
+      // 同上：全下的人筹码也是 0，但那不是"没钱了"
+      var broke = (Number(data.chips) || 0) <= 0 && data.canRebuy;
+      var row = elt('div', 'sa-row' + (broke ? ' is-broke' : ''));
       row.appendChild(elt('span', 'sa-name',
         (s + 1) + '. ' + (data.name || '') +
         (data.bot ? '（人机）' : '') +
         (data.connected || data.bot ? '' : '（断线）')));
-      row.appendChild(elt('span', 'sa-chips', fmt(data.chips)));
+      // 没筹码的人一眼能挑出来，房主不用去数谁是 0
+      row.appendChild(elt('span', 'sa-chips', broke ? '没筹码' : fmt(data.chips)));
       if (isHost) {
         var add = elt('button', null, '补充');
         add.type = 'button';
@@ -1104,6 +1827,31 @@
     if (S.mySeat !== null && table.actingSeat === S.mySeat) sndTurn();
   }
 
+  /**
+   * 思考倒计时报时：轮到自己时一秒一声"嗒"，最后 3 秒变急。
+   *
+   * 起点取"剩 10 秒"和"总时长三分之一"里更小的那个 —— 房主要是把时限设成 8 秒，
+   * 从头响到尾就成噪音了。
+   *
+   * 报时用 (deadline, 秒数) 当键去重，而不是靠 lastTimerSec：
+   * renderHero 每收到一份快照都会把 lastTimerSec 重置成 -1，拿它判重会漏响。
+   *
+   * @param {number} sec 剩余整秒
+   * @param {number} totalMs 本次行动的总时长
+   * @param {number} deadline 本次行动的截止时刻，用来区分不同回合
+   */
+  var lastBeepKey = '';
+
+  function countdownBeep(sec, totalMs, deadline) {
+    var from = Math.max(3, Math.min(10, Math.floor((totalMs || 45000) / 3000)));
+    if (sec > from) return;
+    var key = deadline + ':' + sec;
+    if (key === lastBeepKey) return;
+    lastBeepKey = key;
+    if (sec <= 0) sndTimeUp();
+    else sndTick(sec <= 3);
+  }
+
   /** 赢家 "+N" 上浮 */
   function maybeFloatWins(table, result) {
     if (!result || !Array.isArray(result.winners) || !result.winners.length) return;
@@ -1122,6 +1870,9 @@
     }
     Object.keys(merged).forEach(function (seatStr) {
       var seat = Number(seatStr);
+      // 自己的那份不飘：结算大屏就在正中央，两个数字叠一起反而看不清，
+      // 而且飘的是毛收入、大屏报的是净收支，摆一起容易被当成矛盾。
+      if (seat === S.mySeat) return;
       var slot = ((seat - rot) % MAX_SEATS + MAX_SEATS) % MAX_SEATS;
       var p = POS[slot];
       if (!p) return;
@@ -1130,7 +1881,7 @@
       f.style.setProperty('--x', p.x + '%');
       f.style.setProperty('--y', (p.y - 6) + '%');
       D.floatLayer.appendChild(f);
-      setTimeout(function () { if (f.parentNode) f.parentNode.removeChild(f); }, 1800);
+      setTimeout(function () { if (f.parentNode) f.parentNode.removeChild(f); }, 2000);
     });
   }
 
@@ -1163,6 +1914,7 @@
     [D.btnFold, D.btnCheck, D.btnCall, D.btnRaise, D.btnAllin].forEach(function (b) {
       if (b) b.disabled = true;
     });
+    markActed(type);
   }
 
   function doFold() { if (currentLegal()) sendAction('fold'); }
@@ -1406,6 +2158,7 @@
             lastTimerSec = sec;
             D.heroStatusText.textContent = '轮到你行动 · ' + sec + ' 秒';
           }
+          countdownBeep(sec, total, dl);
         }
       }
 
@@ -1429,6 +2182,33 @@
   // ============================ 事件绑定 ============================
 
   function bindEvents() {
+    // 全局按下反馈：任何按钮按下都亮一下 + 一记轻响。
+    // 用 capture 阶段的 pointerdown，比 click 早、也不怕中途被 stopPropagation。
+    document.addEventListener('pointerdown', function (e) {
+      var el = (e.target && e.target.closest)
+        ? e.target.closest('button, .pod[role="button"]') : null;
+      if (!el || el.disabled) return;
+      flashPress(el);
+      ensureAudio(); // 顺带借这次手势解锁音频
+      sndClick(el.classList.contains('act-allin') || el.classList.contains('act-danger'));
+    }, true);
+
+    // 键盘激活按钮不会有 pointerdown，单独补一次
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      var el = e.target;
+      if (!el || el.tagName !== 'BUTTON' || el.disabled) return;
+      flashPress(el);
+      ensureAudio();
+      sndClick(false);
+    }, true);
+
+    document.addEventListener('animationend', function (e) {
+      if (e.animationName === 'pressFlash' || e.animationName === 'pressFlashFlat') {
+        if (e.target && e.target.classList) e.target.classList.remove('press-fx');
+      }
+    }, true);
+
     // 行动按钮
     D.btnFold.addEventListener('click', doFold);
     D.btnCheck.addEventListener('click', doCheck);
@@ -1462,6 +2242,7 @@
 
     // 空闲按钮
     D.btnStart.addEventListener('click', function () { send({ t: 'start' }); ensureAudio(); });
+    D.btnRebuy.addEventListener('click', onAddChips);
     D.btnSitOut.addEventListener('click', function () {
       var st = S.state;
       var cur = !!(st && st.you && st.you.sittingOut);
@@ -1498,9 +2279,23 @@
       S.muted = !S.muted;
       lsSet(LS_MUTED, S.muted ? '1' : '0');
       D.btnSound.setAttribute('aria-pressed', S.muted ? 'false' : 'true');
-      if (!S.muted) { ensureAudio(); sndCard(); }
+      // 开音效时放一段试听，让人知道现在是什么动静
+      if (!S.muted) { ensureAudio(); sndBoard(1); sndChips(3); }
     });
     D.btnSound.setAttribute('aria-pressed', S.muted ? 'false' : 'true');
+
+    D.btnMusic.addEventListener('click', function () {
+      S.musicOn = !S.musicOn;
+      lsSet(LS_MUSIC, S.musicOn ? '1' : '0');
+      D.btnMusic.setAttribute('aria-pressed', S.musicOn ? 'true' : 'false');
+      syncMusic();
+    });
+    D.btnMusic.setAttribute('aria-pressed', S.musicOn ? 'true' : 'false');
+
+    // 结算大屏：点一下立刻让开，不用等那 2.4 秒
+    if (D.resultOverlay) {
+      D.resultOverlay.addEventListener('click', dismissResultOverlay);
+    }
 
     D.btnSide.addEventListener('click', function () { openSide(!D.side.classList.contains('open')); });
     $('#btnSideClose').addEventListener('click', function () { openSide(false); });
@@ -1671,9 +2466,11 @@
       }
     });
 
-    // 首次交互解锁音频
+    // 首次交互解锁音频。浏览器的自动播放策略要求必须有用户手势，
+    // 背景音乐也只能等到这一刻才真正开得起来。
     var unlock = function () {
-      ensureAudio();
+      audio();
+      syncMusic();
       window.removeEventListener('pointerdown', unlock);
       window.removeEventListener('keydown', unlock);
     };

@@ -34,6 +34,9 @@
     <button id="btnSound" class="icon-btn" type="button" aria-label="提示音开关" aria-pressed="true">
       <span class="ico-snd" aria-hidden="true"></span><span class="lbl">音效</span>
     </button>
+    <button id="btnMusic" class="icon-btn" type="button" aria-label="背景音乐开关" aria-pressed="true">
+      <span class="ico-mus" aria-hidden="true"></span><span class="lbl">音乐</span>
+    </button>
     <button id="btnSide" class="icon-btn only-narrow" type="button" aria-label="打开日志与聊天面板">
       <span class="ico-menu" aria-hidden="true"></span><span class="lbl">面板</span>
       <i id="sideBadge" class="side-badge" hidden></i>
@@ -58,8 +61,23 @@
               <div id="potSide" class="pot-side"></div>
             </div>
             <div id="board" class="board" aria-label="公共牌"></div>
-            <div id="resultBanner" class="result-banner" hidden></div>
             <div id="nextHandTip" class="next-tip" hidden></div>
+          </div>
+
+          <!-- 结算大屏：一手结束后盖在牌桌上，谁赢谁输一眼看到 -->
+          <div id="resultOverlay" class="result-overlay" hidden role="status" aria-live="polite">
+            <div class="ro-rays" aria-hidden="true"></div>
+            <div class="ro-card">
+              <div class="ro-hand">
+                <div id="roHandEn" class="ro-hand-en" data-text=""></div>
+                <div id="roHandCn" class="ro-hand-cn"></div>
+              </div>
+              <div id="roCards" class="ro-cards" aria-hidden="true"></div>
+              <div id="roVerdict" class="ro-verdict"></div>
+              <div id="roAmount" class="ro-amount"></div>
+              <div id="roDetail" class="ro-detail"></div>
+              <div id="roOthers" class="ro-others"></div>
+            </div>
           </div>
 
           <!-- 座位层（8 个座位由 JS 生成） -->
@@ -120,6 +138,7 @@
           <!-- 非行动期的辅助按钮 -->
           <div id="idleBar" class="idle-bar">
             <button id="btnStart"  class="act act-start" type="button" hidden>开始这一手</button>
+            <button id="btnRebuy"  class="act act-rebuy" type="button" hidden>补充筹码</button>
             <button id="btnSitOut" class="act act-ghost" type="button" hidden>坐出一手</button>
             <button id="btnStand"  class="act act-ghost" type="button" hidden>离座</button>
             <button id="btnJoin"   class="act act-start" type="button" hidden>选个座位坐下</button>

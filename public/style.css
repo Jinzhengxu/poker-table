@@ -162,8 +162,20 @@ h3, h4 { margin: 0; font-weight: 600; }
 }
 .icon-btn:hover { color: var(--txt); background: rgba(255, 255, 255, .09); }
 .icon-btn[aria-pressed="false"] { color: var(--txt-faint); }
-.icon-btn[aria-pressed="false"] .ico-snd { opacity: .45; }
-.ico-snd, .ico-menu { width: 13px; height: 13px; display: inline-block; position: relative; }
+.icon-btn[aria-pressed="false"] .ico-snd,
+.icon-btn[aria-pressed="false"] .ico-mus { opacity: .45; }
+.ico-snd, .ico-menu, .ico-mus { width: 13px; height: 13px; display: inline-block; position: relative; }
+/* 八分音符：符头 + 符干 */
+.ico-mus::before {
+  content: ""; position: absolute; left: 0; bottom: 1px;
+  width: 6px; height: 4.5px; border-radius: 50%;
+  background: currentColor; transform: rotate(-18deg);
+}
+.ico-mus::after {
+  content: ""; position: absolute; left: 5px; top: 1px;
+  width: 1.6px; height: 9px; background: currentColor; border-radius: 1px;
+  box-shadow: 2px -1px 0 -.4px currentColor;
+}
 .ico-snd::before {
   content: ""; position: absolute; left: 0; top: 3px;
   width: 5px; height: 7px; background: currentColor;
@@ -337,24 +349,257 @@ h3, h4 { margin: 0; font-weight: 600; }
   background: rgba(0, 0, 0, .12);
 }
 
-.result-banner {
-  max-width: 100%;
-  text-align: center;
-  font-size: var(--fs-m);
-  color: #fff5da;
-  background: linear-gradient(180deg, rgba(70, 50, 12, .92), rgba(40, 28, 6, .92));
-  border: 1px solid rgba(233, 196, 106, .5);
-  border-radius: 999px;
-  padding: 3px 14px;
-  box-shadow: 0 4px 18px rgba(0, 0, 0, .45), 0 0 22px rgba(233, 196, 106, .18);
-  animation: bannerIn .28s ease-out;
-  line-height: 1.5;
+/* =========================== 结算大屏 ===========================
+   一手打完，"谁赢谁输"要在一米开外也读得出来，所以直接盖在牌桌上，
+   而不是塞一条细横幅。判定色：赢=金，输=红，平/旁观=中性。 */
+.result-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 24;
+  /* 光芒比牌桌宽，不裁的话会漫到牌桌外面的黑边上 */
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  /* 压暗牌桌，把视线全部让给结果 */
+  background: radial-gradient(ellipse at center,
+    rgba(0, 0, 0, .58) 0%, rgba(0, 0, 0, .74) 60%, rgba(0, 0, 0, .82) 100%);
+  animation: roFade .22s ease-out;
+  /* 大屏本身可点：点一下就提前收起 */
+  pointer-events: auto;
+  transition: opacity .45s ease, visibility .45s;
 }
-@keyframes bannerIn { from { opacity: 0; transform: translateY(6px) scale(.94); } }
+@keyframes roFade { from { opacity: 0; } }
+
+/* 露过脸就退场，把牌桌还回去（结论还留在底部状态栏） */
+.result-overlay.is-gone {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ro-card {
+  --ro-accent: var(--gold);
+  --ro-glow: rgba(233, 196, 106, .55);
+  max-width: 84%;
+  /* 至少要盖住身后的 5 张公共牌，否则牌角从两侧探出来，跟面板上的字混在一起 */
+  min-width: min(78%, 420px);
+  padding: calc(var(--tw) * .022) calc(var(--tw) * .05);
+  text-align: center;
+  border-radius: calc(var(--tw) * .022);
+  /* 必须不透明：底下就是公共牌，透一点点都会让牌面从字里透出来 */
+  background: linear-gradient(180deg, #141d1a, #070b0a);
+  border: 1px solid var(--ro-accent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .6), 0 18px 50px rgba(0, 0, 0, .7),
+              0 0 48px var(--ro-glow);
+}
+.result-overlay.is-in .ro-card {
+  animation: roPop .34s cubic-bezier(.18, .9, .28, 1.1);
+}
+@keyframes roPop {
+  from { opacity: 0; transform: scale(.82) translateY(10px); }
+}
+
+.result-overlay[data-kind="lose"] .ro-card {
+  --ro-accent: var(--red);
+  --ro-glow: rgba(211, 63, 74, .42);
+}
+.result-overlay[data-kind="even"] .ro-card,
+.result-overlay[data-kind="watch"] .ro-card {
+  --ro-accent: rgba(255, 255, 255, .28);
+  --ro-glow: rgba(255, 255, 255, .1);
+}
+
+/* ---- 主标题：英文牌型 ----
+   两层字叠在一起：底层是描边＋外发光，顶层是会扫过去的金属流光。
+   两层内容必须一致，所以上层用 ::after 取 data-text，由 JS 同步写入。 */
+.ro-hand { position: relative; }
+
+.ro-hand-en {
+  position: relative;
+  font-size: clamp(28px, calc(var(--tw) * .085), 78px);
+  font-weight: 900;
+  line-height: 1.04;
+  letter-spacing: .1em;
+  /* 不能 nowrap：THREE OF A KIND 这种长名字在手机上会顶穿面板。
+     允许折行，同时对长名字降一号字（.is-long 由 JS 打）。 */
+  text-wrap: balance;
+  color: transparent;
+  background: linear-gradient(180deg, #fff6dc 0%, var(--ro-accent) 46%, #8c6a1c 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  filter: drop-shadow(0 3px 0 rgba(0, 0, 0, .6))
+          drop-shadow(0 0 26px var(--ro-glow));
+}
+/* 入场动画挂在 .is-in 上：这些元素每手都复用，
+   靠"摘掉类→回流→再加上"才能让动画重新播一遍。 */
+.result-overlay.is-in .ro-hand-en {
+  animation: roHandIn .5s cubic-bezier(.16, 1.1, .3, 1) both;
+}
+.result-overlay[data-kind="lose"] .ro-hand-en {
+  background: linear-gradient(180deg, #ffe1e3 0%, var(--ro-accent) 46%, #6d1219 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+/* 流光：一道窄亮带横扫过字面 */
+.ro-hand-en.is-long {
+  font-size: clamp(19px, calc(var(--tw) * .056), 54px);
+  letter-spacing: .06em;
+}
+/* 流光副本必须和底层同宽，否则折行位置对不上、字会错位 */
+.ro-hand-en::after {
+  content: attr(data-text);
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  color: transparent;
+  background: linear-gradient(100deg,
+    transparent 38%, rgba(255, 255, 255, .95) 50%, transparent 62%);
+  background-size: 260% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+.result-overlay.is-in .ro-hand-en::after {
+  animation: roShine 1.5s ease-in-out .34s 2;
+}
+@keyframes roHandIn {
+  from { opacity: 0; transform: scale(1.5); letter-spacing: .34em; }
+}
+@keyframes roShine {
+  from { background-position: 150% 0; }
+  to   { background-position: -60% 0; }
+}
+
+.ro-hand-cn {
+  margin-top: calc(var(--tw) * .004);
+  font-size: clamp(12px, calc(var(--tw) * .024), 20px);
+  font-weight: 600;
+  letter-spacing: .3em;
+  text-indent: .3em;          /* 抵消尾字多出来的那一格字距，视觉才居中 */
+  color: rgba(255, 255, 255, .62);
+}
+
+.ro-verdict {
+  margin-top: calc(var(--tw) * .012);
+  font-size: clamp(20px, calc(var(--tw) * .046), 42px);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: .04em;
+  color: var(--ro-accent);
+  text-shadow: 0 2px 14px rgba(0, 0, 0, .85), 0 0 30px var(--ro-glow);
+}
+.result-overlay[data-kind="even"] .ro-verdict,
+.result-overlay[data-kind="watch"] .ro-verdict { color: var(--txt); }
+
+.ro-amount {
+  font-family: var(--font-num);
+  font-size: clamp(34px, calc(var(--tw) * .088), 84px);
+  font-weight: 800;
+  line-height: 1.05;
+  margin-top: calc(var(--tw) * .006);
+  color: var(--ro-accent);
+  text-shadow: 0 3px 18px rgba(0, 0, 0, .85), 0 0 34px var(--ro-glow);
+  font-variant-numeric: tabular-nums;
+}
+.result-overlay[data-kind="even"] .ro-amount { color: var(--txt-dim); }
+.result-overlay[data-kind="watch"] .ro-amount { color: var(--gold); }
+
+.ro-detail {
+  margin-top: calc(var(--tw) * .012);
+  font-size: clamp(13px, calc(var(--tw) * .026), 22px);
+  font-weight: 600;
+  color: #fff2cf;
+  letter-spacing: .03em;
+}
+.result-overlay[data-kind="lose"] .ro-detail { color: #ffd6d9; }
+
+.ro-cards {
+  display: flex;
+  justify-content: center;
+  gap: calc(var(--tw) * .006);
+  margin-top: calc(var(--tw) * .016);
+}
+/* 五张牌依次翻出来，--i 是 JS 写进去的序号 */
+.ro-cards .card {
+  --cw: clamp(24px, calc(var(--tw) * .052), 52px);
+  animation: roCardIn .34s cubic-bezier(.2, .9, .3, 1.15) both;
+  animation-delay: calc(.16s + var(--i, 0) * .075s);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .6), 0 0 0 1px rgba(0, 0, 0, .2),
+              0 0 14px var(--ro-glow);
+}
+@keyframes roCardIn {
+  from { opacity: 0; transform: rotateY(90deg) translateY(10px); }
+}
+
+/* ---- 光芒：从面板背后放射出去，只给大牌型开 ---- */
+.ro-rays {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 150%; aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: 0;
+  background: repeating-conic-gradient(from 0deg,
+    rgba(233, 196, 106, .16) 0deg 7deg, transparent 7deg 22deg);
+  mask-image: radial-gradient(closest-side, transparent 24%, #000 42%, transparent 78%);
+  -webkit-mask-image: radial-gradient(closest-side, transparent 24%, #000 42%, transparent 78%);
+}
+.result-overlay[data-hype="big"] .ro-rays,
+.result-overlay[data-hype="mega"] .ro-rays {
+  opacity: 1;
+  animation: roSpin 14s linear infinite, roRayPulse 1.7s ease-in-out infinite;
+}
+.result-overlay[data-hype="mega"] .ro-rays {
+  width: 190%;
+  background: repeating-conic-gradient(from 0deg,
+    rgba(255, 226, 150, .3) 0deg 5deg, transparent 5deg 16deg);
+  animation: roSpin 8s linear infinite, roRayPulse 1.1s ease-in-out infinite;
+}
+.result-overlay[data-kind="lose"] .ro-rays {
+  background: repeating-conic-gradient(from 0deg,
+    rgba(211, 63, 74, .16) 0deg 7deg, transparent 7deg 22deg);
+}
+@keyframes roSpin { to { transform: translate(-50%, -50%) rotate(360deg); } }
+@keyframes roRayPulse { 50% { opacity: .45; } }
+
+/* 大牌型：面板边框呼吸，整块砸得更重 */
+.result-overlay.is-in[data-hype="big"] .ro-card {
+  animation: roPop .34s cubic-bezier(.18, .9, .28, 1.1),
+             roBreathe 1.6s ease-in-out .34s infinite;
+}
+.result-overlay[data-hype="mega"] .ro-card { border-width: 2px; }
+.result-overlay.is-in[data-hype="mega"] .ro-card {
+  animation: roSlam .42s cubic-bezier(.1, 1.3, .3, 1),
+             roBreathe 1s ease-in-out .42s infinite;
+}
+@keyframes roBreathe {
+  50% {
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .6), 0 18px 50px rgba(0, 0, 0, .7),
+                0 0 96px var(--ro-glow);
+  }
+}
+@keyframes roSlam {
+  0%   { opacity: 0; transform: scale(2.1); }
+  55%  { opacity: 1; transform: scale(.94); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+.ro-others {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: calc(var(--tw) * .014);
+  font-size: clamp(10px, calc(var(--tw) * .021), 16px);
+  color: var(--txt-dim);
+}
+.ro-other { display: flex; justify-content: space-between; gap: 14px; }
+.ro-other.is-me { color: var(--gold); font-weight: 700; }
+.ro-other-amt { font-family: var(--font-num); }
 
 .next-tip {
-  font-size: var(--fs-s);
-  color: var(--txt-dim);
+  margin-top: calc(var(--tw) * .014);
+  font-size: clamp(10px, calc(var(--tw) * .02), 15px);
+  color: var(--txt-faint);
 }
 
 /* =========================== 座位 =========================== */
@@ -364,7 +609,8 @@ h3, h4 { margin: 0; font-weight: 600; }
   z-index: 8;
   pointer-events: none;
 }
-#floatLayer { z-index: 20; }
+/* 飘字要压在结算大屏之上，否则那 2 秒正好被大屏挡住 */
+#floatLayer { z-index: 26; }
 
 .seat {
   position: absolute;
@@ -621,15 +867,22 @@ h3, h4 { margin: 0; font-weight: 600; }
   position: absolute;
   left: var(--x); top: var(--y);
   transform: translate(-50%, -50%);
+  text-align: center;
   font-family: var(--font-num);
-  font-size: var(--fs-l);
+  font-size: clamp(16px, calc(var(--tw) * .042), 38px);
   font-weight: 800;
   color: var(--gold);
-  text-shadow: 0 2px 10px rgba(0, 0, 0, .8), 0 0 16px var(--gold-glow);
-  animation: floatUp 1.6s ease-out forwards;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, .9), 0 0 22px var(--gold-glow);
+  animation: floatUp 1.8s ease-out forwards;
   white-space: nowrap;
 }
-.float-win small { display: block; font-size: var(--fs-s); color: #fff2cf; font-weight: 600; }
+.float-win small {
+  display: block;
+  font-family: var(--font);
+  font-size: clamp(10px, calc(var(--tw) * .021), 17px);
+  color: #fff2cf;
+  font-weight: 700;
+}
 @keyframes floatUp {
   0% { opacity: 0; transform: translate(-50%, -20%) scale(.8); }
   18% { opacity: 1; transform: translate(-50%, -60%) scale(1.05); }
@@ -777,6 +1030,11 @@ h3, h4 { margin: 0; font-weight: 600; }
   min-height: 18px;
 }
 .hero-status .strong { color: var(--gold); font-weight: 600; }
+/* 结算阶段：大屏让开之后，输赢结论继续留在这一行，带上颜色 */
+.hero-status .v-win  { color: var(--gold); font-weight: 700; font-size: 14.5px; }
+.hero-status .v-lose { color: #ff8f98; font-weight: 700; font-size: 14.5px; }
+.hero-status .v-even,
+.hero-status .v-watch { color: var(--txt); font-weight: 600; }
 .hero-timer {
   flex: 1 1 auto;
   max-width: 220px;
@@ -863,6 +1121,16 @@ h3, h4 { margin: 0; font-weight: 600; }
 .act-raise { background: linear-gradient(180deg, #e0b455, #a97b1c); border-color: rgba(255, 235, 180, .45); color: #2a1c05; }
 .act-allin { background: linear-gradient(180deg, #c23a6b, #841f45); border-color: rgba(255, 180, 210, .3); }
 .act-start { background: linear-gradient(180deg, #2f8f63, #1b5c40); border-color: rgba(150, 255, 200, .3); }
+/* 补充筹码：破产时才出现，得比旁边的按钮更显眼 */
+.act-rebuy {
+  background: linear-gradient(180deg, #e0b455, #a97b1c);
+  border-color: rgba(255, 235, 180, .5);
+  color: #2a1c05;
+  animation: rebuyNudge 2s ease-in-out infinite;
+}
+@keyframes rebuyNudge {
+  50% { box-shadow: 0 2px 0 rgba(0, 0, 0, .35), 0 0 18px rgba(233, 196, 106, .65); }
+}
 .act-danger { background: linear-gradient(180deg, #a8323c, #6f1d25); }
 .act-ghost {
   background: rgba(255, 255, 255, .06);
@@ -870,6 +1138,37 @@ h3, h4 { margin: 0; font-weight: 600; }
   font-weight: 500;
 }
 .idle-bar .act { flex: 0 1 auto; min-height: 40px; font-size: 14px; }
+
+/* ---------- 按下反馈 ----------
+   行动按钮点完立刻会被 disabled（防重复提交），:active 当场就没了，
+   所以按下的高亮走一段自己跑完的动画（JS 加 .press-fx），
+   保证"我刚按的是哪一颗"一定看得见。 */
+@keyframes pressFlash {
+  0%   { filter: brightness(1.9) saturate(1.15); transform: scale(.962); }
+  40%  { filter: brightness(1.3) saturate(1.05); transform: scale(1.012); }
+  100% { filter: brightness(1);  transform: scale(1); }
+}
+@keyframes pressFlashFlat {
+  0%   { filter: brightness(1.9) saturate(1.15); }
+  100% { filter: brightness(1); }
+}
+.press-fx { animation: pressFlash .3s cubic-bezier(.2, .8, .3, 1); }
+
+/* 余晖：按钮被禁用的这一秒里，仍然标出刚才选的是哪个动作。
+   画在 ::before 上而不是按钮本身，免得和 .press-fx 抢 animation 属性。 */
+@keyframes actedGlow {
+  0%   { box-shadow: 0 0 0 2px rgba(233, 196, 106, .95), 0 0 18px rgba(233, 196, 106, .6); }
+  100% { box-shadow: 0 0 0 2px rgba(233, 196, 106, 0),   0 0 18px rgba(233, 196, 106, 0); }
+}
+.act.acted::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 13px;
+  pointer-events: none;
+  animation: actedGlow 1.4s ease-out forwards;
+}
+.act.acted:disabled { opacity: .7; }
 
 /* 加注面板 */
 .raise-panel {
@@ -1056,6 +1355,9 @@ h3, h4 { margin: 0; font-weight: 600; }
 }
 .sa-row .sa-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sa-row .sa-chips { font-family: var(--font-num); color: var(--gold); }
+/* 没筹码的人挑出来：这一行才是房主要处理的 */
+.sa-row.is-broke .sa-chips { font-family: var(--font); color: #ff8f98; font-weight: 700; }
+.sa-row.is-broke { background: rgba(211, 63, 74, .1); }
 .sa-row button {
   padding: 5px 8px; border-radius: 6px; font-size: 12px;
   background: rgba(255, 255, 255, .08); color: var(--txt-dim);
@@ -1210,4 +1512,12 @@ h3, h4 { margin: 0; font-weight: 600; }
     animation-iteration-count: 1 !important;
     transition-duration: .001ms !important;
   }
+
+  /* 按下反馈是功能性提示（行动按钮点完就禁用，没它就完全看不出按了什么），
+     所以保留，但去掉缩放位移，只留亮度变化。 */
+  .press-fx {
+    animation: pressFlashFlat .3s ease-out !important;
+    animation-duration: .3s !important;
+  }
+  .act.acted::before { animation-duration: 1.4s !important; }
 }

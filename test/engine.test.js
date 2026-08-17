@@ -326,7 +326,10 @@ test('全部弃牌只剩一人：不摊牌，未被跟注的下注退还', () =>
   assert.deepEqual(r.showdown, []);
   assert.deepEqual(r.uncalledReturned, { seat: 0, amount: 90 });
   assert.deepEqual(hand.pots, [{ amount: 20, eligibleSeats: [0] }]);
-  assert.deepEqual(r.winners, [{ seat: 0, amount: 20, potIndex: 0, handName: null, best: null }]);
+  assert.deepEqual(r.winners, [{
+    seat: 0, amount: 20, potIndex: 0,
+    handName: null, handNameEn: null, handRank: null, best: null
+  }]);
   assert.deepEqual(r.payouts, { 0: 110 }); // 20 赢取 + 90 退还
   assert.deepEqual(r.chipsAfter, { 0: 1010, 3: 990 });
   assert.equal(sumValues(r.chipsAfter), 2000);
