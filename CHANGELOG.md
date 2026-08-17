@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Bots.** The host can seat up to seven bots, each with a distinct persona.
+  They run on Kimi (Moonshot) or DeepSeek when a key is configured and fall back
+  to a built-in rule policy — Chen formula preflop, hand category and pot odds
+  postflop — on timeout, rate limit, unparseable output, or no key at all. A
+  provider that fails three times in a row is benched for 60 seconds. New
+  `addBot` client message and `bot` field on seat snapshots; contract is in
+  `SPEC.md` §8.4.
+- `.env.example` documenting every environment variable, and pass-through of the
+  bot settings in `docker-compose.yml`.
+
 - English `README.md`, with the original Chinese documentation moved to
   `README.zh-CN.md`.
 - Open-source project files: `LICENSE` (GPL-3.0), `CONTRIBUTING.md`,

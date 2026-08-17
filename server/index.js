@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { Room } from './room.js';
 import { MAX_SEATS } from './protocol.js';
+import { BotDriver } from './bot/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
@@ -46,7 +47,11 @@ const MIME = {
   '.webmanifest': 'application/manifest+json',
 };
 
-const room = new Room();
+// 人机驱动：没配任何 LLM key 也能构造成功，只是所有人机退化成规则策略。
+const botDriver = new BotDriver();
+console.log(`[bot] 人机后端：${botDriver.describe()}`);
+
+const room = new Room({ botDriver });
 
 // ==================== HTTP ====================
 
@@ -325,6 +330,13 @@ function handleMessage(client, msg, fail) {
     case 'kick': {
       if (!validSeat(msg.seat)) return fail('ILLEGAL_ACTION', '座位号不合法');
       return reply(client, room.kick(client, msg.seat));
+    }
+    case 'addBot': {
+      // seat 可省略，表示"随便找个空位"
+      if (msg.seat !== undefined && msg.seat !== null && !validSeat(msg.seat)) {
+        return fail('ILLEGAL_ACTION', '座位号不合法');
+      }
+      return reply(client, room.addBot(client, msg.seat ?? null));
     }
     case 'reset':
       return reply(client, room.reset(client));

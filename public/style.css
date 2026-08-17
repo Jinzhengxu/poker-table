@@ -516,6 +516,15 @@ h3, h4 { margin: 0; font-weight: 600; }
 .tag.btn-d { background: linear-gradient(180deg, #fff, #d8d2c4); color: #1b1b1b; }
 .tag.sb { background: linear-gradient(180deg, #6fa8dc, #2f6da8); color: #fff; font-size: calc(var(--pod-w) * .082); }
 .tag.bb { background: linear-gradient(180deg, #e8b04b, #b47c15); color: #2a1c05; font-size: calc(var(--pod-w) * .082); }
+/* 人机标记：故意做成胶囊形而不是圆形，跟 D/SB/BB 一眼区分开 */
+.tag.bot {
+  width: auto; border-radius: 999px;
+  padding: 0 calc(var(--pod-w) * .05);
+  background: linear-gradient(180deg, #4a5d70, #263544);
+  color: #cfe0ee;
+  font-size: calc(var(--pod-w) * .072);
+  letter-spacing: .04em;
+}
 
 /* 动作气泡 */
 .bubble {

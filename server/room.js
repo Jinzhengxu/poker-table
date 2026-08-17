@@ -8,6 +8,7 @@
 import { randomBytes } from 'node:crypto';
 import { PHASES, SEAT_STATE, DEFAULT_CONFIG, MAX_SEATS } from './protocol.js';
 import { Hand } from './engine.js';
+import { PERSONAS } from './bot/index.js';
 
 /** 日志与聊天保留条数（SPEC §8.3） */
 const MAX_LOG = 40;
@@ -80,10 +81,18 @@ export class Room {
   /**
    * @param {object} [opts]
    * @param {object} [opts.config] 覆盖 DEFAULT_CONFIG 的初始配置
+   * @param {import('./bot/index.js').BotDriver} [opts.botDriver] 人机驱动，不传则不能加人机
    */
   constructor(opts = {}) {
     /** @type {typeof DEFAULT_CONFIG} */
     this.config = { ...DEFAULT_CONFIG, ...(opts.config || {}) };
+
+    /** @type {import('./bot/index.js').BotDriver|null} */
+    this.botDriver = opts.botDriver || null;
+    /** 当前正在思考的人机决策键，防止同一个决策点重复触发 */
+    this.botPending = null;
+    /** 取消正在飞行中的人机请求（手牌结束 / 被踢 / 重置时用） */
+    this.botAbort = null;
 
     /** 座位 -> playerId，长度恒为 8 */
     this.seats = new Array(MAX_SEATS).fill(null);
@@ -283,6 +292,8 @@ export class Room {
   #vacate(p) {
     const seat = p.seat;
     if (seat === null) return;
+    // 离座的正好是那个正在思考的人机，就把飞行中的请求撤了
+    if (p.bot) this.#cancelBot();
     if (this.#handLive() && this.handSeatOwners.get(seat) === p.id) {
       const hp = this.hand.players?.get?.(seat);
       if (hp && !hp.folded) {
@@ -314,10 +325,12 @@ export class Room {
         if (p && p.isHost) return;
       }
     }
+    // 人机不能当房主——它不会改设置也不会加人机，房主落到它头上牌桌就锁死了。
+    // 全桌只剩人机时干脆没有房主，等下一个真人入座时由 sit() 再调用本方法接管。
     for (const id of this.seats) {
       if (id) {
         const p = this.players.get(id);
-        if (p) {
+        if (p && !p.bot) {
           p.isHost = true;
           this.#pushLog(`${p.name} 成为房主`);
           return;
@@ -446,10 +459,173 @@ export class Room {
     return { ok: true };
   }
 
+  // ==================== 人机 ====================
+
+  /** 人机玩家：不占 token（没人需要用它重连），connected 恒为 true */
+  #newBotPlayer(persona) {
+    let id;
+    do {
+      id = 'bot_' + randomBytes(3).toString('hex');
+    } while (this.players.has(id));
+    const p = {
+      id,
+      token: null,
+      seat: null,
+      name: persona.name,
+      avatar: makeAvatar(persona.name),
+      chips: 0,
+      connected: true,
+      sittingOut: false,
+      isHost: false,
+      dropTimer: null,
+      bot: true,
+      persona,
+    };
+    this.players.set(id, p);
+    return p;
+  }
+
+  /** 当前已经在座的人机用掉了哪些人格 */
+  #usedPersonas() {
+    const used = new Set();
+    for (const id of this.seats) {
+      const p = id ? this.players.get(id) : null;
+      if (p?.bot) used.add(p.persona.name);
+    }
+    return used;
+  }
+
+  /**
+   * 房主往指定座位加一个人机。seat 传 null 表示挑第一个空位。
+   * @returns {{ok:true, seat:number}|{ok:false, code:string, msg:string}}
+   */
+  addBot(client, seat = null) {
+    const { err } = this.#requireHost(client);
+    if (err) return err;
+    if (!this.botDriver) {
+      return { ok: false, code: 'ILLEGAL_ACTION', msg: '本服务没有启用人机' };
+    }
+
+    let s;
+    if (seat === null || seat === undefined) {
+      s = this.seats.findIndex((x) => x === null);
+      if (s === -1) return { ok: false, code: 'TABLE_FULL', msg: '牌桌已坐满' };
+    } else {
+      s = clampInt(seat, 0, MAX_SEATS - 1);
+      if (s === null) return { ok: false, code: 'ILLEGAL_ACTION', msg: '座位号不合法' };
+      if (this.seats[s] !== null) return { ok: false, code: 'SEAT_TAKEN', msg: '该座位已被占用' };
+    }
+
+    const used = this.#usedPersonas();
+    const persona = PERSONAS.find((x) => !used.has(x.name));
+    if (!persona) return { ok: false, code: 'TABLE_FULL', msg: '人机人格已经用完了' };
+
+    const p = this.#newBotPlayer(persona);
+    p.seat = s;
+    p.chips = this.config.startingStack;
+    this.seats[s] = p.id;
+    this.#pushLog(`房主在 ${s + 1} 号座位加入了人机「${p.name}」`);
+    this.#maybeAutoStart();
+    this.broadcast();
+    return { ok: true, seat: s };
+  }
+
+  /** 取消正在飞行中的人机请求（手牌结束、被踢、重置时） */
+  #cancelBot() {
+    if (this.botAbort) {
+      this.botAbort.abort();
+      this.botAbort = null;
+    }
+    this.botPending = null;
+  }
+
+  /**
+   * 轮到人机时触发一次决策。
+   *
+   * 幂等性靠 botPending：键里带上 events.length，这样同一个座位在同一手牌里
+   * 多次行动（过牌后又面对加注）会得到不同的键，而重复的 #pump 不会重复触发。
+   */
+  #maybeTriggerBot() {
+    if (!this.botDriver || !this.#handLive()) return;
+    const seat = this.hand.actingSeat;
+    if (seat === null || seat === undefined) return;
+    const id = this.seats[seat];
+    const p = id ? this.players.get(id) : null;
+    if (!p?.bot) return;
+    // 座位在本手牌开局后换过人的话，引擎里的数据不属于他
+    if (this.handSeatOwners.get(seat) !== p.id) return;
+
+    const key = `${this.hand.handNo}:${seat}:${this.hand.events?.length ?? 0}`;
+    if (this.botPending === key) return;
+
+    this.botPending = key;
+    const ac = new AbortController();
+    this.botAbort = ac;
+
+    const state = this.buildStateFor(p.id);
+    // 快照里没有 legal 说明这不是它的回合，防御性退出
+    if (!state?.you?.legal) {
+      this.botPending = null;
+      this.botAbort = null;
+      return;
+    }
+
+    this.botDriver
+      .decide(state, p.persona, ac.signal)
+      .then((out) => this.#applyBotAction(key, p, out))
+      .catch((e) => {
+        console.error('[room] 人机决策异常', e);
+        this.botPending = null;
+      });
+  }
+
+  /** 把人机的决策落到引擎上。到这一步局面可能已经变了，所以要重新校验。 */
+  #applyBotAction(key, p, out) {
+    if (this.botPending !== key) return; // 已经被取消或局面变了
+    this.botPending = null;
+    this.botAbort = null;
+
+    if (!this.#handLive()) return;
+    if (this.hand.actingSeat !== p.seat) return;
+    if (this.handSeatOwners.get(p.seat) !== p.id) return;
+
+    let res;
+    try {
+      res = this.hand.act(p.seat, out.action);
+    } catch (e) {
+      console.error('[room] 人机动作抛错', e);
+      res = null;
+    }
+
+    if (!res || res.ok !== true) {
+      // coerceAction 已经校验过一轮，走到这里说明局面在飞行途中变了。
+      // 交给超时逻辑处理（能过牌就过牌，否则弃牌），不要卡住牌桌。
+      console.error(`[room] 人机 ${p.name} 动作被拒：${res?.error || '未知'}，改用超时动作`);
+      try {
+        this.hand.timeoutAction(p.seat);
+      } catch (e) {
+        console.error('[room] 人机兜底动作也失败', e);
+        return;
+      }
+    }
+
+    if (out.say) this.#botSay(p, out.say);
+    this.#pump();
+  }
+
+  /** 人机的一句话进聊天区。注意：聊天内容不会回流进任何提示词。 */
+  #botSay(p, text) {
+    const clean = String(text).replace(/[\r\n]/g, ' ').trim().slice(0, 60);
+    if (!clean) return;
+    this.chat.push({ ts: Date.now(), seat: p.seat, name: p.name, text: clean });
+    if (this.chat.length > MAX_CHAT) this.chat.splice(0, this.chat.length - MAX_CHAT);
+  }
+
   /** 重置牌桌：清空牌局，所有人筹码回到 startingStack */
   reset(client) {
     const { err } = this.#requireHost(client);
     if (err) return err;
+    this.#cancelBot();
     this.#clearActionTimer();
     this.#clearNextHandTimer();
     this.hand = null;
@@ -666,6 +842,7 @@ export class Room {
   /** 结算：回写筹码、进入 handOver、安排下一手 */
   #finishHand() {
     this.handFinished = true;
+    this.#cancelBot();
     this.#clearActionTimer();
     let result = null;
     try {
@@ -747,6 +924,10 @@ export class Room {
       this.#onActionTimeout(handNo, seat);
     }, ms);
     this.actionTimer.unref?.();
+
+    // 轮到人机就让它开始思考。超时计时器照常跑着——人机卡住时
+    // 会被和真人一样的超时逻辑接管，不需要额外的保险。
+    this.#maybeTriggerBot();
   }
 
   #onActionTimeout(handNo, seat) {
@@ -878,6 +1059,7 @@ export class Room {
         state,
         connected: !!p.connected,
         isHost: !!p.isHost,
+        bot: !!p.bot,
         sittingOut: !!p.sittingOut,
         isButton: this.handNo > 0 && s === this.buttonSeat,
         isSB: !!hand && s === this.sbSeat,
@@ -982,6 +1164,7 @@ export class Room {
 
   /** 关闭房间：清掉所有计时器 */
   shutdown() {
+    this.#cancelBot();
     this.#clearActionTimer();
     this.#clearNextHandTimer();
     for (const p of this.players.values()) this.#clearDropTimer(p);

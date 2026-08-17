@@ -274,7 +274,8 @@ export class Hand {
 {"t":"config","patch":{"smallBlind":10,"bigBlind":20,"startingStack":2000,
                        "actionTimeoutMs":45000,"autoNextHand":true,"ante":0}}  // 仅房主，仅两手牌之间
 {"t":"addChips","seat":3,"amount":1000}      // 仅房主：给某座位补充筹码
-{"t":"kick","seat":3}                        // 仅房主
+{"t":"kick","seat":3}                        // 仅房主，人机也用它移除
+{"t":"addBot","seat":3}                      // 仅房主：加一个人机。seat 可省略 = 挑第一个空位
 {"t":"reset"}                                // 仅房主：清空牌桌，所有人筹码回到 startingStack
 {"t":"chat","text":"..."}                    // 最长 200 字符
 {"t":"ping"}
@@ -326,7 +327,7 @@ export class Hand {
     { "seat":1, "name":"小明",
       "avatar":{"bg":"#c2410c","fg":"#ffffff","glyph":"小","shape":2},
       "chips":960, "committedRound":40, "committedTotal":60,
-      "state":"in", "connected":true, "isHost":true, "sittingOut":false,
+      "state":"in", "connected":true, "isHost":true, "bot":false, "sittingOut":false,
       "isButton":false, "isSB":true, "isBB":false,
       "cards":["??","??"],
       "lastAction":{"type":"raise","amount":80,"label":"加注到 80"},
@@ -351,6 +352,53 @@ export class Hand {
 - `result` 在 `phase === 'handOver'` 时非 `null`，结构见 §6 的 `Hand.result`，
   外加每个 winner 的 `name` 字段方便前端直接展示。
 - `log` 保留最近 40 条，`chat` 保留最近 50 条。
+
+## 8.4 人机（`server/bot/`）
+
+人机是**没有 WebSocket 连接的普通玩家**：在 `room.players` 里有记录、占座位、有筹码，
+`connected` 恒为 `true`，`token` 为 `null`（没人需要用它重连）。
+
+模块划分：
+
+| 文件 | 职责 |
+|---|---|
+| `bot/provider.js` | Kimi / DeepSeek 的 HTTP 客户端。两家都是 OpenAI 兼容的 `/chat/completions`，只有一个实现 |
+| `bot/policy.js` | 规则策略。不联网，Chen formula + 牌型类别 + 底池赔率 |
+| `bot/decide.js` | 快照 → 提示词，模型输出 → 合法动作 |
+| `bot/index.js` | `BotDriver`：调用、失败退避、兜底、统计 |
+
+### 8.4.1 三条不可协商的约束
+
+1. **只能读 `buildStateFor(botPlayerId)` 的输出。**
+   绝对不能直接读 `room.hand` 或别人的 `holeCards`。那份快照里别人的底牌已经是 `"??"`，
+   这一条同时保证了人机不作弊、以及别人的底牌不会被发到外部 API。
+
+2. **聊天记录不进提示词。**
+   玩家能往聊天框打任意文本，进了提示词就是提示注入。昵称会进提示词，
+   但必须先过 `sanitizeName()`（去掉换行与花括号，截到 12 字）。
+
+3. **模型输出一律不可信。**
+   `coerceAction()` 是最后一道关：动作必须在 `legalActions()` 允许的集合里，
+   `bet`/`raise` 的金额必须夹进 `[minBet|minRaiseTo, maxRaiseTo]`。
+   任何无法修正的输出都退回规则策略。
+
+以上三条各有对应的测试（`test/bot.test.js` 的「安全」小节），改动时不要绕过。
+
+### 8.4.2 失败行为
+
+`BotDriver#decide()` **不抛异常**，且保证在超时时间内返回。任何失败（超时、限流、
+5xx、输出无法解析）都退回 `policy.js` 的规则策略，牌桌照常进行，只是人机变笨。
+同一供应商连续失败 3 次进入 60 秒冷却。一个 key 都没配时人机全程走规则策略。
+
+行动超时计时器对人机照常生效：人机卡住时会和真人一样被超时逻辑接管
+（能过牌就过牌，否则弃牌），不需要额外的保险机制。
+
+### 8.4.3 幂等触发
+
+`#maybeTriggerBot()` 在每次 `#resetActionTimer()` 时调用。用
+`${handNo}:${seat}:${events.length}` 作为决策键——同一座位在同一手牌里多次行动会得到
+不同的键，而重复的 `#pump()` 不会重复触发。决策落地前要重新校验局面
+（手牌还在、还轮到它、座位没换人）。
 
 ## 9. HTTP
 

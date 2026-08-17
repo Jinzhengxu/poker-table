@@ -1,9 +1,11 @@
 node_modules/
 npm-debug.log*
 
-# 部署脚本探测出来的 docker 网络名，跟机器走，不进版本库
+# 部署脚本探测出来的 docker 网络名和 LLM key，跟机器走，不进版本库
 .env
 .env.*
+# 但模板要进版本库
+!.env.example
 
 # Caddyfile 备份
 *.bak

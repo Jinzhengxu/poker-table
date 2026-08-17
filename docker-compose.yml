@@ -29,6 +29,15 @@ services:
       TZ: Asia/Shanghai
       NODE_ENV: production
 
+      # 人机用的 LLM key，从项目根目录的 .env 透传进来（compose 会自动读 .env）。
+      # 一个都不填也能跑，人机会退化成规则策略。见 .env.example。
+      KIMI_API_KEY: "${KIMI_API_KEY:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      POKER_BOT_PROVIDER: "${POKER_BOT_PROVIDER:-auto}"
+      POKER_BOT_MODEL: "${POKER_BOT_MODEL:-}"
+      POKER_BOT_BASE_URL: "${POKER_BOT_BASE_URL:-}"
+      POKER_BOT_TIMEOUT_MS: "${POKER_BOT_TIMEOUT_MS:-8000}"
+
     # 只在 docker 网络内部暴露，宿主上看不到这个端口。
     # 注意：这里【故意没有 ports:】，不要手贱加回来。
     expose:

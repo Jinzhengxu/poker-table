@@ -175,6 +175,7 @@
     D.cfgTimeout = $('#cfgTimeout');
     D.cfgAuto = $('#cfgAuto');
     D.btnReset = $('#btnReset');
+    D.btnAddBot = $('#btnAddBot');
     D.seatAdmin = $('#seatAdmin');
 
     D.sitDlg = $('#sitDlg');
@@ -664,12 +665,15 @@
         (data.connected ? '' : '，已断线'));
 
       // 按钮 / 盲注标记
-      var tagSig = (data.isButton ? 'D' : '') + (data.isSB ? 'S' : '') + (data.isBB ? 'B' : '');
+      var tagSig = (data.isButton ? 'D' : '') + (data.isSB ? 'S' : '') + (data.isBB ? 'B' : '') +
+        (data.bot ? 'R' : '');
       if (node.tags.__sig !== tagSig) {
         node.tags.textContent = '';
         if (data.isButton) node.tags.appendChild(elt('i', 'tag btn-d', 'D'));
         if (data.isSB) node.tags.appendChild(elt('i', 'tag sb', 'SB'));
         if (data.isBB) node.tags.appendChild(elt('i', 'tag bb', 'BB'));
+        // 人机要一眼看得出来，不能让人以为在跟真人打
+        if (data.bot) node.tags.appendChild(elt('i', 'tag bot', 'BOT'));
         node.tags.__sig = tagSig;
       }
 
@@ -977,6 +981,7 @@
     var isHost = !!you.isHost;
     D.cfgHostOnly.hidden = isHost;
     D.cfgForm.classList.toggle('locked', !isHost);
+    if (D.btnAddBot) D.btnAddBot.hidden = !isHost;
 
     // 表单值：正在输入时不覆盖
     var focus = document.activeElement;
@@ -995,7 +1000,7 @@
     for (var i = 0; i < MAX_SEATS; i++) {
       var d = seats[i];
       if (!d) continue;
-      rows.push(i + ':' + d.name + ':' + d.chips + ':' + (d.connected ? 1 : 0));
+      rows.push(i + ':' + d.name + ':' + d.chips + ':' + (d.connected ? 1 : 0) + ':' + (d.bot ? 1 : 0));
     }
     var sig = rows.join('|') + '|' + (isHost ? 'h' : '-');
     if (D.seatAdmin.__sig === sig) return;
@@ -1009,7 +1014,10 @@
       var data = seats[s];
       if (!data) continue;
       var row = elt('div', 'sa-row');
-      row.appendChild(elt('span', 'sa-name', (s + 1) + '. ' + (data.name || '') + (data.connected ? '' : '（断线）')));
+      row.appendChild(elt('span', 'sa-name',
+        (s + 1) + '. ' + (data.name || '') +
+        (data.bot ? '（人机）' : '') +
+        (data.connected || data.bot ? '' : '（断线）')));
       row.appendChild(elt('span', 'sa-chips', fmt(data.chips)));
       if (isHost) {
         var add = elt('button', null, '补充');
@@ -1488,6 +1496,15 @@
         send({ t: 'reset' });
       });
     });
+
+    if (D.btnAddBot) {
+      D.btnAddBot.addEventListener('click', function () {
+        var st = S.state;
+        if (!st || !st.you || !st.you.isHost) { toast('只有房主可以加人机'); return; }
+        // 不传 seat，让服务端挑第一个空位
+        send({ t: 'addBot' });
+      });
+    }
 
     // 对话框
     if (D.sitDlg) {
