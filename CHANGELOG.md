@@ -23,9 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Show cards.** When you take the pot without a showdown, a button offers to
   reveal your hole cards to the table. One-shot per hand, cleared on the next
   deal; new `showCards` message and `you.canShowCards` in the snapshot.
+- **Monte Carlo equity** in the decision prompt, sized by the number of opponents
+  still in the hand, with split pots pro-rated, a hard wall-clock cap, and the
+  modelling assumption stated alongside the number. Adds `bot/equity.js` and
+  `bot/fastscore.js` — a score-only 7-card path, 11–40× faster than the general
+  evaluator, using the identical formula and cross-checked bit-for-bit against it.
+- Randomly generated bot personas: five orthogonal traits, 243 combinations. The
+  traits are structured, so the rule fallback shifts its thresholds by them rather
+  than the personality being cosmetic.
 - `.env.example` documenting every environment variable, and pass-through of the
   bot settings in `docker-compose.yml`.
-
 - English `README.md`, with the original Chinese documentation moved to
   `README.zh-CN.md`.
 - Open-source project files: `LICENSE` (GPL-3.0), `CONTRIBUTING.md`,

@@ -115,10 +115,15 @@ function jitter(seed) {
  * @param {number}   ctx.chips     自己剩余筹码
  * @param {number}   ctx.seed      确定性抖动种子（手牌号 * 8 + 座位号）
  * @param {object}   [ctx.traits]  人格特质，用来偏移阈值（见 persona.js）
+ * @param {object}   [ctx.equity]  蒙特卡洛胜率估算（equity.js 的返回值）。
+ *                                 有的话**只用在跟注决策上**——"跟注是否划算"就是
+ *                                 拿胜率和底池赔率比，两者是同一把尺子。
+ *                                 加注决策仍走启发式强度：0.62 这个门槛是对着
+ *                                 handStrength 调出来的，换成胜率含义就不一样了。
  * @returns {{type:string, amount?:number}}
  */
 export function decideByRule(ctx) {
-  const { hole, board, legal, pot, chips, seed = 0, traits } = ctx;
+  const { hole, board, legal, pot, chips, seed = 0, traits, equity } = ctx;
   if (!legal) return { type: 'fold' };
 
   const bias = traitBias(traits);
@@ -149,7 +154,9 @@ export function decideByRule(ctx) {
   if (legal.canCall) {
     // 全下跟注要更谨慎一点；扛压能力也按人格偏移
     const need = (legal.isAllInCall ? potOdds + 0.15 : potOdds) + bias.callThreshold;
-    if (s >= need) return { type: 'call' };
+    // 有真实胜率就用它，没有才退回启发式强度
+    const have = equity && Number.isFinite(equity.pct) ? equity.pct / 100 : s;
+    if (have >= need) return { type: 'call' };
   }
 
   return legal.canFold ? { type: 'fold' } : { type: 'check' };

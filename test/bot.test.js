@@ -6,6 +6,10 @@ import assert from 'node:assert/strict';
 
 import { Hand } from '../server/engine.js';
 import { Room } from '../server/room.js';
+import { evaluate } from '../server/evaluator.js';
+import { freshDeck, shuffle } from '../server/deck.js';
+import { fastScore7 } from '../server/bot/fastscore.js';
+import { estimateEquity, countLiveOpponents } from '../server/bot/equity.js';
 import { chenScore, handStrength, decideByRule, clamp } from '../server/bot/policy.js';
 import { buildUser, buildSystem, coerceAction, sanitizeName, positionName } from '../server/bot/decide.js';
 import { parseJSONObject, ProviderError, isRetryable } from '../server/bot/provider.js';
@@ -243,6 +247,168 @@ test('提示词只列出当前合法的动作', () => {
   const facing = buildUser(fakeState(LEGAL_FACING_BET));
   assert.ok(facing.includes('- call'), '面对下注时应该列出 call');
   assert.ok(!facing.includes('- check'), '不能过牌时不该列出 check');
+});
+
+// ==================== 快速打分与 evaluator 的一致性 ====================
+
+test('fastScore7：5 万手随机 7 张牌，score 与 evaluator 逐位相等', () => {
+  for (let i = 0; i < 50000; i++) {
+    const h = shuffle(freshDeck()).slice(0, 7);
+    const fast = fastScore7(h);
+    const real = evaluate(h).score;
+    assert.equal(fast, real, `不一致：${h.join(' ')} fast=${fast} real=${real} (${evaluate(h).name})`);
+  }
+});
+
+test('fastScore7：5 张与 6 张也一致', () => {
+  for (const k of [5, 6]) {
+    for (let i = 0; i < 10000; i++) {
+      const h = shuffle(freshDeck()).slice(0, k);
+      assert.equal(fastScore7(h), evaluate(h).score, `${k} 张不一致：${h.join(' ')}`);
+    }
+  }
+});
+
+test('fastScore7：手工构造的边界牌型都对', () => {
+  const cases = [
+    ['皇家同花顺', ['Ah', 'Kh', 'Qh', 'Jh', 'Th', '2c', '3d']],
+    ['轮子同花顺', ['Ah', '2h', '3h', '4h', '5h', 'Kc', 'Qd']],
+    ['轮子顺子', ['Ah', '2c', '3d', '4s', '5h', 'Kc', 'Qd']],
+    ['四条带踢脚', ['7h', '7c', '7d', '7s', 'Ah', '2c', '3d']],
+    ['两个三条 -> 葫芦', ['Ah', 'Ac', 'Ad', 'Kh', 'Kc', 'Kd', '2s']],
+    ['三个对子 -> 两对', ['Ah', 'Ac', 'Kh', 'Kc', 'Qh', 'Qc', '2s']],
+    ['同花 6 张取最大 5 张', ['Ah', 'Kh', 'Qh', 'Jh', '9h', '2h', '3c']],
+    ['同花顺不被误判成同花', ['9h', '8h', '7h', '6h', '5h', 'Ah', 'Kh']],
+    ['顺子不被误判', ['9h', '8c', '7d', '6s', '5h', 'Ac', 'Kd']],
+    ['纯高牌', ['Ah', 'Kc', 'Qd', 'Js', '9h', '7c', '5d']],
+  ];
+  for (const [label, h] of cases) {
+    assert.equal(fastScore7(h), evaluate(h).score, `${label} 不一致：${h.join(' ')}`);
+  }
+});
+
+// ==================== 蒙特卡洛胜率 ====================
+
+test('estimateEquity：与公开的经典胜率对得上', () => {
+  const cases = [
+    ['AA vs 1', ['Ah', 'As'], [], 1, 85],
+    ['AA vs 3', ['Ah', 'As'], [], 3, 64],
+    ['72o vs 1', ['7h', '2c'], [], 1, 35],
+    ['AKs vs 1', ['Ah', 'Kh'], [], 1, 67],
+  ];
+  for (const [label, hole, board, opp, truth] of cases) {
+    const r = estimateEquity({ hole, board, opponents: opp, sims: 20000, budgetMs: 30000 });
+    assert.ok(r, `${label} 应该有结果`);
+    const diff = Math.abs(r.pct - truth);
+    assert.ok(diff <= 2.5, `${label}: 算出 ${r.pct}%，参考 ${truth}%，差 ${diff.toFixed(1)} 超过容差`);
+  }
+});
+
+test('estimateEquity：坚果牌 100%，打平的牌按份数折算', () => {
+  const nuts = estimateEquity({
+    hole: ['Ah', 'Kh'], board: ['Qh', 'Jh', 'Th', '2c', '3d'],
+    opponents: 1, sims: 2000, budgetMs: 30000,
+  });
+  assert.equal(nuts.pct, 100, '皇家同花顺应该是 100%');
+
+  // 底牌毫无贡献，最好五张就是公共牌本身 —— 只能打平或输，不可能赢。
+  // 打平时分一半底池，所以胜率应该在 10~25% 之间而不是 0。
+  const playingBoard = estimateEquity({
+    hole: ['2c', '3d'], board: ['Ah', 'Kh', 'Qs', 'Js', '9c'],
+    opponents: 1, sims: 20000, budgetMs: 30000,
+  });
+  assert.ok(
+    playingBoard.pct > 8 && playingBoard.pct < 25,
+    `打公共牌的胜率应该来自打平折算（实际 ${playingBoard.pct}%）`
+  );
+});
+
+test('estimateEquity：对手越多胜率越低', () => {
+  let prev = 101;
+  for (const opp of [1, 2, 4, 7]) {
+    const r = estimateEquity({ hole: ['Ah', 'As'], opponents: opp, sims: 8000, budgetMs: 30000 });
+    assert.ok(r.pct < prev, `${opp} 个对手时胜率 ${r.pct}% 应该低于 ${prev}%`);
+    prev = r.pct;
+  }
+});
+
+test('estimateEquity：墙钟预算是硬约束，超时就截断并诚实报告', () => {
+  const t0 = Date.now();
+  const r = estimateEquity({
+    hole: ['Ah', 'Kh'], board: ['7c', '5h', '8d'],
+    opponents: 7, sims: 5_000_000, budgetMs: 30,
+  });
+  const spent = Date.now() - t0;
+  assert.ok(spent < 300, `预算 30ms 却花了 ${spent}ms`);
+  assert.equal(r.truncated, true, '被截断时要标记 truncated');
+  assert.ok(r.sims < 5_000_000);
+  assert.ok(r.margin > 0, '截断后误差应该变大且被报告出来');
+});
+
+test('estimateEquity：输入不合法时返回 null 而不是抛异常', () => {
+  assert.equal(estimateEquity({ hole: ['Ah'], opponents: 1 }), null, '底牌不足');
+  assert.equal(estimateEquity({ hole: ['Ah', 'As'], opponents: 0 }), null, '没有对手');
+  assert.equal(estimateEquity({ hole: ['Ah', 'Ah'], opponents: 1 }), null, '底牌重复');
+  assert.equal(estimateEquity({ hole: ['Ah', 'As'], board: ['Ah'], opponents: 1 }), null, '公共牌与底牌重复');
+  assert.equal(estimateEquity({ hole: ['Zz', 'Xx'], opponents: 1 }), null, '牌码非法');
+  assert.equal(estimateEquity({}), null);
+  assert.equal(estimateEquity(null), null);
+});
+
+test('countLiveOpponents：只数还在牌里的（弃牌和坐出的不算）', () => {
+  const state = {
+    you: { seat: 0 },
+    seats: [
+      { seat: 0, state: 'in' },
+      { seat: 1, state: 'in' },
+      { seat: 2, state: 'folded' },
+      { seat: 3, state: 'allin' },
+      { seat: 4, state: 'sittingOut' },
+      null, null, null,
+    ],
+  };
+  assert.equal(countLiveOpponents(state), 2, 'in + allin，不含自己/弃牌/坐出');
+});
+
+test('提示词里带上胜率和建模假设的免责说明', () => {
+  const st = fakeState({ ...LEGAL_FACING_BET, callAmount: 100 }, { pot: 300 });
+  const eq = { pct: 60, margin: 2, sims: 2000, opponents: 1, truncated: false };
+  const prompt = buildUser(st, { equity: eq });
+  assert.ok(prompt.includes('你的胜率：约 60%'), '要写出胜率');
+  assert.ok(prompt.includes('±2'), '要写出误差');
+  assert.ok(prompt.includes('随机两张牌'), '必须说明建模假设');
+  assert.ok(prompt.includes('偏乐观'), '必须提示这个数偏乐观');
+  // 60% > 需要的 25%，差距 35 远大于误差 2，应该给出明确结论
+  assert.ok(prompt.includes('跟注划算'), `应该判定划算，实际：\n${prompt}`);
+});
+
+test('提示词：胜率差距落在误差范围内时，如实说这是临界决定', () => {
+  const st = fakeState({ ...LEGAL_FACING_BET, callAmount: 100 }, { pot: 300 });
+  // 需要 25%，估算 26% ± 5 —— 差距 1 小于误差
+  const eq = { pct: 26, margin: 5, sims: 200, opponents: 1, truncated: true };
+  const prompt = buildUser(st, { equity: eq });
+  assert.ok(prompt.includes('临界决定'), `应该标为临界，实际：\n${prompt}`);
+});
+
+test('规则策略：有真实胜率时用它做跟注决策', () => {
+  const legal = {
+    canFold: true, canCheck: false, canCall: true, callAmount: 100,
+    canBet: false, minBet: 10, canRaise: false, minRaiseTo: 0, maxRaiseTo: 500,
+    isAllInCall: false,
+  };
+  // 需要的胜率 = 100/(300+100) = 25%
+  const base = { hole: ['2c', '3d'], board: ['Ah', 'Kd', '7c'], legal, pot: 300, chips: 500, seed: 1 };
+
+  // 启发式会认为 23o 在这个面上很弱 -> 弃牌
+  assert.equal(decideByRule(base).type, 'fold', '没有胜率时按启发式弃牌');
+
+  // 塞一个 60% 的胜率进去，应该改成跟注
+  const withEquity = decideByRule({ ...base, equity: { pct: 60, margin: 2 } });
+  assert.equal(withEquity.type, 'call', '胜率 60% 远高于需要的 25%，应该跟注');
+
+  // 胜率低于赔率时仍然弃牌
+  const lowEquity = decideByRule({ ...base, equity: { pct: 10, margin: 2 } });
+  assert.equal(lowEquity.type, 'fold', '胜率 10% 低于需要的 25%，应该弃牌');
 });
 
 // ==================== 随机人格 ====================

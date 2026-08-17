@@ -10,6 +10,7 @@
 
 import { clientsFromEnv, isRetryable, LLMClient, PROVIDERS } from './provider.js';
 import { buildSystem, buildUser, coerceAction, fallbackAction } from './decide.js';
+import { estimateEquity, countLiveOpponents } from './equity.js';
 
 // 人格改成随机组合生成，见 persona.js。每个人机在加入时抽一次，
 // 之后整个生命周期不变（所以它的打法是一致的，不会一手紧一手松）。
@@ -33,6 +34,14 @@ export class BotDriver {
     this.minThinkMs = opts.minThinkMs ?? 900;
     this.maxThinkMs = opts.maxThinkMs ?? 9000;
     this.logger = opts.logger || console;
+
+    // 胜率估算：次数与墙钟预算。墙钟是硬保护——Node 单线程，
+    // 这段计算期间没人能被服务，所以宁可少算几次也不能超时。
+    const env = opts.env || process.env;
+    // 2000 次在本机约 20ms（换成 fastscore.js 之后快了 11~40 倍），误差约 ±2%。
+    // 慢机器上会被 equityMs 截断，届时 margin 会诚实变大，提示词里也会写出来。
+    this.equitySims = Math.max(0, Number(opts.equitySims ?? env.POKER_BOT_EQUITY_SIMS ?? 2000));
+    this.equityMs = Math.max(1, Number(opts.equityMs ?? env.POKER_BOT_EQUITY_MS ?? 50));
 
     /** 每个客户端的健康状态：连续失败次数与冷却截止时间 */
     this.health = new Map();
@@ -127,6 +136,37 @@ export class BotDriver {
     };
   }
 
+  /**
+   * 算这次决策的胜率。任何异常都吞掉返回 null——胜率是加分项，
+   * 拿不到就退回原来的行为，绝不能因为它让人机卡住。
+   */
+  #equityFor(state) {
+    if (!this.equitySims) return null;                 // 设成 0 = 关闭
+    const hole = state?.you?.cards;
+    if (!Array.isArray(hole) || hole.length !== 2) return null;
+    const opponents = countLiveOpponents(state);
+    if (opponents < 1) return null;
+
+    try {
+      const t0 = Date.now();
+      const r = estimateEquity({
+        hole,
+        board: state.table?.board || [],
+        opponents,
+        sims: this.equitySims,
+        budgetMs: this.equityMs,
+      });
+      const spent = Date.now() - t0;
+      if (spent > this.equityMs * 3) {
+        this.logger.error(`[bot] 胜率估算耗时 ${spent}ms，超出预算 ${this.equityMs}ms 较多`);
+      }
+      return r;
+    } catch (e) {
+      this.logger.error(`[bot] 胜率估算失败：${e.message}`);
+      return null;
+    }
+  }
+
   /** 挑一个当前没在冷却里的客户端；全在冷却就返回 null */
   #pick(seed) {
     if (!this.clients.length) return null;
@@ -168,6 +208,9 @@ export class BotDriver {
     const handNo = state?.table?.handNo ?? 0;
     const seed = handNo * 8 + seat;
 
+    // 先算胜率：LLM 和规则兜底都要用，同一次决策只算一次。
+    const equity = this.#equityFor(state);
+
     let out = null;
     const client = this.#pick(seed);
 
@@ -175,12 +218,12 @@ export class BotDriver {
       try {
         const raw = await client.completeJSON({
           system: buildSystem(persona),
-          user: buildUser(state),
+          user: buildUser(state, { equity }),
           maxTokens: 200,
           signal,
         });
         this.#onSuccess(client);
-        const coerced = coerceAction(raw, state, persona.traits);
+        const coerced = coerceAction(raw, state, persona.traits, equity);
         if (coerced.adjusted) {
           this.stats.adjusted++;
           this.logger.error(`[bot] ${persona.name} 输出被修正：${coerced.adjusted}`);
@@ -197,7 +240,7 @@ export class BotDriver {
     if (!out) {
       this.stats.rule++;
       out = {
-        action: fallbackAction(state, persona.traits),
+        action: fallbackAction(state, persona.traits, equity),
         say: null,
         source: 'rule',
         note: null,

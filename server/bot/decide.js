@@ -113,8 +113,9 @@ export function buildSystem(persona) {
  * @param {object} state  Room#buildStateFor(botPlayerId) 的返回值
  * @returns {string}
  */
-export function buildUser(state) {
+export function buildUser(state, opts = {}) {
   const { table, seats, you, config } = state;
+  const equity = opts.equity || null;
   const legal = you.legal;
   const mySeat = you.seat;
   const me = seats[mySeat];
@@ -137,6 +138,19 @@ export function buildUser(state) {
   lines.push(`你的底牌：${prettyCards(you.cards)}`);
   lines.push(`底池：${table.totalPot}`);
   lines.push(`你的筹码：${me ? me.chips : 0}，你本轮已投入：${me ? me.committedRound : 0}`);
+
+  // 真实胜率（蒙特卡洛）。模型自己算不出来，只能我们算给它。
+  // 必须把建模假设一起写出去，否则它会过度信任这个数。
+  if (equity) {
+    lines.push(
+      `你的胜率：约 ${equity.pct}%（±${equity.margin}，对 ${equity.opponents} 个对手，` +
+      `${equity.sims} 次模拟）`
+    );
+    lines.push(
+      '  注意：该胜率按对手持【随机两张牌】估算。真实对手是有范围的，' +
+      '跟到后面街的人通常不拿垃圾牌，所以这个数偏乐观——对手越紧、越是后面的街，高估越多。'
+    );
+  }
   lines.push('');
 
   lines.push('牌桌上的其他人：');
@@ -184,13 +198,20 @@ export function buildUser(state) {
   if (legal.canCheck) lines.push('- check（过牌，不用花钱）');
   if (legal.canCall) {
     // 底池赔率算好了给它。模型算数不可靠，而这个数直接决定该不该跟。
-    const need = legal.callAmount / (table.totalPot + legal.callAmount);
-    lines.push(
-      `- call（跟注，需要再投入 ${legal.callAmount}` +
+    const need = Math.round((legal.callAmount / (table.totalPot + legal.callAmount)) * 100);
+    let line = `- call（跟注，需要再投入 ${legal.callAmount}` +
       `${legal.isAllInCall ? '，这会让你全下' : ''}）` +
       ` —— 跟注后底池 ${table.totalPot + legal.callAmount}，` +
-      `你的胜率需要高于 ${Math.round(need * 100)}% 才划算`
-    );
+      `你的胜率需要高于 ${need}% 才划算`;
+    // 有胜率估算时，直接把结论摆出来，别让模型自己比大小
+    if (equity) {
+      const edge = equity.pct - need;
+      const verdict = edge > equity.margin ? '按上面的胜率，这个跟注划算'
+        : edge < -equity.margin ? '按上面的胜率，这个跟注不划算'
+        : '这是个临界决定，胜率误差范围盖过了差距，得靠你对对手的判断';
+      line += `（${verdict}）`;
+    }
+    lines.push(line);
   }
   if (legal.canBet) {
     lines.push(`- bet（首次下注，amount 取 ${legal.minBet} 到 ${legal.maxRaiseTo} 之间）`);
@@ -212,10 +233,11 @@ export function buildUser(state) {
  * @param {object} raw    模型解析出的 JSON 对象
  * @param {object} state  同一次决策用的快照
  * @param {object} [traits] 人格特质，退回规则策略时用
+ * @param {object} [equity] 胜率估算，退回规则策略时用
  * @returns {{action:{type:string,amount?:number}, say:string|null, adjusted:string|null}}
  *          adjusted 非空表示做了修正，用于日志
  */
-export function coerceAction(raw, state, traits) {
+export function coerceAction(raw, state, traits, equity) {
   const legal = state.you.legal;
   const seats = state.seats;
   const me = seats[state.you.seat];
@@ -228,7 +250,7 @@ export function coerceAction(raw, state, traits) {
   let type = typeof raw?.action === 'string' ? raw.action.trim().toLowerCase() : '';
   if (!ACTION_TYPES.has(type)) {
     return {
-      action: fallbackAction(state, traits),
+      action: fallbackAction(state, traits, equity),
       say,
       adjusted: `动作 "${type || '(空)'}" 不认识，改用规则策略`,
     };
@@ -253,9 +275,9 @@ export function coerceAction(raw, state, traits) {
       type = 'raise';
     } else if (type === 'check' && legal.canCall) {
       // 想过牌但面对下注，说明模型看错了局面——按规则策略重来
-      return { action: fallbackAction(state, traits), say, adjusted: 'check 不合法（面对下注），改用规则策略' };
+      return { action: fallbackAction(state, traits, equity), say, adjusted: 'check 不合法（面对下注），改用规则策略' };
     } else {
-      return { action: fallbackAction(state, traits), say, adjusted: `${type} 在当前局面不合法，改用规则策略` };
+      return { action: fallbackAction(state, traits, equity), say, adjusted: `${type} 在当前局面不合法，改用规则策略` };
     }
   }
 
@@ -285,7 +307,7 @@ export function coerceAction(raw, state, traits) {
  * @param {object} state
  * @param {object} [traits] 人格特质，让兜底行为也符合这个人机的风格
  */
-function fallbackAction(state, traits) {
+function fallbackAction(state, traits, equity) {
   const me = state.seats[state.you.seat];
   return decideByRule({
     hole: state.you.cards || [],
@@ -295,6 +317,7 @@ function fallbackAction(state, traits) {
     chips: me ? me.chips : 0,
     seed: (state.table.handNo || 0) * 8 + (state.you.seat || 0),
     traits,
+    equity,
   });
 }
 

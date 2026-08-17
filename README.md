@@ -113,6 +113,40 @@ the other players**, and never reaches the log. A restart clears it; tick
 > server: a bot needs its own hole cards to decide, so a browser-driven bot would
 > hand one player the bot's cards.
 
+### Equity
+
+Before every decision the server runs a Monte Carlo equity estimate and puts it in
+the prompt — the one piece of hard information an LLM cannot work out for itself:
+
+```
+你的胜率：约 5.8%（±1，对 4 个对手，2000 次模拟）
+- call (…) — you need more than 7% equity for this to be profitable (it isn't)
+```
+
+Three deliberate choices:
+
+- **Opponent count is the number still in the hand.** Equity against one player and
+  against four are very different numbers.
+- **The wall clock is a hard cap.** Node is single-threaded, so nobody gets served
+  while this runs. Defaults are 2000 trials with a 50 ms ceiling; on a slow box it
+  truncates, and the reported margin grows honestly instead of quietly handing over
+  a noisy number.
+- **The modelling assumption ships with the number.** Opponents are dealt random
+  cards, so the estimate is **optimistic** — real opponents have ranges, and players
+  who reach later streets aren't holding junk. Left unsaid, the model over-trusts it.
+
+`bot/fastscore.js` exists for this: `evaluator.js` enumerates 21 combinations and
+builds three objects per call, which is wasted work when Monte Carlo needs thousands
+per decision. The fast path computes the score structurally — 11–40× faster, using
+the **identical scoring formula**, with a test asserting bit-for-bit agreement across
+60,000 random hands.
+
+> **This is not a solver.** GTO means approximating a Nash equilibrium over the whole
+> game tree; postflop solutions run to terabytes and are conditional on the ranges
+> that reached the node — they neither fit nor compute in a 200 MB container. Preflop
+> ranges genuinely do tabulate, but that is a different thing and this project
+> doesn't ship them.
+
 Three rules the bot code is built around, each with a test that enforces it:
 
 - **A bot sees exactly what a human client sees.** It is fed the same redacted

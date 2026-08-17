@@ -37,6 +37,8 @@ services:
       POKER_BOT_MODEL: "${POKER_BOT_MODEL:-}"
       POKER_BOT_BASE_URL: "${POKER_BOT_BASE_URL:-}"
       POKER_BOT_TIMEOUT_MS: "${POKER_BOT_TIMEOUT_MS:-8000}"
+      POKER_BOT_EQUITY_SIMS: "${POKER_BOT_EQUITY_SIMS:-2000}"
+      POKER_BOT_EQUITY_MS: "${POKER_BOT_EQUITY_MS:-50}"
 
     # 只在 docker 网络内部暴露，宿主上看不到这个端口。
     # 注意：这里【故意没有 ports:】，不要手贱加回来。
