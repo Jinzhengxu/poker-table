@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // 牌型评估器与牌堆的测试（SPEC §3 / §4）
 
 import test from 'node:test';

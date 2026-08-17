@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // HTTP 静态服务 + WebSocket 入口（SPEC §9 与 §8）
 //
 // 只有一张桌子，进程内内存状态。

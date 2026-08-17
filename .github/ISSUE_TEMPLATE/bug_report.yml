@@ -1,0 +1,76 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Issues in English or Chinese are both fine.
+
+        **Security issues do not belong here** — see [SECURITY.md](https://github.com/Jinzhengxu/poker-table/blob/main/SECURITY.md)
+        for private reporting.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you see, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Two players sit down with 1000 each
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: hand
+    attributes:
+      label: The hand (for rules, payout, or side pot bugs)
+      description: >
+        For anything involving betting or chip amounts, this is the most useful
+        section — it usually converts directly into a regression test.
+      placeholder: |
+        Blinds: 5/10, ante 0
+        Seats:  0 button 1000, 3 has 250, 5 has 1000
+        Actions: seat 0 raises to 30, seat 3 all-in 250, seat 5 calls, ...
+        Board:  Ah Kd 7c / 2s / 9h
+        Expected: seat 3 wins the 755 main pot
+        Actual:   seat 3 was paid 505
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Commit SHA, or `git rev-parse --short HEAD`
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how
+    attributes:
+      label: How are you running it?
+      options:
+        - npm start
+        - Docker
+        - deploy/deploy.sh behind Caddy
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Browser and device
+      placeholder: Chrome 140 on Android, portrait
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server logs or browser console output
+      render: text

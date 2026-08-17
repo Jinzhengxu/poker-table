@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // 牌力评估器（SPEC §4）
 //
 // 输入 5..7 张牌，返回最优 5 张组成的牌型。

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // test/engine.test.js —— 单手牌状态机测试
 //
 // 所有确定性用例都注入固定牌堆。牌堆约定（见 engine.js 顶部注释）：

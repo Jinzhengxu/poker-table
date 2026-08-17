@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // 牌堆与洗牌（SPEC §3）
 //
 // 一张牌是 2 字符字符串：点数 + 花色。

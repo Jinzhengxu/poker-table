@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Jinzhengxu/poker-table/security/advisories/new
+    about: Report privately — please do not open a public issue for security bugs.
+  - name: Protocol and module contracts
+    url: https://github.com/Jinzhengxu/poker-table/blob/main/SPEC.md
+    about: Read SPEC.md before reporting anything about message formats or state shape.

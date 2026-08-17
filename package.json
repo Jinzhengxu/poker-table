@@ -3,14 +3,33 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "免登录的单桌在线德州扑克，供朋友之间开局使用",
+  "description": "Self-hosted, no-signup Texas Hold'em table for playing with friends",
+  "keywords": [
+    "poker",
+    "texas-holdem",
+    "websocket",
+    "self-hosted",
+    "multiplayer",
+    "no-build"
+  ],
+  "homepage": "https://github.com/Jinzhengxu/poker-table#readme",
+  "bugs": {
+    "url": "https://github.com/Jinzhengxu/poker-table/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jinzhengxu/poker-table.git"
+  },
+  "license": "GPL-3.0-or-later",
+  "author": "Jinzhengxu",
   "main": "server/index.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "start": "node server/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "check": "find server public test -name '*.js' -print0 | xargs -0 -n1 node --check"
   },
   "dependencies": {
     "ws": "^8.18.0"

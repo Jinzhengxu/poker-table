@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // server/engine.js —— 单手牌状态机（无限注德州扑克）
 //
 // 本模块只负责「一手牌」：盲注/前注、四条街下注轮、边池分层、摊牌比牌与分配。

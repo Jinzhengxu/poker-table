@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // 端到端集成测试：真启动 HTTP+WS 服务，用多个 WebSocket 客户端坐下打完整的牌局。
 // 覆盖：入座 / 开局 / 全流程下注 / 摊牌结算 / 断线重连 / 底牌不泄露 / 静态资源可访问。
 import test from 'node:test';

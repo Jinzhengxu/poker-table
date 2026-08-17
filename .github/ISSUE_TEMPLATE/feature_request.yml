@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest an improvement
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project is deliberately small — one table, no database, no accounts,
+        one runtime dependency. Suggestions that keep it that way are the easiest
+        to accept. Requests in English or Chinese are both fine.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation you ran into, not just the feature you want.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This does not require a database or any persistence
+        - label: This does not add a runtime dependency
+        - label: This does not require player accounts or login
+        - label: This still works on a phone in portrait
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
