@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0f0d">
+<meta name="color-scheme" content="dark">
+<title>德州扑克</title>
+<!-- 不引用任何外部资源：favicon 用内联空 data URI 防止 404 -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23124b36'/%3E%3Ctext x='16' y='23' font-size='20' text-anchor='middle' fill='%23e9c46a'%3E%E2%99%A0%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ 顶部状态条 ============ -->
+  <header id="topbar">
+    <div class="brand" aria-hidden="true"><span class="brand-pip">♠</span><span class="brand-txt">德州扑克</span></div>
+
+    <div id="connBadge" class="badge" data-conn="connecting" role="status" aria-live="polite">
+      <i class="dot"></i><span id="connText">连接中…</span>
+    </div>
+
+    <div id="handMeta" class="meta">
+      <span id="metaHand">—</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span id="metaBlinds">盲注 —</span>
+      <span id="metaHost" class="host-tag" hidden>房主</span>
+    </div>
+
+    <div class="grow"></div>
+
+    <button id="btnSound" class="icon-btn" type="button" aria-label="提示音开关" aria-pressed="true">
+      <span class="ico-snd" aria-hidden="true"></span><span class="lbl">音效</span>
+    </button>
+    <button id="btnSide" class="icon-btn only-narrow" type="button" aria-label="打开日志与聊天面板">
+      <span class="ico-menu" aria-hidden="true"></span><span class="lbl">面板</span>
+      <i id="sideBadge" class="side-badge" hidden></i>
+    </button>
+  </header>
+
+  <!-- ============ 主体 ============ -->
+  <div id="main">
+    <section id="tableCol">
+
+      <div id="tableWrap">
+        <div id="table">
+          <div class="rail" aria-hidden="true">
+            <div class="felt"><div class="grain"></div><div class="felt-logo">♠ ♥ ♦ ♣</div></div>
+          </div>
+
+          <!-- 中央：阶段 / 底池 / 公共牌 / 结算横幅 -->
+          <div id="center">
+            <div id="phaseTag" class="phase-tag">等待开局</div>
+            <div id="potRow" class="pot-row" hidden>
+              <div class="pot-main"><span class="pot-label">底池</span><span id="potMain" class="pot-amt">0</span></div>
+              <div id="potSide" class="pot-side"></div>
+            </div>
+            <div id="board" class="board" aria-label="公共牌"></div>
+            <div id="resultBanner" class="result-banner" hidden></div>
+            <div id="nextHandTip" class="next-tip" hidden></div>
+          </div>
+
+          <!-- 座位层（8 个座位由 JS 生成） -->
+          <div id="seatLayer"></div>
+
+          <!-- 下注筹码层 -->
+          <div id="betLayer"></div>
+
+          <!-- 飘字层（+N / 牌型名） -->
+          <div id="floatLayer" aria-hidden="true"></div>
+        </div>
+      </div>
+
+      <!-- ============ 自己的区域 ============ -->
+      <section id="hero" aria-label="我的手牌与操作">
+        <div id="heroCards" class="hero-cards"></div>
+
+        <div id="heroRight" class="hero-right">
+          <div id="heroStatus" class="hero-status">
+            <span id="heroStatusText">正在连接服务器…</span>
+            <div id="heroTimer" class="hero-timer" hidden><i id="heroTimerBar"></i></div>
+          </div>
+
+          <!-- 主行动条 -->
+          <div id="actionBar" class="action-bar" hidden>
+            <button id="btnFold"  class="act act-fold"  type="button" aria-label="弃牌">弃牌<em>F</em></button>
+            <button id="btnCheck" class="act act-check" type="button" aria-label="过牌">过牌<em>C</em></button>
+            <button id="btnCall"  class="act act-call"  type="button" aria-label="跟注">跟注<em>C</em></button>
+            <button id="btnRaise" class="act act-raise" type="button" aria-label="加注">加注<em>R</em></button>
+            <button id="btnAllin" class="act act-allin" type="button" aria-label="全下">全下</button>
+          </div>
+
+          <!-- 加注面板 -->
+          <div id="raisePanel" class="raise-panel" hidden>
+            <div class="raise-quick">
+              <button class="qk" type="button" data-frac="0.5">½ 池</button>
+              <button class="qk" type="button" data-frac="0.6667">⅔ 池</button>
+              <button class="qk" type="button" data-frac="1">底池</button>
+              <button class="qk" type="button" data-frac="min">最小</button>
+              <button class="qk qk-allin" type="button" data-frac="max">全下</button>
+            </div>
+            <div class="raise-slide">
+              <input id="raiseRange" type="range" min="0" max="100" step="1" value="0" aria-label="加注金额滑杆">
+              <input id="raiseNum" type="number" inputmode="numeric" step="1" aria-label="加注金额">
+            </div>
+            <div class="raise-confirm">
+              <button id="btnRaiseCancel" class="act act-ghost" type="button">取消</button>
+              <button id="btnRaiseOk" class="act act-raise" type="button">确认加注到 0</button>
+            </div>
+          </div>
+
+          <!-- 非行动期的辅助按钮 -->
+          <div id="idleBar" class="idle-bar">
+            <button id="btnStart"  class="act act-start" type="button" hidden>开始这一手</button>
+            <button id="btnSitOut" class="act act-ghost" type="button" hidden>坐出一手</button>
+            <button id="btnStand"  class="act act-ghost" type="button" hidden>离座</button>
+            <button id="btnJoin"   class="act act-start" type="button" hidden>选个座位坐下</button>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============ 侧栏 / 抽屉 ============ -->
+    <aside id="side" aria-label="牌局日志、聊天与设置">
+      <div class="side-head">
+        <div class="tabs" role="tablist">
+          <button class="tab is-on" type="button" role="tab" data-tab="log"  aria-selected="true">牌局</button>
+          <button class="tab"       type="button" role="tab" data-tab="chat" aria-selected="false">聊天</button>
+          <button class="tab"       type="button" role="tab" data-tab="cfg"  aria-selected="false">设置</button>
+        </div>
+        <button id="btnSideClose" class="icon-btn only-narrow" type="button" aria-label="关闭面板">关闭</button>
+      </div>
+
+      <div class="pane is-on" id="paneLog" role="tabpanel">
+        <ol id="logList" class="log-list"></ol>
+      </div>
+
+      <div class="pane" id="paneChat" role="tabpanel">
+        <ol id="chatList" class="chat-list"></ol>
+        <form id="chatForm" class="chat-form" autocomplete="off">
+          <input id="chatInput" type="text" maxlength="200" placeholder="说点什么…" aria-label="聊天输入框">
+          <button type="submit" class="act act-ghost" aria-label="发送聊天">发送</button>
+        </form>
+      </div>
+
+      <div class="pane" id="paneCfg" role="tabpanel">
+        <div id="cfgHostOnly" class="cfg-note" hidden>只有房主可以修改牌桌设置。</div>
+
+        <form id="cfgForm" class="cfg-form">
+          <h4>牌桌设置</h4>
+          <label>小盲<input id="cfgSB" type="number" min="1" step="1" inputmode="numeric"></label>
+          <label>大盲<input id="cfgBB" type="number" min="2" step="1" inputmode="numeric"></label>
+          <label>前注<input id="cfgAnte" type="number" min="0" step="1" inputmode="numeric"></label>
+          <label>起始筹码<input id="cfgStack" type="number" min="1" step="1" inputmode="numeric"></label>
+          <label>行动时限（秒）<input id="cfgTimeout" type="number" min="5" max="300" step="1" inputmode="numeric"></label>
+          <label class="chk"><input id="cfgAuto" type="checkbox"><span>自动开始下一手</span></label>
+          <div class="cfg-actions">
+            <button type="submit" class="act act-start">保存设置</button>
+            <button id="btnReset" type="button" class="act act-danger">重置牌桌</button>
+          </div>
+          <p class="cfg-hint">设置只能在两手牌之间修改。</p>
+        </form>
+
+        <h4>座位管理</h4>
+        <div id="seatAdmin" class="seat-admin"></div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="drawerMask" class="drawer-mask" hidden></div>
+</div>
+
+<!-- ============ 入座对话框 ============ -->
+<dialog id="sitDlg" class="dlg" aria-label="入座">
+  <form method="dialog">
+    <h3 id="sitTitle">坐到 1 号座位</h3>
+    <label class="dlg-field">
+      <span>昵称（1–12 个字符）</span>
+      <input id="sitName" type="text" maxlength="12" required autocomplete="nickname" placeholder="例如：小明">
+    </label>
+    <div id="sitErr" class="dlg-err" hidden></div>
+    <menu class="dlg-actions">
+      <button value="cancel" class="act act-ghost" type="submit" formnovalidate>取消</button>
+      <button value="ok" class="act act-start" type="submit">入座</button>
+    </menu>
+  </form>
+</dialog>
+
+<!-- ============ 确认对话框 ============ -->
+<dialog id="confirmDlg" class="dlg" aria-label="确认">
+  <form method="dialog">
+    <h3 id="confirmTitle">确认</h3>
+    <p id="confirmText" class="dlg-text"></p>
+    <menu class="dlg-actions">
+      <button value="cancel" class="act act-ghost" type="submit" formnovalidate>取消</button>
+      <button value="ok" class="act act-danger" type="submit">确定</button>
+    </menu>
+  </form>
+</dialog>
+
+<!-- ============ 补充筹码对话框 ============ -->
+<dialog id="chipsDlg" class="dlg" aria-label="补充筹码">
+  <form method="dialog">
+    <h3 id="chipsTitle">补充筹码</h3>
+    <label class="dlg-field">
+      <span>补充数量</span>
+      <input id="chipsAmt" type="number" min="1" step="1" inputmode="numeric" value="1000" required>
+    </label>
+    <menu class="dlg-actions">
+      <button value="cancel" class="act act-ghost" type="submit" formnovalidate>取消</button>
+      <button value="ok" class="act act-start" type="submit">补充</button>
+    </menu>
+  </form>
+</dialog>
+
+<!-- 断线兜底提示 -->
+<div id="fatalMask" class="fatal-mask" hidden>
+  <div class="fatal-box">
+    <h3 id="fatalTitle">连接已断开</h3>
+    <p id="fatalText"></p>
+    <button id="fatalRetry" class="act act-start" type="button">重新连接</button>
+  </div>
+</div>
+
+<div id="toasts" class="toasts" role="alert" aria-live="assertive"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

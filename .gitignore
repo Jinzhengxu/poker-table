@@ -1,0 +1,14 @@
+node_modules/
+npm-debug.log*
+
+# 部署脚本探测出来的 docker 网络名，跟机器走，不进版本库
+.env
+.env.*
+
+# Caddyfile 备份
+*.bak
+*.bak.*
+
+# 本地工具产生的状态目录
+.gstack/
+.DS_Store

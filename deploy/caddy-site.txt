@@ -1,0 +1,25 @@
+# >>> poker-table BEGIN
+# 德州扑克在线桌 —— 本段由 deploy/deploy.sh 按上下两行标记【整块】幂等替换，
+# 请不要在 BEGIN / END 之间放别的站点配置，否则重新部署时会被覆盖掉。
+poker.ccswitch.online {
+	# 压缩：zstd 优先，回退 gzip（静态 HTML/CSS/JS 体积能省一大半）
+	encode zstd gzip
+
+	# Caddy v2 的 reverse_proxy 默认就会原样透传 Connection / Upgrade 头，
+	# 所以 WebSocket（本项目的 /ws）不需要任何额外 matcher 或 header_up Upgrade 配置。
+	# 同样地，X-Forwarded-For / X-Forwarded-Proto / X-Forwarded-Host 也是默认就加的，
+	# 下面只补一个 Caddy 默认不加的 X-Real-IP。
+	reverse_proxy poker:8080 {
+		# 上游 Node 想看真实来源 IP 时用它。
+		# 注意：经过 Cloudflare 橙云时，这里是 Cloudflare 边缘节点的 IP，
+		# 真正的访客 IP 在 Cloudflare 加的 CF-Connecting-IP 头里（会原样透传给上游）。
+		header_up X-Real-IP {remote_host}
+	}
+
+	# 两条零风险的响应头；不加 HSTS，免得以后想换回 http 调试时被浏览器锁死。
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+}
+# <<< poker-table END

@@ -1,0 +1,33 @@
+# 构建上下文白名单之外的一切都别传给 docker daemon，
+# 上下文越小，1GB 小机上的构建越快、越省内存。
+
+# 依赖与构建产物（镜像内会重新 npm ci）
+node_modules
+npm-debug.log*
+yarn-error.log*
+.npm
+
+# 版本控制与编辑器
+.git
+.gitignore
+.gitattributes
+.vscode
+.idea
+*.swp
+.DS_Store
+
+# 本地环境与部署产物（.env 里是探测出来的 docker 网络名，绝不能进镜像）
+.env
+.env.*
+*.bak
+*.bak.*
+
+# 测试与文档：运行时用不到
+test
+*.md
+
+# 部署套件本身
+Dockerfile
+docker-compose.yml
+.dockerignore
+deploy
