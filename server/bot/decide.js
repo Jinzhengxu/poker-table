@@ -211,10 +211,11 @@ export function buildUser(state) {
  *
  * @param {object} raw    模型解析出的 JSON 对象
  * @param {object} state  同一次决策用的快照
+ * @param {object} [traits] 人格特质，退回规则策略时用
  * @returns {{action:{type:string,amount?:number}, say:string|null, adjusted:string|null}}
  *          adjusted 非空表示做了修正，用于日志
  */
-export function coerceAction(raw, state) {
+export function coerceAction(raw, state, traits) {
   const legal = state.you.legal;
   const seats = state.seats;
   const me = seats[state.you.seat];
@@ -227,7 +228,7 @@ export function coerceAction(raw, state) {
   let type = typeof raw?.action === 'string' ? raw.action.trim().toLowerCase() : '';
   if (!ACTION_TYPES.has(type)) {
     return {
-      action: fallbackAction(state),
+      action: fallbackAction(state, traits),
       say,
       adjusted: `动作 "${type || '(空)'}" 不认识，改用规则策略`,
     };
@@ -252,9 +253,9 @@ export function coerceAction(raw, state) {
       type = 'raise';
     } else if (type === 'check' && legal.canCall) {
       // 想过牌但面对下注，说明模型看错了局面——按规则策略重来
-      return { action: fallbackAction(state), say, adjusted: 'check 不合法（面对下注），改用规则策略' };
+      return { action: fallbackAction(state, traits), say, adjusted: 'check 不合法（面对下注），改用规则策略' };
     } else {
-      return { action: fallbackAction(state), say, adjusted: `${type} 在当前局面不合法，改用规则策略` };
+      return { action: fallbackAction(state, traits), say, adjusted: `${type} 在当前局面不合法，改用规则策略` };
     }
   }
 
@@ -279,8 +280,12 @@ export function coerceAction(raw, state) {
   return { action: { type, amount }, say, adjusted };
 }
 
-/** 退回规则策略，并保证返回的动作合法 */
-function fallbackAction(state) {
+/**
+ * 退回规则策略，并保证返回的动作合法。
+ * @param {object} state
+ * @param {object} [traits] 人格特质，让兜底行为也符合这个人机的风格
+ */
+function fallbackAction(state, traits) {
   const me = state.seats[state.you.seat];
   return decideByRule({
     hole: state.you.cards || [],
@@ -289,6 +294,7 @@ function fallbackAction(state) {
     pot: state.table.totalPot || 0,
     chips: me ? me.chips : 0,
     seed: (state.table.handNo || 0) * 8 + (state.you.seat || 0),
+    traits,
   });
 }
 

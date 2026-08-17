@@ -8,7 +8,7 @@
 import { randomBytes } from 'node:crypto';
 import { PHASES, SEAT_STATE, DEFAULT_CONFIG, MAX_SEATS } from './protocol.js';
 import { Hand } from './engine.js';
-import { PERSONAS } from './bot/index.js';
+import { randomPersona } from './bot/index.js';
 
 /** 日志与聊天保留条数（SPEC §8.3） */
 const MAX_LOG = 40;
@@ -569,12 +569,12 @@ export class Room {
     return p;
   }
 
-  /** 当前已经在座的人机用掉了哪些人格 */
-  #usedPersonas() {
+  /** 已经被占用的名字（人机与真人都算，免得人机跟真人同名认不出来） */
+  #usedNames() {
     const used = new Set();
     for (const id of this.seats) {
       const p = id ? this.players.get(id) : null;
-      if (p?.bot) used.add(p.persona.name);
+      if (p?.name) used.add(p.name);
     }
     return used;
   }
@@ -600,9 +600,9 @@ export class Room {
       if (this.seats[s] !== null) return { ok: false, code: 'SEAT_TAKEN', msg: '该座位已被占用' };
     }
 
-    const used = this.#usedPersonas();
-    const persona = PERSONAS.find((x) => !used.has(x.name));
-    if (!persona) return { ok: false, code: 'TABLE_FULL', msg: '人机人格已经用完了' };
+    // 每个人机随机抽一套人格（风格 + 结构化特质），加入时定下来就不再变
+    const persona = randomPersona(this.#usedNames());
+    if (!persona) return { ok: false, code: 'TABLE_FULL', msg: '没有可用的人机名字了' };
 
     const p = this.#newBotPlayer(persona);
     p.seat = s;

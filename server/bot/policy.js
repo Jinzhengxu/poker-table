@@ -11,6 +11,7 @@
 // 每次决策只调一次，对 1 核小机没有任何压力。
 
 import { evaluate, rankValue } from '../evaluator.js';
+import { traitBias } from './persona.js';
 
 /** 花色字符 -> 用于判断同花的键 */
 function suitOf(card) {
@@ -113,11 +114,14 @@ function jitter(seed) {
  * @param {number}   ctx.pot       当前总底池
  * @param {number}   ctx.chips     自己剩余筹码
  * @param {number}   ctx.seed      确定性抖动种子（手牌号 * 8 + 座位号）
+ * @param {object}   [ctx.traits]  人格特质，用来偏移阈值（见 persona.js）
  * @returns {{type:string, amount?:number}}
  */
 export function decideByRule(ctx) {
-  const { hole, board, legal, pot, chips, seed = 0 } = ctx;
+  const { hole, board, legal, pot, chips, seed = 0, traits } = ctx;
   if (!legal) return { type: 'fold' };
+
+  const bias = traitBias(traits);
 
   const strength = handStrength(hole, board);
   const noise = jitter(seed) * 0.1 - 0.05; // ±0.05
@@ -129,8 +133,11 @@ export function decideByRule(ctx) {
 
   // ---- 强牌：加注 ----
   // canBet 与 canRaise 由引擎保证互斥（本轮还没人下注 vs 已经有人下注）
-  if (s >= 0.62 && (legal.canRaise || legal.canBet)) {
-    const target = sizeBet({ legal, pot, fraction: s >= 0.85 ? 0.85 : 0.6 });
+  // 阈值按人格偏移：激进/爱诈唬的人门槛更低，被动/不诈唬的更高。
+  const raiseAt = 0.62 + bias.raiseThreshold;
+  if (s >= raiseAt && (legal.canRaise || legal.canBet)) {
+    const base = s >= 0.85 ? 0.85 : 0.6;
+    const target = sizeBet({ legal, pot, fraction: base * bias.betSize });
     if (target !== null) {
       return { type: legal.canRaise ? 'raise' : 'bet', amount: target };
     }
@@ -140,8 +147,8 @@ export function decideByRule(ctx) {
   if (legal.canCheck) return { type: 'check' };
 
   if (legal.canCall) {
-    // 全下跟注要更谨慎一点
-    const need = legal.isAllInCall ? potOdds + 0.15 : potOdds;
+    // 全下跟注要更谨慎一点；扛压能力也按人格偏移
+    const need = (legal.isAllInCall ? potOdds + 0.15 : potOdds) + bias.callThreshold;
     if (s >= need) return { type: 'call' };
   }
 

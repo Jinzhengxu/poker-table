@@ -11,16 +11,9 @@
 import { clientsFromEnv, isRetryable, LLMClient, PROVIDERS } from './provider.js';
 import { buildSystem, buildUser, coerceAction, fallbackAction } from './decide.js';
 
-/** 人机人格：影响昵称、头像和提示词里的风格描述 */
-export const PERSONAS = Object.freeze([
-  { name: '老陈', style: '稳健保守。只玩强牌，很少诈唬，被大幅加注时倾向弃牌。' },
-  { name: '小杨', style: '激进好斗。喜欢加注施压，位置好时经常偷底池，敢诈唬。' },
-  { name: '阿May', style: '算数派。严格按底池赔率和牌力决策，不情绪化，话不多。' },
-  { name: '老K', style: '松凶。入池范围很宽，喜欢用中等牌打大池，难以预测。' },
-  { name: '静静', style: '紧弱。翻牌前很紧，翻牌后遇到压力容易放弃，几乎不诈唬。' },
-  { name: '大刘', style: '经验老到。会根据对手最近的动作调整，善于捕捉弱点。' },
-  { name: '阿宽', style: '随和跟注站。喜欢看牌，很少加注，但也很少弃牌。' },
-]);
+// 人格改成随机组合生成，见 persona.js。每个人机在加入时抽一次，
+// 之后整个生命周期不变（所以它的打法是一致的，不会一手紧一手松）。
+export { randomPersona, PERSONA_NAMES, PERSONA_DIMENSIONS } from './persona.js';
 
 /** 一个供应商连续失败多少次后进入退避 */
 const FAIL_THRESHOLD = 3;
@@ -187,7 +180,7 @@ export class BotDriver {
           signal,
         });
         this.#onSuccess(client);
-        const coerced = coerceAction(raw, state);
+        const coerced = coerceAction(raw, state, persona.traits);
         if (coerced.adjusted) {
           this.stats.adjusted++;
           this.logger.error(`[bot] ${persona.name} 输出被修正：${coerced.adjusted}`);
@@ -204,7 +197,7 @@ export class BotDriver {
     if (!out) {
       this.stats.rule++;
       out = {
-        action: fallbackAction(state),
+        action: fallbackAction(state, persona.traits),
         say: null,
         source: 'rule',
         note: null,

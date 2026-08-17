@@ -71,9 +71,15 @@ enabled. All of them are configurable by the host between hands.
 
 ## Bots
 
-The host can seat up to seven bots from the Settings tab. Each gets a distinct
-persona — tight, aggressive, calling station, and so on — that shapes how it
-plays and what it says in chat.
+The host can seat up to seven bots from the Settings tab. Each one draws a
+**random persona** on arrival — five independent traits (starting-hand range,
+aggression, bluff frequency, resistance to pressure, chattiness) combining into
+243 possibilities, so no two tables play alike. A bot's persona is fixed for its
+lifetime, so its style stays consistent hand to hand.
+
+The persona is more than prompt text: the traits are structured, and the rule
+fallback shifts its thresholds by them — so when the API is down, the
+loose-aggressive bot doesn't suddenly play like a rock.
 
 Bots run on an LLM when one is configured, and fall back to a built-in rule
 policy (Chen formula preflop, hand category and pot odds postflop) otherwise.

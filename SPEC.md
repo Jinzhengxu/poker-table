@@ -386,7 +386,8 @@ export class Hand {
 | 文件 | 职责 |
 |---|---|
 | `bot/provider.js` | Kimi / DeepSeek 的 HTTP 客户端。两家都是 OpenAI 兼容的 `/chat/completions`，只有一个实现 |
-| `bot/policy.js` | 规则策略。不联网，Chen formula + 牌型类别 + 底池赔率 |
+| `bot/persona.js` | 人格：从 5 个正交维度随机组合生成（范围/攻击性/诈唬/抗压/话风）|
+| `bot/policy.js` | 规则策略。不联网，Chen formula + 牌型类别 + 底池赔率，阈值按人格特质偏移 |
 | `bot/decide.js` | 快照 → 提示词，模型输出 → 合法动作 |
 | `bot/index.js` | `BotDriver`：调用、失败退避、兜底、统计 |
 
@@ -406,6 +407,28 @@ export class Hand {
    任何无法修正的输出都退回规则策略。
 
 以上三条各有对应的测试（`test/bot.test.js` 的「安全」小节），改动时不要绕过。
+
+### 8.4.1a 人格
+
+每个人机在 `addBot` 时抽一次人格，之后整个生命周期不变（打法保持一致）。
+人格来自 5 个正交维度的加权随机组合（`persona.js`），共 3^5 = 243 种：
+
+| 维度 | 取值 | 权重 |
+|---|---|---|
+| `range` 入池范围 | tight / medium / loose | 3 / 4 / 3 |
+| `aggression` 攻击性 | passive / balanced / aggro | 3 / 4 / 3 |
+| `bluff` 诈唬频率 | never / sometimes / often | 3 / 4 / 3 |
+| `pressure` 抗压 | folds / calls / fights | 3 / 4 / 3 |
+| `talk` 话风 | quiet / normal / chatty | 4 / 3 / 3 |
+
+中间派权重更高，免得一桌全是极端风格。随机源是 `node:crypto` 的 `randomInt`（无偏）。
+
+**特质是结构化的，不只是提示词文本**：`style` 字符串进提示词给 LLM 演，
+`traits` 同时被 `policy.js` 的 `traitBias()` 读取，用来偏移规则兜底的
+加注门槛 / 跟注门槛 / 下注尺度。这样 API 挂掉退回规则时，"松凶"的人机
+不会突然打得像块石头。
+
+名字从 20 个的池子里随机取，避开桌上已有的名字（真人的也算）。
 
 ### 8.4.1b 提示词包含什么
 

@@ -9,7 +9,11 @@ import { Room } from '../server/room.js';
 import { chenScore, handStrength, decideByRule, clamp } from '../server/bot/policy.js';
 import { buildUser, buildSystem, coerceAction, sanitizeName, positionName } from '../server/bot/decide.js';
 import { parseJSONObject, ProviderError, isRetryable } from '../server/bot/provider.js';
-import { BotDriver, PERSONAS } from '../server/bot/index.js';
+import { BotDriver, randomPersona, PERSONA_NAMES, PERSONA_DIMENSIONS } from '../server/bot/index.js';
+import { traitBias } from '../server/bot/persona.js';
+
+/** 测试里用的固定人格，避免随机性影响断言 */
+const P0 = { name: '测试甲', traits: {}, style: '中规中矩。' };
 
 // ==================== 起手牌打分 ====================
 
@@ -226,7 +230,7 @@ test('安全：昵称里的换行和括号被清掉，不能破坏提示词结�
 });
 
 test('提示词里出现 json 字样（DeepSeek 的 JSON 模式要求）', () => {
-  const sys = buildSystem(PERSONAS[0]);
+  const sys = buildSystem(P0);
   const usr = buildUser(fakeState(LEGAL_FACING_BET));
   assert.ok(/json/i.test(sys + usr), '提示词必须包含 json 字样');
 });
@@ -239,6 +243,109 @@ test('提示词只列出当前合法的动作', () => {
   const facing = buildUser(fakeState(LEGAL_FACING_BET));
   assert.ok(facing.includes('- call'), '面对下注时应该列出 call');
   assert.ok(!facing.includes('- check'), '不能过牌时不该列出 check');
+});
+
+// ==================== 随机人格 ====================
+
+test('randomPersona：五个维度都有值，且都是合法取值', () => {
+  const dims = Object.keys(PERSONA_DIMENSIONS);
+  for (let i = 0; i < 60; i++) {
+    const p = randomPersona();
+    assert.ok(PERSONA_NAMES.includes(p.name), `名字 ${p.name} 不在名字池里`);
+    assert.equal(Object.keys(p.traits).length, dims.length, '每个维度都该有取值');
+    for (const d of dims) {
+      const allowed = PERSONA_DIMENSIONS[d].map((o) => o.v);
+      assert.ok(allowed.includes(p.traits[d]), `${d}=${p.traits[d]} 不是合法取值`);
+    }
+    assert.ok(p.style.length > 10, '风格描述不该是空的');
+  }
+});
+
+test('randomPersona：确实随机（60 次抽样不会全都一样）', () => {
+  const seen = new Set();
+  for (let i = 0; i < 60; i++) {
+    const p = randomPersona();
+    seen.add(JSON.stringify(p.traits));
+  }
+  assert.ok(seen.size > 10, `60 次只抽出 ${seen.size} 种组合，随机性可疑`);
+});
+
+test('randomPersona：避开已用名字，名字池耗尽时返回 null', () => {
+  const p = randomPersona(new Set(['老陈', '小杨']));
+  assert.ok(!['老陈', '小杨'].includes(p.name));
+  assert.equal(randomPersona(new Set(PERSONA_NAMES)), null, '名字用完该返回 null');
+});
+
+test('traitBias：松凶的门槛比紧弱的低', () => {
+  const loose = traitBias({ range: 'loose', aggression: 'aggro', bluff: 'often', pressure: 'fights' });
+  const tight = traitBias({ range: 'tight', aggression: 'passive', bluff: 'never', pressure: 'folds' });
+  assert.ok(loose.raiseThreshold < tight.raiseThreshold, '松凶应该更爱加注');
+  assert.ok(loose.callThreshold < tight.callThreshold, '松凶应该更爱跟注');
+  assert.ok(loose.betSize > tight.betSize, '激进的下注尺度应该更大');
+  assert.deepEqual(traitBias(undefined), { raiseThreshold: 0, callThreshold: 0, betSize: 1 });
+});
+
+test('特质真的影响规则策略：同一手牌，松凶和紧弱会做不同决定', () => {
+  // 一手中等强度的牌 + 面对下注的局面，两种极端人格应该分歧
+  const ctx = {
+    hole: ['Kd', 'Qc'],
+    board: ['Kh', '7s', '2c'],
+    legal: LEGAL_CAN_CHECK,
+    pot: 200,
+    chips: 500,
+    seed: 7,
+  };
+  const aggro = decideByRule({
+    ...ctx,
+    traits: { range: 'loose', aggression: 'aggro', bluff: 'often', pressure: 'fights' },
+  });
+  const nit = decideByRule({
+    ...ctx,
+    traits: { range: 'tight', aggression: 'passive', bluff: 'never', pressure: 'folds' },
+  });
+  assert.notDeepEqual(aggro, nit, `两种人格在这个局面应该做不同决定（都得到 ${JSON.stringify(aggro)}）`);
+  // 无论哪种人格，动作都必须合法
+  for (const a of [aggro, nit]) {
+    assert.ok(['fold', 'check', 'call', 'bet', 'raise', 'allin'].includes(a.type));
+  }
+});
+
+test('Room：一桌人机各有不同人格，名字不重复', () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: d, config: { autoNextHand: false } });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+
+  const names = new Set();
+  const styles = new Set();
+  for (let i = 0; i < 7; i++) {
+    assert.equal(room.addBot(host, null).ok, true, `第 ${i + 1} 个人机应该能加进来`);
+  }
+  for (const id of room.seats) {
+    const p = id ? room.players.get(id) : null;
+    if (!p?.bot) continue;
+    assert.ok(!names.has(p.name), `名字 ${p.name} 重复了`);
+    names.add(p.name);
+    styles.add(p.persona.style);
+    assert.ok(p.persona.traits && Object.keys(p.persona.traits).length > 0, '应该带结构化特质');
+  }
+  assert.equal(names.size, 7);
+  assert.ok(styles.size >= 4, `7 个人机只有 ${styles.size} 种风格，随机性可疑`);
+  room.shutdown();
+});
+
+test('Room：人机名字不会跟真人撞', () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: d, config: { autoNextHand: false } });
+  const host = stubClient(); room.attach(host); room.hello(host, null);
+  // 真人故意用人机名字池里的名字入座
+  room.sit(host, 0, PERSONA_NAMES[0]);
+  for (let i = 0; i < 5; i++) room.addBot(host, null);
+
+  for (const id of room.seats) {
+    const p = id ? room.players.get(id) : null;
+    if (p?.bot) assert.notEqual(p.name, PERSONA_NAMES[0], '人机不该跟真人同名');
+  }
+  room.shutdown();
 });
 
 // ==================== 位置 / 行动历史 / 底池赔率 ====================
@@ -391,7 +498,7 @@ test('BotDriver：模型正常返回时走 LLM 路径', async () => {
     minThinkMs: 0,
     logger: { error() {} },
   });
-  const out = await driver.decide(fakeState(LEGAL_FACING_BET), PERSONAS[0]);
+  const out = await driver.decide(fakeState(LEGAL_FACING_BET), P0);
   assert.equal(out.source, 'llm');
   assert.equal(out.action.type, 'raise');
   assert.equal(out.action.amount, 80);
@@ -404,7 +511,7 @@ test('BotDriver：模型报错时静默退回规则策略，不抛异常', async
     minThinkMs: 0,
     logger: { error() {} },
   });
-  const out = await driver.decide(fakeState(LEGAL_FACING_BET), PERSONAS[0]);
+  const out = await driver.decide(fakeState(LEGAL_FACING_BET), P0);
   assert.equal(out.source, 'rule');
   assert.ok(['fold', 'check', 'call', 'bet', 'raise', 'allin'].includes(out.action.type));
 });
@@ -412,7 +519,7 @@ test('BotDriver：模型报错时静默退回规则策略，不抛异常', async
 test('BotDriver：没有任何客户端时也能工作（纯规则人机）', async () => {
   const driver = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
   assert.equal(driver.hasLLM, false);
-  const out = await driver.decide(fakeState(LEGAL_FACING_BET), PERSONAS[0]);
+  const out = await driver.decide(fakeState(LEGAL_FACING_BET), P0);
   assert.equal(out.source, 'rule');
 });
 
@@ -422,10 +529,10 @@ test('BotDriver：连续失败后该供应商进入冷却，不再被选中', as
   const driver = new BotDriver({ clients: [client], minThinkMs: 0, logger: { error() {} } });
 
   for (let i = 0; i < 3; i++) {
-    await driver.decide(fakeState(LEGAL_FACING_BET), PERSONAS[0]);
+    await driver.decide(fakeState(LEGAL_FACING_BET), P0);
   }
   // 第 4 次即使客户端已经能正常返回，也应该因为冷却而走规则
-  const out = await driver.decide(fakeState(LEGAL_FACING_BET), PERSONAS[0]);
+  const out = await driver.decide(fakeState(LEGAL_FACING_BET), P0);
   assert.equal(out.source, 'rule', '冷却期内不应该再调用该供应商');
   assert.equal(driver.stats.errors, 3);
 });
@@ -437,7 +544,7 @@ test('BotDriver：minThinkMs 保证不会秒回', async () => {
     logger: { error() {} },
   });
   const t0 = Date.now();
-  await driver.decide(fakeState(LEGAL_FACING_BET), PERSONAS[0]);
+  await driver.decide(fakeState(LEGAL_FACING_BET), P0);
   assert.ok(Date.now() - t0 >= 110, '应该等满最短思考时间');
 });
 
