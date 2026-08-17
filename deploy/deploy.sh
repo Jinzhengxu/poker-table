@@ -20,13 +20,36 @@
 #   CADDY_CONTAINER   Caddy 容器名（默认 matrix-chat-caddy-1）
 #   CADDY_NETWORK     Caddy 所在 docker 网络名（默认自动探测）
 #   CADDYFILE_HOST    宿主上的 Caddyfile 路径（默认 /root/matrix-chat/Caddyfile）
-#   POKER_DOMAIN      站点域名（默认 poker.ccswitch.online）
+#   POKER_DOMAIN      站点域名（必填，见下）
 #   HEALTH_TIMEOUT    等待容器 healthy 的秒数（默认 60）
+#
+# POKER_DOMAIN 没有默认值——仓库里不写死任何人的域名。
+# 一次性写进项目根目录的 .env（该文件在 .gitignore 里，不会进版本库）：
+#     echo 'POKER_DOMAIN=poker.example.com' >> /root/poker/.env
+# 之后直接 bash deploy/deploy.sh 即可；也可以临时 POKER_DOMAIN=... bash deploy/deploy.sh。
 #
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+ENV_FILE="$PROJECT_DIR/.env"
+
+# .env 先于参数解析读入，好让 POKER_DOMAIN 等配置可以持久化在服务器本地。
+# 真实环境变量优先级更高：set -a 之后再 source，已存在的变量不会被覆盖……
+# 其实会被覆盖，所以这里先存后恢复。
+if [[ -f "$ENV_FILE" ]]; then
+  _env_domain_override="${POKER_DOMAIN:-}"
+  set -a
+  # .env 由部署时生成，静态分析期并不存在，所以告诉 shellcheck 不必追进去
+  # shellcheck source=/dev/null
+  . "$ENV_FILE"
+  set +a
+  [[ -n "$_env_domain_override" ]] && POKER_DOMAIN="$_env_domain_override"
+  unset _env_domain_override
+fi
+
 # ------------------------------------------------------------------ 参数与常量
-DOMAIN="${POKER_DOMAIN:-poker.ccswitch.online}"
+DOMAIN="${POKER_DOMAIN:-}"
 CADDY_CONTAINER="${CADDY_CONTAINER:-matrix-chat-caddy-1}"
 CADDYFILE_HOST="${CADDYFILE_HOST:-/root/matrix-chat/Caddyfile}"
 CADDY_NETWORK="${CADDY_NETWORK:-}"      # 留空 = 自动探测
@@ -43,10 +66,7 @@ SERVER_IP="${SERVER_IP:-<这台服务器的公网 IP>}"
 BEGIN_MARK='# >>> poker-table BEGIN'
 END_MARK='# <<< poker-table END'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 SITE_SNIPPET="$SCRIPT_DIR/caddy-site.txt"
-ENV_FILE="$PROJECT_DIR/.env"
 
 WORK_DIR="$(mktemp -d)"
 BACKUP_FILE=""          # 本次运行生成的 Caddyfile 备份路径
@@ -358,7 +378,9 @@ update_caddyfile() {
   strip_block_to "$new"
   if [[ "$mode" == "add" ]]; then
     printf '\n' >> "$new"
-    cat "$SITE_SNIPPET" >> "$new"
+    # 片段里的 __DOMAIN__ 占位符换成真实域名。域名只含字母数字点和连字符，
+    # 不会撞上 sed 的分隔符，所以直接用 | 作分隔即可。
+    sed "s|__DOMAIN__|${DOMAIN}|g" "$SITE_SNIPPET" >> "$new"
   fi
 
   # 容器内路径（validate / reload 都要用）
@@ -454,9 +476,9 @@ ${C_BOLD}${C_GREEN}==================== 部署完成 ====================${C_RES
 
 ${C_BOLD}接下来的手工步骤：Cloudflare DNS（顺序很重要，别跳步）${C_RESET}
 
-  1) 登录 Cloudflare → 域名 ccswitch.online → DNS → 添加记录
+  1) 登录 Cloudflare → 域名 ${DOMAIN#*.} → DNS → 添加记录
         类型: A
-        名称: poker
+        名称: ${DOMAIN%%.*}
         内容: ${SERVER_IP}
         代理状态: ${C_YELLOW}仅 DNS（灰云）${C_RESET}   ← 第一次必须是灰云！
         TTL:  自动
@@ -485,7 +507,17 @@ ${C_BOLD}Caddyfile 备份：${C_RESET}${CADDYFILE_HOST}.bak.*  （本次$( [[ "$
 EOF
 }
 
+require_domain() {
+  [[ -n "$DOMAIN" ]] && return 0
+  die "没有设置站点域名。写进 .env 一次即可，之后不用再管：
+
+    echo 'POKER_DOMAIN=poker.example.com' >> ${ENV_FILE}
+
+  或者本次临时指定：POKER_DOMAIN=poker.example.com bash deploy/deploy.sh"
+}
+
 do_deploy() {
+  require_domain
   printf '%s%s德州扑克在线桌 —— 开始部署（域名 %s）%s\n' "$C_BOLD" "$C_BLUE" "$DOMAIN" "$C_RESET"
   check_prereq
   detect_caddy

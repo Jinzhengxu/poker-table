@@ -213,7 +213,7 @@ index.js 的职责：
 - 机器上已经在跑：容器 \`matrix-chat-caddy-1\`（占用宿主 80/443）与
   \`matrix-chat-continuwuity-1\`，compose 文件在 \`/root/matrix-chat/\`，
   Caddyfile 在 \`/root/matrix-chat/Caddyfile\`。
-- 新站点域名 \`poker.ccswitch.online\`，DNS 在 Cloudflare（域名 ccswitch.online 已托管）。
+- 新站点域名 \`poker.example.com\`，DNS 在 Cloudflare（域名 example.com 已托管）。
 - **绝对不能影响已有的 matrix 服务**：不抢 80/443，改 Caddyfile 前必须备份，
   reload 失败必须自动回滚到备份并重新 reload。
 
@@ -233,7 +233,7 @@ docker-compose.yml 要求：
 - 环境变量 \`PORT=8080\`、\`TZ=Asia/Shanghai\`。
 
 deploy/caddy-site.txt：追加到现有 Caddyfile 的站点块，内容大致是
-\`poker.ccswitch.online { encode zstd gzip; reverse_proxy poker:8080 }\`，
+\`poker.example.com { encode zstd gzip; reverse_proxy poker:8080 }\`，
 注意 Caddy v2 的 reverse_proxy 默认已正确透传 WebSocket 升级，不需要额外 matcher，
 但要显式设置合理的 header（X-Real-IP 之类）并加注释说明。
 块的首尾要加固定标记注释（例如 \`# >>> poker-table BEGIN\` / \`# <<< poker-table END\`）
@@ -255,8 +255,8 @@ deploy/deploy.sh 要求（这是重点，用户会在服务器上直接执行）
      校验（注意 Caddyfile 在容器内的路径可能不同，先用 docker inspect 读挂载点，
      取不到就退回 /etc/caddy/Caddyfile）；然后 \`caddy reload\`。
      校验或 reload 失败 → 恢复备份 + 重新 reload + 报错退出。
-  6. 最终自检：\`curl -fsS -H 'Host: poker.ccswitch.online' http://127.0.0.1/healthz\` 与
-     \`curl -fsS https://poker.ccswitch.online/healthz\`（后者失败只警告不失败，
+  6. 最终自检：\`curl -fsS -H 'Host: poker.example.com' http://127.0.0.1/healthz\` 与
+     \`curl -fsS https://poker.example.com/healthz\`（后者失败只警告不失败，
      因为可能 DNS 还没配好/还在 Cloudflare 灰云状态）。
   7. 打印后续手工步骤（Cloudflare DNS 配置说明）。
 - 提供 \`--rollback\` 参数：停掉 poker 容器并从 Caddyfile 移除站点块后 reload。

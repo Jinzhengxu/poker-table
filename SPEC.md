@@ -379,7 +379,7 @@ export class Hand {
 
 ## 11. 部署
 
-目标：一台 1GB 内存的 Debian 12 VPS，域名 `poker.ccswitch.online`。
+目标：一台 1GB 内存的 Debian 12 VPS，域名 `poker.example.com`。
 机器上已经跑着 `matrix-chat-caddy-1`（占用 80/443）与 `matrix-chat-continuwuity-1`，
 文件在 `/root/matrix-chat/`。**新服务必须复用现有 Caddy**，不能抢占 80/443。
 
@@ -391,6 +391,6 @@ export class Hand {
   反代到 `poker:8080`，需正确透传 WebSocket。
 - `deploy/deploy.sh`：幂等的一键部署脚本，在服务器上以 root 执行：
   探测 Caddy 容器与其网络 → 构建并启动 poker 容器 → 备份 Caddyfile → 幂等追加站点块 →
-  `caddy reload` → 自检 `curl -fsS localhost` 与 `https://poker.ccswitch.online/healthz`。
+  `caddy reload` → 自检 `curl -fsS localhost` 与 `https://poker.example.com/healthz`。
   失败要有清晰的中文报错，且不能把已有的 matrix 服务搞挂（改 Caddyfile 前先 `cp` 备份，
   reload 失败自动回滚）。

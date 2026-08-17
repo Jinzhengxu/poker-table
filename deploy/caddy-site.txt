@@ -1,7 +1,8 @@
 # >>> poker-table BEGIN
 # 德州扑克在线桌 —— 本段由 deploy/deploy.sh 按上下两行标记【整块】幂等替换，
 # 请不要在 BEGIN / END 之间放别的站点配置，否则重新部署时会被覆盖掉。
-poker.ccswitch.online {
+# __DOMAIN__ 是占位符，写入 Caddyfile 时会被替换成 $POKER_DOMAIN 的值。
+__DOMAIN__ {
 	# 压缩：zstd 优先，回退 gzip（静态 HTML/CSS/JS 体积能省一大半）
 	encode zstd gzip
 
