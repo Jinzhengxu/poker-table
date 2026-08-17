@@ -10,7 +10,7 @@
 
 import { clientsFromEnv, isRetryable, LLMClient, PROVIDERS } from './provider.js';
 import { buildSystem, buildUser, coerceAction, fallbackAction } from './decide.js';
-import { estimateEquity, countLiveOpponents } from './equity.js';
+import { estimateEquityAsync, countLiveOpponents } from './equity.js';
 
 // 人格改成随机组合生成，见 persona.js。每个人机在加入时抽一次，
 // 之后整个生命周期不变（所以它的打法是一致的，不会一手紧一手松）。
@@ -35,13 +35,16 @@ export class BotDriver {
     this.maxThinkMs = opts.maxThinkMs ?? 9000;
     this.logger = opts.logger || console;
 
-    // 胜率估算：次数与墙钟预算。墙钟是硬保护——Node 单线程，
-    // 这段计算期间没人能被服务，所以宁可少算几次也不能超时。
+    // 胜率估算。分片计算，所以这里有两个不同性质的预算：
+    //   equityChunkMs 单片占用事件循环的时间 —— 这个必须小，因为这段时间里
+    //                 全桌都被冻结（Node 单线程）。8ms 感知不到。
+    //   equityMs      总墙钟上限 —— 这个可以大方给。行动时限 45 秒，人机本来
+    //                 还要等 LLM 一两秒，几百毫秒完全不影响体验。
+    // 于是精度不必和流畅度做取舍：慢机器只是算得久一点，而不是被迫降精度。
     const env = opts.env || process.env;
-    // 2000 次在本机约 20ms（换成 fastscore.js 之后快了 11~40 倍），误差约 ±2%。
-    // 慢机器上会被 equityMs 截断，届时 margin 会诚实变大，提示词里也会写出来。
-    this.equitySims = Math.max(0, Number(opts.equitySims ?? env.POKER_BOT_EQUITY_SIMS ?? 2000));
-    this.equityMs = Math.max(1, Number(opts.equityMs ?? env.POKER_BOT_EQUITY_MS ?? 50));
+    this.equitySims = Math.max(0, Number(opts.equitySims ?? env.POKER_BOT_EQUITY_SIMS ?? 20000));
+    this.equityMs = Math.max(1, Number(opts.equityMs ?? env.POKER_BOT_EQUITY_MS ?? 1500));
+    this.equityChunkMs = Math.max(1, Number(opts.equityChunkMs ?? env.POKER_BOT_EQUITY_CHUNK_MS ?? 8));
 
     /** 每个客户端的健康状态：连续失败次数与冷却截止时间 */
     this.health = new Map();
@@ -140,7 +143,7 @@ export class BotDriver {
    * 算这次决策的胜率。任何异常都吞掉返回 null——胜率是加分项，
    * 拿不到就退回原来的行为，绝不能因为它让人机卡住。
    */
-  #equityFor(state) {
+  async #equityFor(state, signal) {
     if (!this.equitySims) return null;                 // 设成 0 = 关闭
     const hole = state?.you?.cards;
     if (!Array.isArray(hole) || hole.length !== 2) return null;
@@ -148,19 +151,15 @@ export class BotDriver {
     if (opponents < 1) return null;
 
     try {
-      const t0 = Date.now();
-      const r = estimateEquity({
+      return await estimateEquityAsync({
         hole,
         board: state.table?.board || [],
         opponents,
         sims: this.equitySims,
         budgetMs: this.equityMs,
+        chunkMs: this.equityChunkMs,
+        signal,
       });
-      const spent = Date.now() - t0;
-      if (spent > this.equityMs * 3) {
-        this.logger.error(`[bot] 胜率估算耗时 ${spent}ms，超出预算 ${this.equityMs}ms 较多`);
-      }
-      return r;
     } catch (e) {
       this.logger.error(`[bot] 胜率估算失败：${e.message}`);
       return null;
@@ -209,7 +208,8 @@ export class BotDriver {
     const seed = handNo * 8 + seat;
 
     // 先算胜率：LLM 和规则兜底都要用，同一次决策只算一次。
-    const equity = this.#equityFor(state);
+    // 分片计算，中途会让出事件循环，所以别人的动作照常被处理。
+    const equity = await this.#equityFor(state, signal);
 
     let out = null;
     const client = this.#pick(seed);

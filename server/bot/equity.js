@@ -46,6 +46,53 @@ const FULL_DECK = Object.freeze(fullDeck());
  *   null    输入不合法（没底牌、对手数 < 1 等）
  */
 export function estimateEquity(args) {
+  const run = makeRun(args);
+  if (!run) return null;
+  run.step(Number(args?.budgetMs) || 60);
+  return run.result();
+}
+
+/**
+ * 分片版：把模拟切成小片，每片之间 setImmediate 让出事件循环。
+ *
+ * 为什么要有它：Node 单线程，同步版跑 50ms 就意味着**全桌冻结 50ms**
+ * —— 别人点按钮不被处理、计时器不走。而行动时限有 45 秒，人机本来还要等
+ * LLM 一两秒，时间明明很宽裕。所以正确做法不是"冻结久一点换精度"，
+ * 而是根本不冻结：单片只占 chunkMs（默认 8ms，感知不到），总时长可以放到
+ * 上千毫秒，精度因此不必妥协，慢机器也不会被迫降精度。
+ *
+ * @param {object} args 同 estimateEquity，另加：
+ * @param {number} [args.chunkMs]  单片占用的毫秒数，默认 8
+ * @param {number} [args.budgetMs] 总墙钟上限，默认 1500
+ * @returns {Promise<object|null>}
+ */
+export async function estimateEquityAsync(args) {
+  const run = makeRun(args);
+  if (!run) return null;
+
+  const chunkMs = Math.max(1, Number(args?.chunkMs) || 8);
+  const totalMs = Math.max(chunkMs, Number(args?.budgetMs) || 1500);
+  const signal = args?.signal;
+  const deadline = Date.now() + totalMs;
+
+  while (!run.done() && Date.now() < deadline) {
+    if (signal?.aborted) break;
+    run.step(Math.min(chunkMs, deadline - Date.now()));
+    if (!run.done()) await yieldToLoop();
+  }
+  return run.result();
+}
+
+/** 让事件循环处理一轮待办（别人的动作、计时器、心跳） */
+function yieldToLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * 建一次模拟的运行状态。校验输入、备好牌堆与复用数组。
+ * @returns {{step:(ms:number)=>void, done:()=>boolean, result:()=>object|null}|null}
+ */
+function makeRun(args) {
   const hole = Array.isArray(args?.hole) ? args.hole.filter(isCard) : [];
   const board = Array.isArray(args?.board) ? args.board.filter(isCard) : [];
   const opponents = Math.floor(Number(args?.opponents));
@@ -54,7 +101,6 @@ export function estimateEquity(args) {
   if (board.length > 5) return null;
 
   const sims = Math.max(1, Math.floor(Number(args?.sims) || 2000));
-  const budgetMs = Number(args?.budgetMs) || 60;
   const rng = typeof args?.rng === 'function' ? args.rng : null;
 
   // 剩余牌堆：去掉已知的底牌和公共牌
@@ -78,52 +124,65 @@ export function estimateEquity(args) {
 
   let equitySum = 0;
   let done = 0;
-  const deadline = Date.now() + budgetMs;
   // 每 32 次查一下时间，Date.now() 本身也有成本
   const CHECK_EVERY = 32;
 
-  for (let t = 0; t < sims; t++) {
-    if (t > 0 && t % CHECK_EVERY === 0 && Date.now() >= deadline) break;
-
-    // 部分 Fisher-Yates：只洗出需要的前 draws 张
-    for (let i = 0; i < draws; i++) {
-      const j = i + pickInt(deck.length - i, rng);
-      const tmp = deck[i]; deck[i] = deck[j]; deck[j] = tmp;
-    }
-
-    // 补齐公共牌
-    for (let i = 0; i < boardNeeded; i++) {
-      const c = deck[opponents * 2 + i];
-      myCards[2 + board.length + i] = c;
-      oppCards[2 + board.length + i] = c;
-    }
-
-    const mine = fastScore7(myCards);
-    let better = 0;
-    let tied = 0;
-    for (let o = 0; o < opponents; o++) {
-      oppCards[0] = deck[o * 2];
-      oppCards[1] = deck[o * 2 + 1];
-      const s = fastScore7(oppCards);
-      if (s > mine) { better = 1; break; }
-      if (s === mine) tied++;
-    }
-
-    if (!better) equitySum += 1 / (tied + 1);   // 平分底池按份数折算
-    done++;
-  }
-
-  if (!done) return null;
-  const p = equitySum / done;
-  // 二项分布 95% 置信半宽：1.96 * sqrt(p(1-p)/n)
-  const margin = 1.96 * Math.sqrt(Math.max(p * (1 - p), 0) / done);
-
   return {
-    pct: Math.round(p * 1000) / 10,
-    margin: Math.round(margin * 1000) / 10,
-    sims: done,
-    opponents,
-    truncated: done < sims,
+    done: () => done >= sims,
+
+    /** 最多跑 ms 毫秒，或跑到 sims 次为止 */
+    step(ms) {
+      const deadline = Date.now() + Math.max(0, ms);
+      let sinceCheck = 0;
+      while (done < sims) {
+        if (sinceCheck >= CHECK_EVERY) {
+          if (Date.now() >= deadline) return;
+          sinceCheck = 0;
+        }
+        sinceCheck++;
+
+        // 部分 Fisher-Yates：只洗出需要的前 draws 张
+        for (let i = 0; i < draws; i++) {
+          const j = i + pickInt(deck.length - i, rng);
+          const tmp = deck[i]; deck[i] = deck[j]; deck[j] = tmp;
+        }
+
+        // 补齐公共牌
+        for (let i = 0; i < boardNeeded; i++) {
+          const c = deck[opponents * 2 + i];
+          myCards[2 + board.length + i] = c;
+          oppCards[2 + board.length + i] = c;
+        }
+
+        const mine = fastScore7(myCards);
+        let better = 0;
+        let tied = 0;
+        for (let o = 0; o < opponents; o++) {
+          oppCards[0] = deck[o * 2];
+          oppCards[1] = deck[o * 2 + 1];
+          const s = fastScore7(oppCards);
+          if (s > mine) { better = 1; break; }
+          if (s === mine) tied++;
+        }
+
+        if (!better) equitySum += 1 / (tied + 1);   // 平分底池按份数折算
+        done++;
+      }
+    },
+
+    result() {
+      if (!done) return null;
+      const p = equitySum / done;
+      // 二项分布 95% 置信半宽：1.96 * sqrt(p(1-p)/n)
+      const margin = 1.96 * Math.sqrt(Math.max(p * (1 - p), 0) / done);
+      return {
+        pct: Math.round(p * 1000) / 10,
+        margin: Math.round(margin * 1000) / 10,
+        sims: done,
+        opponents,
+        truncated: done < sims,
+      };
+    },
   };
 }
 

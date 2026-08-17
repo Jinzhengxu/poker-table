@@ -24,8 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reveal your hole cards to the table. One-shot per hand, cleared on the next
   deal; new `showCards` message and `you.canShowCards` in the snapshot.
 - **Monte Carlo equity** in the decision prompt, sized by the number of opponents
-  still in the hand, with split pots pro-rated, a hard wall-clock cap, and the
-  modelling assumption stated alongside the number. Adds `bot/equity.js` and
+  still in the hand, with split pots pro-rated and the modelling assumption stated
+  alongside the number. The work is chunked — 8 ms of computation, then the event
+  loop is yielded — so 20,000 trials (±0.5%) cost a 15 ms peak stall instead of
+  90 ms, and precision no longer trades against smoothness. Adds `bot/equity.js` and
   `bot/fastscore.js` — a score-only 7-card path, 11–40× faster than the general
   evaluator, using the identical formula and cross-checked bit-for-bit against it.
 - Randomly generated bot personas: five orthogonal traits, 243 combinations. The

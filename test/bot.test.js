@@ -9,7 +9,7 @@ import { Room } from '../server/room.js';
 import { evaluate } from '../server/evaluator.js';
 import { freshDeck, shuffle } from '../server/deck.js';
 import { fastScore7 } from '../server/bot/fastscore.js';
-import { estimateEquity, countLiveOpponents } from '../server/bot/equity.js';
+import { estimateEquity, estimateEquityAsync, countLiveOpponents } from '../server/bot/equity.js';
 import { chenScore, handStrength, decideByRule, clamp } from '../server/bot/policy.js';
 import { buildUser, buildSystem, coerceAction, sanitizeName, positionName } from '../server/bot/decide.js';
 import { parseJSONObject, ProviderError, isRetryable } from '../server/bot/provider.js';
@@ -345,6 +345,69 @@ test('estimateEquity：墙钟预算是硬约束，超时就截断并诚实报告
   assert.ok(r.margin > 0, '截断后误差应该变大且被报告出来');
 });
 
+test('estimateEquityAsync：分片计算不会长时间堵住事件循环', async () => {
+  // 起一个 5ms 心跳，量它被延迟了多久 —— 这就是"全桌被冻结"的时长。
+  const lags = [];
+  let last = Date.now();
+  const beat = setInterval(() => {
+    const now = Date.now();
+    lags.push(now - last - 5);
+    last = now;
+  }, 5);
+  await new Promise((r) => setTimeout(r, 40));   // 让心跳先稳定
+
+  const r = await estimateEquityAsync({
+    hole: ['Kc', '5d'], board: ['7s', '8d', '5s'], opponents: 4,
+    sims: 20000, chunkMs: 8, budgetMs: 60000,
+  });
+
+  await new Promise((r) => setTimeout(r, 40));
+  clearInterval(beat);
+
+  const maxLag = Math.max(...lags, 0);
+  assert.equal(r.sims, 20000, '预算充足时应该跑满');
+  assert.ok(
+    maxLag < 50,
+    `单次卡顿 ${maxLag}ms 太久了 —— 分片的意义就是不让事件循环长时间停住（同步版这里约 90ms）`
+  );
+});
+
+test('estimateEquityAsync：结果与同步版统计上一致', async () => {
+  const arg = { hole: ['Ah', 'Kh'], opponents: 2, sims: 20000, budgetMs: 60000 };
+  const sync = estimateEquity(arg);
+  const async_ = await estimateEquityAsync({ ...arg, chunkMs: 8 });
+  assert.ok(
+    Math.abs(sync.pct - async_.pct) < 3,
+    `两版差 ${Math.abs(sync.pct - async_.pct).toFixed(1)} 个百分点，超出抽样噪声`
+  );
+  assert.equal(async_.sims, 20000);
+});
+
+test('estimateEquityAsync：能被 AbortSignal 中断（手牌提前结束）', async () => {
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 25);
+  const t0 = Date.now();
+  const r = await estimateEquityAsync({
+    hole: ['Ah', 'Kh'], board: ['7c', '5h', '8d'], opponents: 6,
+    sims: 5_000_000, chunkMs: 8, budgetMs: 60000, signal: ac.signal,
+  });
+  const spent = Date.now() - t0;
+  assert.ok(spent < 500, `取消后应该很快返回，实际 ${spent}ms`);
+  assert.equal(r.truncated, true);
+  assert.ok(r.sims > 0, '已经跑过的部分仍然要用上');
+});
+
+test('estimateEquityAsync：总墙钟预算仍然是上限', async () => {
+  const t0 = Date.now();
+  const r = await estimateEquityAsync({
+    hole: ['Ah', 'Kh'], opponents: 7,
+    sims: 50_000_000, chunkMs: 8, budgetMs: 120,
+  });
+  const spent = Date.now() - t0;
+  assert.ok(spent < 600, `预算 120ms 却花了 ${spent}ms`);
+  assert.equal(r.truncated, true);
+});
+
 test('estimateEquity：输入不合法时返回 null 而不是抛异常', () => {
   assert.equal(estimateEquity({ hole: ['Ah'], opponents: 1 }), null, '底牌不足');
   assert.equal(estimateEquity({ hole: ['Ah', 'As'], opponents: 0 }), null, '没有对手');
@@ -353,6 +416,12 @@ test('estimateEquity：输入不合法时返回 null 而不是抛异常', () => 
   assert.equal(estimateEquity({ hole: ['Zz', 'Xx'], opponents: 1 }), null, '牌码非法');
   assert.equal(estimateEquity({}), null);
   assert.equal(estimateEquity(null), null);
+});
+
+test('estimateEquityAsync：输入不合法时也返回 null', async () => {
+  assert.equal(await estimateEquityAsync({ hole: ['Ah'], opponents: 1 }), null);
+  assert.equal(await estimateEquityAsync({ hole: ['Ah', 'As'], opponents: 0 }), null);
+  assert.equal(await estimateEquityAsync(null), null);
 });
 
 test('countLiveOpponents：只数还在牌里的（弃牌和坐出的不算）', () => {
