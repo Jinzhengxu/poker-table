@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider that fails three times in a row is benched for 60 seconds. New
   `addBot` client message and `bot` field on seat snapshots; contract is in
   `SPEC.md` §8.4.
+- Bot backend can be configured from the browser instead of the environment —
+  the host pastes a key under Settings. It is held in process memory only, never
+  written to the log, and never broadcast: the masked form is sent to the host
+  alone, other players see only whether an LLM is attached.
+- **Show cards.** When you take the pot without a showdown, a button offers to
+  reveal your hole cards to the table. One-shot per hand, cleared on the next
+  deal; new `showCards` message and `you.canShowCards` in the snapshot.
 - `.env.example` documenting every environment variable, and pass-through of the
   bot settings in `docker-compose.yml`.
 

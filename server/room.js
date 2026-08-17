@@ -127,6 +127,9 @@ export class Room {
     this.log = [];
     /** @type {{ts:number,seat:number|null,name:string,text:string}[]} */
     this.chat = [];
+
+    /** 本手牌里主动亮牌的座位（每手牌开始时清空） */
+    this.shownSeats = new Set();
   }
 
   // ==================== 连接管理 ====================
@@ -459,7 +462,86 @@ export class Room {
     return { ok: true };
   }
 
+  // ==================== 亮牌 ====================
+
+  /**
+   * 当前这个座位能不能主动亮牌。
+   *
+   * 只给**本手牌的赢家**，且只在没摊牌的时候——也就是"所有人都弃牌、
+   * 你不用亮牌就把池收了"这个场景。想不想让大家看到你诈唬还是真有牌，
+   * 是这个功能的全部意义。
+   *
+   * 摊牌赢的牌本来就已经亮了；弃牌的人不给亮，免得拖慢牌桌节奏。
+   */
+  #canShowCards(p) {
+    if (!p || p.seat === null) return false;
+    if (this.phase !== PHASES.HAND_OVER) return false;
+    if (!this.hand) return false;
+    if (this.handSeatOwners.get(p.seat) !== p.id) return false;
+    if (this.shownSeats.has(p.seat)) return false;
+
+    const hp = this.hand.players?.get?.(p.seat);
+    if (!hp || !Array.isArray(hp.holeCards) || hp.holeCards.length !== 2) return false;
+    if (hp.folded) return false;
+
+    // 摊牌时已经亮过的就不用再亮了
+    const sd = this.result?.showdown;
+    if (Array.isArray(sd) && sd.some((e) => e && e.seat === p.seat)) return false;
+
+    // 必须是这手牌的赢家
+    const winners = this.result?.winners;
+    if (!Array.isArray(winners) || !winners.some((w) => w && w.seat === p.seat)) return false;
+
+    return true;
+  }
+
+  /** 主动亮牌：把自己的底牌摊给全桌看 */
+  showCards(client) {
+    const p = this.#playerOf(client);
+    if (!p || p.seat === null) return { ok: false, code: 'NOT_SEATED', msg: '你还没有入座' };
+    if (!this.#canShowCards(p)) {
+      return { ok: false, code: 'ILLEGAL_ACTION', msg: '现在不能亮牌' };
+    }
+    const hp = this.hand.players.get(p.seat);
+    this.shownSeats.add(p.seat);
+    this.#pushLog(`${p.name} 亮牌：${hp.holeCards.join(' ')}`);
+    this.broadcast();
+    return { ok: true };
+  }
+
   // ==================== 人机 ====================
+
+  /**
+   * 房主配置人机用的 LLM。
+   *
+   * **安全**：patch.apiKey 只会转交给 BotDriver 存在内存里，
+   * 绝对不写进 this.config，也绝对不进任何快照——快照是广播给全桌的。
+   */
+  setBotConfig(client, patch) {
+    const { err } = this.#requireHost(client);
+    if (err) return err;
+    if (!this.botDriver) {
+      return { ok: false, code: 'ILLEGAL_ACTION', msg: '本服务没有启用人机' };
+    }
+    if (!patch || typeof patch !== 'object') {
+      return { ok: false, code: 'ILLEGAL_ACTION', msg: '配置格式错误' };
+    }
+
+    if (patch.remove) {
+      this.botDriver.removeProvider(String(patch.provider || '').toLowerCase());
+      this.#pushLog('房主移除了一个人机后端');
+      this.broadcast();
+      return { ok: true };
+    }
+
+    const res = this.botDriver.configure(patch);
+    if (!res.ok) return { ok: false, code: 'ILLEGAL_ACTION', msg: res.msg };
+
+    // 日志里只提供应商名字，不提 key 的任何部分
+    this.#pushLog(`房主配置了人机后端：${this.botDriver.describe()}`);
+    this.broadcast();
+    return { ok: true };
+  }
 
   /** 人机玩家：不占 token（没人需要用它重连），connected 恒为 true */
   #newBotPlayer(persona) {
@@ -731,6 +813,7 @@ export class Room {
     this.result = null;
     this.handFinished = false;
     this.eventCursor = 0;
+    this.shownSeats.clear();
 
     try {
       this.hand = new Hand({
@@ -991,6 +1074,9 @@ export class Room {
         if (e && Number.isInteger(e.seat)) set.add(e.seat);
       }
     }
+    // 主动亮牌的座位也算揭示。只在 handOver 阶段生效，
+    // 下一手 startHand() 会清空 shownSeats。
+    for (const s of this.shownSeats) set.add(s);
     return set;
   }
 
@@ -1033,8 +1119,10 @@ export class Room {
         if (viewer && viewer.id === p.id) {
           cards = [...hp.holeCards];
         } else if (revealed.has(s)) {
-          const entry = this.result.showdown.find((e) => e && e.seat === s);
-          cards = Array.isArray(entry?.cards) ? [...entry.cards] : ['??', '??'];
+          // 摊牌揭示的以 result.showdown 为准；主动亮牌的座位不在 showdown 里
+          // （没摊牌就赢了），这时回退到引擎里的底牌。
+          const entry = this.result?.showdown?.find((e) => e && e.seat === s);
+          cards = Array.isArray(entry?.cards) ? [...entry.cards] : [...hp.holeCards];
         } else {
           cards = ['??', '??'];
         }
@@ -1098,6 +1186,7 @@ export class Room {
       sittingOut: !!(viewer && viewer.sittingOut),
       cards: myHp && Array.isArray(myHp.holeCards) ? [...myHp.holeCards] : null,
       legal,
+      canShowCards: this.#canShowCards(viewer),
     };
 
     let seatedCount = 0;
@@ -1128,12 +1217,35 @@ export class Room {
       t: 'state',
       serverNow: Date.now(),
       config: { ...this.config },
+      // 人机后端状态。botDriver.status() 已经脱敏（只有打码后的 key），
+      // 这里再收一道：打码后的尾 4 位只给房主看，其他人只需要知道有没有启用。
+      bot: this.#botInfoFor(viewer),
       table,
       seats,
       you,
       result: this.#publicResult(),
       log: this.log.slice(-MAX_LOG),
       chat: this.chat.slice(-MAX_CHAT),
+    };
+  }
+
+  /**
+   * 下发给某个观看者的人机后端信息。
+   * 真实 apiKey 永远不在这里；打码后的尾 4 位也只给房主，
+   * 其他人只需要知道人机是不是接了大模型。
+   */
+  #botInfoFor(viewer) {
+    if (!this.botDriver) return { hasLLM: false, providers: [] };
+    const st = this.botDriver.status();
+    if (viewer?.isHost) return st;
+    return {
+      hasLLM: st.hasLLM,
+      providers: st.providers.map((p) => ({
+        provider: p.provider,
+        label: p.label,
+        model: p.model,
+        cooling: p.cooling,
+      })),
     };
   }
 

@@ -40,6 +40,9 @@
 
   var LS_TOKEN = 'poker_token';
   var LS_NAME = 'poker_name';
+  // 人机后端配置存在房主自己的浏览器里，方便服务重启后一键重发。
+  // 注意：这是明文存在 localStorage 的，只在你自己信任的设备上勾"记住 key"。
+  var LS_BOT = 'poker_bot_cfg';
   var LS_MUTED = 'poker_muted';
 
   // ============================ 小工具 ============================
@@ -144,6 +147,8 @@
     D.heroTimer = $('#heroTimer');
     D.heroTimerBar = $('#heroTimerBar');
     D.actionBar = $('#actionBar');
+    D.showBar = $('#showBar');
+    D.btnShowCards = $('#btnShowCards');
     D.btnFold = $('#btnFold');
     D.btnCheck = $('#btnCheck');
     D.btnCall = $('#btnCall');
@@ -176,6 +181,12 @@
     D.cfgAuto = $('#cfgAuto');
     D.btnReset = $('#btnReset');
     D.btnAddBot = $('#btnAddBot');
+    D.botForm = $('#botForm');
+    D.botStatus = $('#botStatus');
+    D.botProvider = $('#botProvider');
+    D.botKey = $('#botKey');
+    D.botModel = $('#botModel');
+    D.botRemember = $('#botRemember');
     D.seatAdmin = $('#seatAdmin');
 
     D.sitDlg = $('#sitDlg');
@@ -284,6 +295,8 @@
     ws.onopen = function () {
       S.backoff = 500;
       setConn('online', '已连接');
+      // 重连可能意味着服务端重启过（内存态全丢），允许再推一次人机配置
+      S.botPushed = false;
       send({ t: 'hello', token: lsGet(LS_TOKEN) || null });
       startPing();
     };
@@ -353,6 +366,7 @@
         if (typeof m.serverNow === 'number') S.clockOffset = m.serverNow - Date.now();
         clearPending();
         render();
+        pushRememberedBotConfig(m);
         break;
 
       case 'error':
@@ -884,6 +898,9 @@
       closeRaise();
     }
 
+    // 亮牌条：只在服务端说可以亮的时候出现（handOver 且没被摊过牌）
+    if (D.showBar) D.showBar.hidden = !you.canShowCards;
+
     // 空闲按钮
     var seated = S.mySeat !== null;
     D.btnStart.hidden = !(seated && you.isHost && table.canStart && !myTurn);
@@ -977,11 +994,52 @@
     return (el.scrollHeight - el.scrollTop - el.clientHeight) < 40;
   }
 
+  /**
+   * 人机后端面板。只有房主看得到——它能改全桌的人机行为。
+   * 服务端下发的 st.bot 里只有打码后的 key，真实 key 永远不回传。
+   */
+  function renderBotConfig(st, isHost) {
+    if (!D.botForm) return;
+    D.botForm.hidden = !isHost;
+    if (!isHost) return;
+
+    var info = st.bot || { hasLLM: false, providers: [] };
+    var sig = JSON.stringify(info.providers) + (info.hasLLM ? '1' : '0');
+    if (D.botStatus.__sig === sig) return;
+    D.botStatus.__sig = sig;
+
+    if (!info.hasLLM) {
+      D.botStatus.textContent = '未配置，人机将按内置规则打牌。';
+      D.botStatus.className = 'bot-status';
+      return;
+    }
+    var parts = info.providers.map(function (p) {
+      return p.label + '（' + p.model + '，' + p.maskedKey + '）' + (p.cooling ? ' ⚠ 冷却中' : '');
+    });
+    D.botStatus.textContent = '已启用：' + parts.join('、');
+    D.botStatus.className = 'bot-status ok';
+  }
+
+  /** 服务端还没有 LLM 时，把本机记住的配置推上去（重启后自动恢复） */
+  function pushRememberedBotConfig(st) {
+    if (!st || !st.you || !st.you.isHost) return;
+    if (st.bot && st.bot.hasLLM) return;
+    if (S.botPushed) return;
+    var raw = lsGet(LS_BOT);
+    if (!raw) return;
+    var cfg;
+    try { cfg = JSON.parse(raw); } catch (e) { return; }
+    if (!cfg || !cfg.apiKey || !cfg.provider) return;
+    S.botPushed = true;
+    send({ t: 'botConfig', patch: cfg });
+  }
+
   function renderConfigPane(st, cfg, seats, you) {
     var isHost = !!you.isHost;
     D.cfgHostOnly.hidden = isHost;
     D.cfgForm.classList.toggle('locked', !isHost);
     if (D.btnAddBot) D.btnAddBot.hidden = !isHost;
+    renderBotConfig(st, isHost);
 
     // 表单值：正在输入时不覆盖
     var focus = document.activeElement;
@@ -1496,6 +1554,42 @@
         send({ t: 'reset' });
       });
     });
+
+    if (D.botForm) {
+      D.botForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var st = S.state;
+        if (!st || !st.you || !st.you.isHost) { toast('只有房主可以配置人机'); return; }
+
+        var key = D.botKey.value.trim();
+        var patch = {
+          provider: D.botProvider.value,
+          model: D.botModel.value.trim(),
+        };
+        // 留空表示"沿用已有 key，只改模型"
+        if (key) patch.apiKey = key;
+        else if (!(st.bot && st.bot.hasLLM)) { toast('请先填 API Key'); return; }
+
+        send({ t: 'botConfig', patch: patch });
+
+        if (key && D.botRemember.checked) {
+          lsSet(LS_BOT, JSON.stringify(patch));
+        } else if (!D.botRemember.checked) {
+          lsSet(LS_BOT, '');
+        }
+        // 输入框里不留 key，避免肩窥
+        D.botKey.value = '';
+        toast('人机后端已提交', true);
+      });
+    }
+
+    if (D.btnShowCards) {
+      D.btnShowCards.addEventListener('click', function () {
+        send({ t: 'showCards' });
+        // 立刻收起来，别让人连点；服务端下一帧快照会把 canShowCards 置 false
+        D.showBar.hidden = true;
+      });
+    }
 
     if (D.btnAddBot) {
       D.btnAddBot.addEventListener('click', function () {

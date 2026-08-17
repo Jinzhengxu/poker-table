@@ -92,6 +92,12 @@
             <button id="btnAllin" class="act act-allin" type="button" aria-label="全下">全下</button>
           </div>
 
+          <!-- 亮牌：没摊牌就赢了的时候，可以选择给大家看 -->
+          <div id="showBar" class="show-bar" hidden>
+            <span class="show-hint">要给大家看看你的牌吗？</span>
+            <button id="btnShowCards" class="act act-show" type="button">亮牌</button>
+          </div>
+
           <!-- 加注面板 -->
           <div id="raisePanel" class="raise-panel" hidden>
             <div class="raise-quick">
@@ -161,6 +167,29 @@
             <button id="btnReset" type="button" class="act act-danger">重置牌桌</button>
           </div>
           <p class="cfg-hint">设置只能在两手牌之间修改。</p>
+        </form>
+
+        <form id="botForm" class="cfg-form" hidden>
+          <h4>人机后端</h4>
+          <div id="botStatus" class="bot-status">未配置，人机将按内置规则打牌。</div>
+          <label>供应商
+            <select id="botProvider">
+              <option value="deepseek">DeepSeek</option>
+              <option value="kimi">Kimi（月之暗面）</option>
+            </select>
+          </label>
+          <label>API Key<input id="botKey" type="password" autocomplete="off"
+            spellcheck="false" placeholder="sk-..."></label>
+          <label>模型（留空用默认）<input id="botModel" type="text" autocomplete="off"
+            spellcheck="false" placeholder="deepseek-chat"></label>
+          <div class="cfg-actions">
+            <button type="submit" class="act act-start">保存后端</button>
+            <label class="chk"><input id="botRemember" type="checkbox" checked><span>记住 key</span></label>
+          </div>
+          <p class="cfg-hint">
+            Key 经加密连接送到服务端，只存在内存里，不会发给牌桌上的其他人，
+            也不会写进日志。服务重启后需要重新填。
+          </p>
         </form>
 
         <h4>座位管理</h4>

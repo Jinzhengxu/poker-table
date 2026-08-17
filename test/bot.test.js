@@ -446,6 +446,234 @@ test('Room：轮到人机时会自动行动，牌局能推进', async () => {
   room.shutdown();
 });
 
+// ==================== 前端配置 LLM 后端 ====================
+
+test('BotDriver.configure：运行时装上 key 后就有 LLM 了', () => {
+  const driver = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  assert.equal(driver.hasLLM, false);
+
+  const res = driver.configure({ provider: 'deepseek', apiKey: 'sk-test-abcdefgh1234' });
+  assert.equal(res.ok, true);
+  assert.equal(driver.hasLLM, true);
+  assert.match(driver.describe(), /DeepSeek/);
+});
+
+test('BotDriver.configure：同一供应商替换，不同供应商追加', () => {
+  const driver = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  driver.configure({ provider: 'deepseek', apiKey: 'sk-aaaaaaaaaaaa' });
+  driver.configure({ provider: 'kimi', apiKey: 'sk-bbbbbbbbbbbb' });
+  assert.equal(driver.status().providers.length, 2);
+
+  driver.configure({ provider: 'deepseek', apiKey: 'sk-cccccccccccc', model: 'deepseek-reasoner' });
+  const st = driver.status();
+  assert.equal(st.providers.length, 2, '同一供应商应该是替换而不是追加');
+  const ds = st.providers.find((p) => p.provider === 'deepseek');
+  assert.equal(ds.model, 'deepseek-reasoner');
+});
+
+test('BotDriver.configure：不给 key 时沿用已有的（只改模型）', () => {
+  const driver = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  driver.configure({ provider: 'kimi', apiKey: 'sk-original-key-123' });
+  const ok = driver.configure({ provider: 'kimi', model: 'kimi-k2' });
+  assert.equal(ok.ok, true);
+  assert.equal(driver.clients[0].apiKey, 'sk-original-key-123', 'key 应该被保留');
+  assert.equal(driver.clients[0].model, 'kimi-k2');
+});
+
+test('BotDriver.configure：供应商不认识、或压根没 key，都要被拒绝', () => {
+  const driver = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  assert.equal(driver.configure({ provider: 'openai', apiKey: 'sk-x' }).ok, false);
+  assert.equal(driver.configure({ provider: 'kimi' }).ok, false);
+  assert.equal(driver.configure({}).ok, false);
+  assert.equal(driver.hasLLM, false);
+});
+
+test('BotDriver.removeProvider：能把某一家摘掉', () => {
+  const driver = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  driver.configure({ provider: 'deepseek', apiKey: 'sk-aaaaaaaaaaaa' });
+  driver.configure({ provider: 'kimi', apiKey: 'sk-bbbbbbbbbbbb' });
+  driver.removeProvider('kimi');
+  assert.equal(driver.status().providers.length, 1);
+  assert.equal(driver.status().providers[0].provider, 'deepseek');
+});
+
+test('安全：status() 只给打码后的 key，拼不回原文', () => {
+  const driver = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const secret = 'sk-verysecretkey1234567890abcd';
+  driver.configure({ provider: 'deepseek', apiKey: secret });
+
+  const st = driver.status();
+  const dumped = JSON.stringify(st);
+  assert.ok(!dumped.includes(secret), 'status() 里绝对不能有完整 key');
+  assert.ok(!dumped.includes('verysecretkey'), 'status() 里绝对不能有 key 的中间部分');
+  assert.equal(st.providers[0].maskedKey, 'sk-…abcd');
+});
+
+test('安全：完整 key 绝不出现在任何广播的快照里', () => {
+  const driver = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: driver });
+  const host = stubClient();
+  room.attach(host);
+  room.hello(host, null);
+  room.sit(host, 0, '房主');
+
+  const secret = 'sk-SUPERSECRET-abcdefghijklmnop';
+  const res = room.setBotConfig(host, { provider: 'kimi', apiKey: secret });
+  assert.equal(res.ok, true);
+
+  // 快照是广播给全桌所有人的，key 泄漏进去等于发给所有人
+  const snap = JSON.stringify(room.buildStateFor(host.playerId));
+  assert.ok(!snap.includes(secret), '快照里绝对不能有完整 key');
+  assert.ok(!snap.includes('SUPERSECRET'), '快照里绝对不能有 key 的任何可识别片段');
+  assert.ok(snap.includes('hasLLM'), '但状态本身要能看到');
+
+  // 日志里也不能有
+  assert.ok(!JSON.stringify(room.log).includes(secret), '日志里绝对不能有 key');
+
+  // 房主自己能看到打码后的尾 4 位，用来确认粘对了
+  assert.equal(JSON.parse(snap).bot.providers[0].maskedKey, 'sk-…mnop');
+
+  // 非房主连打码后的尾 4 位都不该看到
+  const guest = stubClient();
+  room.attach(guest);
+  room.hello(guest, null);
+  const guestSnap = JSON.stringify(room.buildStateFor(guest.playerId));
+  assert.ok(!guestSnap.includes(secret), '其他玩家的快照里更不能有 key');
+  assert.ok(!guestSnap.includes('mnop'), '非房主不该看到 key 的任何片段');
+  assert.equal(JSON.parse(guestSnap).bot.hasLLM, true, '但能知道人机接了大模型');
+
+  room.shutdown();
+});
+
+test('Room.setBotConfig：只有房主能配', () => {
+  const driver = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: driver });
+  const host = stubClient();
+  room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  const guest = stubClient();
+  room.attach(guest); room.hello(guest, null); room.sit(guest, 1, '客人');
+
+  const bad = room.setBotConfig(guest, { provider: 'kimi', apiKey: 'sk-xxxxxxxxxxxx' });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.code, 'NOT_HOST');
+  assert.equal(driver.hasLLM, false, '非房主不该改动任何东西');
+  room.shutdown();
+});
+
+// ==================== 赢牌后主动亮牌 ====================
+
+/** 造一个"一人下注、其余全弃"的局面，让 seat0 不摊牌就赢 */
+function roomWonWithoutShowdown() {
+  const driver = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({
+    botDriver: driver,
+    config: { autoNextHand: false, actionTimeoutMs: 60000 },
+  });
+  const a = stubClient(); room.attach(a); room.hello(a, null); room.sit(a, 0, '甲');
+  const b = stubClient(); room.attach(b); room.hello(b, null); room.sit(b, 1, '乙');
+  const c = stubClient(); room.attach(c); room.hello(c, null); room.sit(c, 2, '丙');
+
+  room.startHand();
+  // 让所有非按钮位弃牌，直到只剩一人
+  let guard = 0;
+  while (room.hand && !room.hand.isComplete && guard++ < 30) {
+    const seat = room.hand.actingSeat;
+    if (seat === null || seat === undefined) break;
+    const cl = [a, b, c][seat];
+    const legal = room.hand.legalActions(seat);
+    // 除了 seat0 之外都弃牌
+    if (seat === 0) {
+      room.action(cl, { type: legal.canCheck ? 'check' : 'call', handNo: room.hand.handNo });
+    } else {
+      room.action(cl, { type: 'fold', handNo: room.hand.handNo });
+    }
+  }
+  return { room, clients: [a, b, c] };
+}
+
+test('亮牌：只有赢家能亮，弃牌的人不能', () => {
+  const { room, clients } = roomWonWithoutShowdown();
+  const winnerSeat = room.result.winners[0].seat;
+
+  for (let s = 0; s < 3; s++) {
+    const can = room.buildStateFor(clients[s].playerId).you.canShowCards;
+    assert.equal(can, s === winnerSeat, `${s} 号位的 canShowCards 不对（赢家是 ${winnerSeat}）`);
+    if (s !== winnerSeat) {
+      assert.equal(room.showCards(clients[s]).ok, false, `${s} 号位弃了牌，不该能亮`);
+    }
+  }
+  room.shutdown();
+});
+
+test('亮牌：没摊牌就赢的人可以亮，亮完全桌都看得见', () => {
+  const { room, clients } = roomWonWithoutShowdown();
+  const [a, b] = clients;
+
+  assert.equal(room.hand.isComplete, true, '本手牌应该已经结束');
+  assert.equal(room.result.wentToShowdown, false, '不该走到摊牌');
+
+  // 赢家自己应该看到"可以亮牌"
+  const winnerSeat = room.result.winners[0].seat;
+  const winner = clients[winnerSeat];
+  const before = room.buildStateFor(winner.playerId);
+  assert.equal(before.you.canShowCards, true, '赢家应该可以亮牌');
+
+  // 亮牌前，别人看到的是 ??
+  const otherId = clients.find((c) => c !== winner).playerId;
+  const hidden = room.buildStateFor(otherId);
+  assert.deepEqual(hidden.seats[winnerSeat].cards, ['??', '??']);
+
+  assert.equal(room.showCards(winner).ok, true);
+
+  // 亮牌后，别人能看到真牌
+  const shown = room.buildStateFor(otherId);
+  const real = room.hand.players.get(winnerSeat).holeCards;
+  assert.deepEqual(shown.seats[winnerSeat].cards, real, '亮牌后应该是真实底牌');
+  assert.ok(room.log.some((l) => l.text.includes('亮牌')), '日志里应该有亮牌记录');
+
+  room.shutdown();
+});
+
+test('亮牌：不能亮两次', () => {
+  const { room, clients } = roomWonWithoutShowdown();
+  const winnerSeat = room.result.winners[0].seat;
+  const winner = clients[winnerSeat];
+  assert.equal(room.showCards(winner).ok, true);
+  const again = room.showCards(winner);
+  assert.equal(again.ok, false);
+  assert.equal(room.buildStateFor(winner.playerId).you.canShowCards, false);
+  room.shutdown();
+});
+
+test('亮牌：牌局进行中不能亮', () => {
+  const driver = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: driver, config: { autoNextHand: false, actionTimeoutMs: 60000 } });
+  const a = stubClient(); room.attach(a); room.hello(a, null); room.sit(a, 0, '甲');
+  const b = stubClient(); room.attach(b); room.hello(b, null); room.sit(b, 1, '乙');
+  room.startHand();
+
+  assert.equal(room.buildStateFor(a.playerId).you.canShowCards, false, '牌局中不该能亮牌');
+  assert.equal(room.showCards(a).ok, false);
+  room.shutdown();
+});
+
+test('亮牌：下一手开始后重置，牌又藏回去了', () => {
+  const { room, clients } = roomWonWithoutShowdown();
+  const winnerSeat = room.result.winners[0].seat;
+  room.showCards(clients[winnerSeat]);
+  assert.equal(room.shownSeats.size, 1);
+
+  room.startHand();
+  assert.equal(room.shownSeats.size, 0, '新的一手应该清空亮牌记录');
+
+  const otherId = clients.find((_, i) => i !== winnerSeat).playerId;
+  assert.deepEqual(
+    room.buildStateFor(otherId).seats[winnerSeat].cards, ['??', '??'],
+    '新一手里对手的牌必须重新藏起来'
+  );
+  room.shutdown();
+});
+
 // ==================== 小工具 ====================
 
 test('clamp：取整并夹进区间', () => {

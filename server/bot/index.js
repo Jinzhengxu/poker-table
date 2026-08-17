@@ -8,7 +8,7 @@
 //   - 任何异常都不会抛给调用方，最差情况退化成规则人机。
 // 也就是说：外部服务挂了，牌桌照常进行，只是人机变笨。
 
-import { clientsFromEnv, isRetryable } from './provider.js';
+import { clientsFromEnv, isRetryable, LLMClient, PROVIDERS } from './provider.js';
 import { buildSystem, buildUser, coerceAction, fallbackAction } from './decide.js';
 
 /** 人机人格：影响昵称、头像和提示词里的风格描述 */
@@ -58,6 +58,80 @@ export class BotDriver {
   describe() {
     if (!this.hasLLM) return '规则人机（未配置 LLM）';
     return this.clients.map((c) => `${c.label}(${c.model})`).join(' + ');
+  }
+
+  /**
+   * 运行时重新配置（房主在前端填 key 时走这里）。
+   *
+   * **安全**：apiKey 只存在这个进程的内存里。它绝对不能出现在任何下发给客户端的
+   * 快照里——那等于把 key 发给牌桌上所有人。对外只能用 status() 的脱敏结果。
+   *
+   * @param {object} patch
+   * @param {string} patch.provider  kimi | deepseek
+   * @param {string} [patch.apiKey]  留空表示保留原有 key
+   * @param {string} [patch.model]
+   * @param {string} [patch.baseUrl]
+   * @returns {{ok:true}|{ok:false,msg:string}}
+   */
+  configure(patch) {
+    const provider = String(patch?.provider || '').toLowerCase();
+    if (!PROVIDERS[provider]) return { ok: false, msg: '不支持的供应商' };
+
+    // 没给新 key 就沿用同一供应商已有的那个，方便只改模型名
+    let apiKey = typeof patch.apiKey === 'string' ? patch.apiKey.trim() : '';
+    if (!apiKey) {
+      const existing = this.clients.find((c) => c.provider === provider);
+      apiKey = existing?.apiKey || '';
+    }
+    if (!apiKey) return { ok: false, msg: '缺少 API key' };
+
+    let client;
+    try {
+      client = new LLMClient({
+        provider,
+        apiKey,
+        model: patch.model ? String(patch.model).trim() : undefined,
+        baseUrl: patch.baseUrl ? String(patch.baseUrl).trim() : undefined,
+        timeoutMs: this.timeoutMs,
+      });
+    } catch (e) {
+      return { ok: false, msg: e.message || '配置无效' };
+    }
+
+    // 同一供应商替换，不同供应商追加
+    this.clients = this.clients.filter((c) => c.provider !== provider);
+    this.clients.push(client);
+    this.health.set(client, { fails: 0, until: 0 });
+    return { ok: true };
+  }
+
+  /** 移除某个供应商 */
+  removeProvider(provider) {
+    const before = this.clients.length;
+    for (const c of this.clients) {
+      if (c.provider === provider) this.health.delete(c);
+    }
+    this.clients = this.clients.filter((c) => c.provider !== provider);
+    return { ok: this.clients.length !== before };
+  }
+
+  /**
+   * 可以安全下发给客户端的状态。**不含 apiKey。**
+   * maskedKey 只保留头 3 位和尾 4 位，够房主确认自己粘对了，又拼不回原文。
+   */
+  status() {
+    const now = Date.now();
+    return {
+      hasLLM: this.hasLLM,
+      providers: this.clients.map((c) => ({
+        provider: c.provider,
+        label: c.label,
+        model: c.model,
+        maskedKey: maskKey(c.apiKey),
+        cooling: (this.health.get(c)?.until ?? 0) > now,
+      })),
+      stats: { ...this.stats },
+    };
   }
 
   /** 挑一个当前没在冷却里的客户端；全在冷却就返回 null */
@@ -160,6 +234,16 @@ function sleep(ms, signal) {
       resolve();
     }
   });
+}
+
+/**
+ * sk-abcdefghij1234 -> sk-…1234
+ * 只够房主确认自己粘对了 key，拼不回原文。
+ */
+function maskKey(key) {
+  const s = String(key || '');
+  if (s.length <= 8) return '…';
+  return `${s.slice(0, 3)}…${s.slice(-4)}`;
 }
 
 export default BotDriver;

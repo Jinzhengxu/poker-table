@@ -331,6 +331,21 @@ function handleMessage(client, msg, fail) {
       if (!validSeat(msg.seat)) return fail('ILLEGAL_ACTION', '座位号不合法');
       return reply(client, room.kick(client, msg.seat));
     }
+    case 'showCards':
+      return reply(client, room.showCards(client));
+    case 'botConfig': {
+      if (!msg.patch || typeof msg.patch !== 'object' || Array.isArray(msg.patch)) {
+        return fail('ILLEGAL_ACTION', '配置格式错误');
+      }
+      // key 可能很长，但也不该无限长
+      if (msg.patch.apiKey !== undefined && typeof msg.patch.apiKey !== 'string') {
+        return fail('ILLEGAL_ACTION', 'apiKey 必须是字符串');
+      }
+      if (typeof msg.patch.apiKey === 'string' && msg.patch.apiKey.length > 400) {
+        return fail('ILLEGAL_ACTION', 'apiKey 过长');
+      }
+      return reply(client, room.setBotConfig(client, msg.patch));
+    }
     case 'addBot': {
       // seat 可省略，表示"随便找个空位"
       if (msg.seat !== undefined && msg.seat !== null && !validSeat(msg.seat)) {

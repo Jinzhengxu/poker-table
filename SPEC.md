@@ -276,6 +276,11 @@ export class Hand {
 {"t":"addChips","seat":3,"amount":1000}      // 仅房主：给某座位补充筹码
 {"t":"kick","seat":3}                        // 仅房主，人机也用它移除
 {"t":"addBot","seat":3}                      // 仅房主：加一个人机。seat 可省略 = 挑第一个空位
+{"t":"botConfig","patch":{"provider":"deepseek","apiKey":"sk-...","model":"..."}}
+                                             // 仅房主：配置人机的 LLM 后端。
+                                             // apiKey 留空 = 沿用已有 key（只改模型）。
+                                             // patch.remove=true 表示移除该供应商。
+{"t":"showCards"}                            // 不摊牌获胜时，主动把底牌亮给全桌
 {"t":"reset"}                                // 仅房主：清空牌桌，所有人筹码回到 startingStack
 {"t":"chat","text":"..."}                    // 最长 200 字符
 {"t":"ping"}
@@ -333,8 +338,12 @@ export class Hand {
       "lastAction":{"type":"raise","amount":80,"label":"加注到 80"},
       "wonThisHand":0, "isWinner":false, "handName":null }
   ],
+  "bot": { "hasLLM":true,
+           "providers":[{"provider":"deepseek","label":"DeepSeek","model":"deepseek-chat",
+                         "maskedKey":"sk-…9876","cooling":false}] },
   "you": {
     "playerId":"p_ab12", "seat":1, "isHost":true, "sittingOut":false,
+    "canShowCards":false,
     "cards":["Ah","Kd"],
     "legal": { "canFold":true,"canCheck":false,"canCall":true,"callAmount":30,
                "canBet":false,"minBet":10,
@@ -393,7 +402,21 @@ export class Hand {
 行动超时计时器对人机照常生效：人机卡住时会和真人一样被超时逻辑接管
 （能过牌就过牌，否则弃牌），不需要额外的保险机制。
 
-### 8.4.3 幂等触发
+### 8.4.3 运行时配置 API key
+
+房主可以在前端直接填 key（`{"t":"botConfig"}`），服务端交给
+`BotDriver#configure()` 存在**进程内存**里。**必须遵守**：
+
+- `apiKey` 只存在内存，不写 `room.config`、不写日志、不落盘；重启即失效。
+- 快照里只有 `botDriver.status()` 的脱敏结果。打码后的 `maskedKey`（头 3 尾 4）
+  **只发给房主**，其他人只能看到 `hasLLM` 与供应商/模型名。
+  快照是广播给全桌的，key 漏进去等于发给所有人。
+- 前端不能自己调 LLM：人机要拿自己的底牌才能决策，浏览器驱动人机就等于
+  把人机底牌交给某个玩家。决策必须留在服务端。
+
+对应测试见 `test/bot.test.js` 的「前端配置 LLM 后端」小节。
+
+### 8.4.4 幂等触发
 
 `#maybeTriggerBot()` 在每次 `#resetActionTimer()` 时调用。用
 `${handNo}:${seat}:${events.length}` 作为决策键——同一座位在同一手牌里多次行动会得到

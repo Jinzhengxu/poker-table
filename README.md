@@ -62,6 +62,9 @@ docker run --rm -p 8080:8080 poker-table:local
    Keyboard: `F` fold, `C` check or call, `R` raise, `Enter` confirm.
 4. If you time out, the server checks for you when checking is legal and folds
    when it is not, so one idle player never stalls the table.
+5. **When everyone folds and you take the pot without a showdown**, a "show
+   cards" button appears. Reveal the bluff or don't — nobody finds out unless
+   you choose to tell them.
 
 Defaults: blinds 5/10, ante 0, starting stack 1000, 45 s action clock, auto-start
 enabled. All of them are configurable by the host between hands.
@@ -93,6 +96,16 @@ Two providers are supported out of the box. Both speak the OpenAI-compatible
 
 Set both keys and bots alternate between providers by seat; if one starts
 failing it is benched for 60 seconds and the other takes over.
+
+**Keys can also be entered in the browser** instead of the environment — the
+host picks a provider and pastes a key under Settings → bot backend. It travels
+over the encrypted connection, lives only in server memory, is **never sent to
+the other players**, and never reaches the log. A restart clears it; tick
+"remember" and the host's browser re-sends it on reconnect.
+
+> The browser *enters* the key, it does not *use* it. Bot decisions stay on the
+> server: a bot needs its own hole cards to decide, so a browser-driven bot would
+> hand one player the bot's cards.
 
 Three rules the bot code is built around, each with a test that enforces it:
 

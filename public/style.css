@@ -798,6 +798,41 @@ h3, h4 { margin: 0; font-weight: 600; }
   flex-wrap: wrap;
 }
 
+/* 人机后端状态条 */
+.bot-status {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--txt-dim);
+  background: rgba(255, 255, 255, .04);
+  border: 1px solid var(--line-soft);
+}
+.bot-status.ok {
+  color: #8fd9b4;
+  border-color: rgba(47, 164, 106, .35);
+  background: rgba(47, 164, 106, .08);
+}
+
+/* 亮牌条：没摊牌就赢了的时候出现 */
+.show-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.show-bar .show-hint {
+  font-size: 13px;
+  color: var(--txt-dim);
+}
+.act.act-show {
+  background: linear-gradient(180deg, rgba(233, 196, 106, .22), rgba(176, 140, 60, .18));
+  border-color: rgba(233, 196, 106, .45);
+  color: var(--gold);
+  min-height: 40px;
+}
+
 .act {
   min-height: 44px;
   padding: 0 16px;
