@@ -1,138 +1,172 @@
 # 德州扑克在线桌
 
-免登录的单桌在线德州扑克，给朋友之间开局用。打开网页 → 点空座位 → 输个昵称 → 就能玩。
+[![CI](https://github.com/Jinzhengxu/poker-table/actions/workflows/ci.yml/badge.svg)](https://github.com/Jinzhengxu/poker-table/actions/workflows/ci.yml)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg)](package.json)
+
+自建的、免登录的单桌在线德州扑克，给朋友之间开局用。
+打开网页 → 点空座位 → 输个昵称 → 就能玩。
+
+**[English →](README.md)**
+
 完整的无限注规则：盲注、按钮轮转、四条街下注、全下与边池、摊牌自动比大小、自动分配筹码。
 
-- **免登录**：没有账号系统，昵称即身份，头像按昵称自动生成。
-- **单张牌桌**：整个服务只有一桌、8 个座位，状态全在内存里。
-- **断线不丢座**：座位令牌存在浏览器里，刷新或掉线重连回到原座位、原筹码。
+## 为什么有这个东西
+
+网上的德扑要么要钱，要么要手机号，要么两个都要。这是一张你自己跑的牌桌，
+给固定的朋友局用。没有账号、没有数据库、没有追踪、筹码也没有任何真实价值——
+就是一个朋友们打开网址就能用的记分板。
+
+## 特性
+
+- **免登录**：昵称即身份，头像按昵称自动生成。
+- **单张牌桌**：一桌、8 个座位，状态全在内存里，不需要数据库。
+- **断线不丢座**：座位令牌存在浏览器 `localStorage` 里，刷新或掉线重连回到原座位、原筹码。
 - **手机能玩**：竖屏适配，牌桌等比缩放，按钮尺寸适合拇指。
-- **零外部依赖**：前端不引用任何 CDN、字体、图片，牌面全用 CSS 画；后端只依赖 `ws`。
+- **前端零外部依赖**：不引用任何 CDN、字体、图片，牌面全用 CSS 画；后端只依赖 `ws`。
+- **占用小**：容器稳定在约 18 MB 内存。
 
-## 怎么玩
-
-1. 第一个入座的人是**房主**，可以改盲注、补充筹码、踢人、重置牌桌（右侧「设置」页）。
-2. 有 2 人及以上有筹码时自动开局，每手结束后默认 6 秒开下一手。
-3. 轮到你时底部出现行动条：`弃牌 / 过牌 / 跟注 N / 下注·加注`，加注支持滑杆与
-   `½ 池 / ⅔ 池 / 底池 / 全下` 快捷键。快捷键：`F` 弃牌、`C` 过牌或跟注、`R` 加注、`Enter` 确认。
-4. 超时（默认 45 秒）自动帮你过牌，不能过牌就弃牌，不会卡住整桌人。
-
-默认配置：盲注 5/10、前注 0、起始筹码 1000、行动时限 45 秒、自动开局开启。全部可在设置里改。
-
-## 本地开发
+## 快速开始
 
 ```bash
+git clone https://github.com/Jinzhengxu/poker-table.git
+cd poker-table
 npm install
-npm start                      # 默认 8080 端口
-# 浏览器打开 http://localhost:8080
+npm start                 # http://localhost:8080
 ```
 
-想一个人试玩，开两个浏览器（或一个正常窗口 + 一个隐私窗口）分别入座即可——
-同一浏览器的两个标签页会被认成同一个人，这是刻意的（防止一个人占两个座）。
+想一个人试玩，开两个不同的浏览器（或一个正常窗口 + 一个隐私窗口）分别入座。
+同一浏览器的两个标签页会被认成同一个人，这是刻意的，防止一个人占两个座。
 
-跑测试：
-
-```bash
-npm test                       # 引擎 + 牌型评估器的单元测试
-```
-
-用 Docker 在本地跑：
+用 Docker：
 
 ```bash
 docker build -t poker-table:local .
 docker run --rm -p 8080:8080 poker-table:local
 ```
 
-## 服务器部署
+## 怎么玩
 
-目标环境是一台 Debian 12 的小 VPS（1GB 内存够用），
-上面已经跑着 Matrix/Element 那套（`matrix-chat-caddy-1` 占着宿主 80/443）。
-本服务**不抢宿主端口**，而是接入 Caddy 所在的 docker 网络，由现有 Caddy 反代 `poker:8080`。
+1. 第一个入座的人是**房主**，可以在「设置」页改盲注、补充筹码、踢人、重置牌桌。
+2. 有 2 人及以上有筹码时自动开局，每手结束后隔几秒开下一手。
+3. 轮到你时底部出现行动条：**弃牌 / 过牌 / 跟注 N / 下注·加注**。
+   加注支持滑杆与 `½ 池 / ⅔ 池 / 底池 / 全下` 快捷键。
+   键盘：`F` 弃牌、`C` 过牌或跟注、`R` 加注、`Enter` 确认。
+4. 超时后系统能过牌就自动过牌，不能过牌就弃牌，不会因为一个人挂机卡住整桌。
 
-### 一、把代码放到服务器上
+默认配置：盲注 5/10、前注 0、起始筹码 1000、行动时限 45 秒、自动开局开启。
+这些房主都能改，但只能在两手牌之间改。
 
-在服务器上以 root 执行：
+## 配置
+
+服务端只读两个环境变量：
+
+| 变量   | 默认值    | 含义                  |
+| ------ | --------- | --------------------- |
+| `PORT` | `8080`    | HTTP + WebSocket 端口 |
+| `HOST` | `0.0.0.0` | 监听地址              |
+
+牌局本身的参数（盲注、前注、起始筹码、行动时限、自动开局）都由房主在运行时改，
+不通过配置文件。
+
+## 部署
+
+`deploy/deploy.sh` 把容器部署到一个**已经存在的 Caddy** 后面——适合机器上已经跑着
+别的站点、80/443 被占用的情况。它不抢宿主端口，而是把容器接进 Caddy 所在的
+docker 网络，不影响机器上原有的服务。
 
 ```bash
-apt-get update && apt-get install -y git
-git clone https://github.com/Jinzhengxu/poker-table.git /root/poker
-```
-
-以后更新就是 `cd /root/poker && git pull && bash deploy/deploy.sh`。
-
-### 二、跑部署脚本
-
-```bash
-cd /root/poker
+# 在服务器上，一次性写好域名
+echo 'POKER_DOMAIN=poker.example.com' >> .env
 bash deploy/deploy.sh
 ```
 
-脚本会自动完成：探测 Caddy 容器与它所在的 docker 网络 → 构建并启动 poker 容器 →
-等待容器 healthy → 备份 Caddyfile → 幂等插入站点块 → `caddy validate` + `caddy reload` → 自检。
+脚本会自动完成：探测 Caddy 容器与它所在的 docker 网络 → 构建并启动容器 →
+等待 healthy → 备份 Caddyfile → 按标记幂等替换站点块 → `caddy validate` +
+`caddy reload` → 端到端自检。
+**`validate` 或 `reload` 任何一步失败都会自动恢复备份并重新 reload**，
+坏配置不会把邻居站点搞挂。脚本可以反复执行，结果一致。
 
-**安全保证**：改 Caddyfile 之前一定先备份；`validate` 或 `reload` 任何一步失败都会自动恢复备份
-并重新 reload，不会把已有的 Matrix 服务搞挂。脚本可以反复执行，结果一致。
+| 变量              | 默认值                        | 含义                       |
+| ----------------- | ----------------------------- | -------------------------- |
+| `POKER_DOMAIN`    | **必填**                      | 站点域名                   |
+| `CADDY_CONTAINER` | `matrix-chat-caddy-1`         | 正在跑的 Caddy 容器名      |
+| `CADDYFILE_HOST`  | `/root/matrix-chat/Caddyfile` | 宿主上的 Caddyfile 路径    |
+| `CADDY_NETWORK`   | 自动探测                      | Caddy 所在的 docker 网络   |
+| `HEALTH_TIMEOUT`  | `60`                          | 等待容器 healthy 的秒数    |
 
-### 三、配置 Cloudflare DNS（顺序很重要）
+下线：`bash deploy/deploy.sh --rollback`。
 
-> 这一步的顺序上次部署 `chat` 子域名时踩过坑，务必按下面来。
+### 配合 Cloudflare
 
-1. Cloudflare → `ccswitch.online` → DNS → 添加记录：
-   - 类型 `A`，名称 `poker`，内容填**这台服务器的公网 IP**
-     （部署脚本跑完会在最后直接把它打印出来）
-   - 代理状态先选 **仅 DNS（灰云）**
-2. 等 1~2 分钟 DNS 生效，访问 `https://poker.ccswitch.online/`。
-   Caddy 会走 Let's Encrypt 的 HTTP-01 挑战签发**正式证书**。
-   看进度：`docker logs -f matrix-chat-caddy-1 | grep -i certificate`
-3. 确认证书颁发者是 Let's Encrypt 之后，再把记录切回 **已代理（橙云）**，
-   并把 SSL/TLS 加密模式设为 **Full**。
+如果域名挂在 Cloudflare 上，**顺序很重要**：先把 `A` 记录设成
+**仅 DNS（灰云）**，让 Caddy 能完成 Let's Encrypt 的 HTTP-01 挑战；
+确认签发到正式证书之后，再切成**已代理（橙云）**并把 SSL/TLS 加密模式设为 **Full**。
 
-为什么不能一上来就开橙云：橙云会把 80 端口的 HTTP-01 挑战拦在 Cloudflare 边缘，
-Caddy 拿不到正式证书就退回内部自签证书，再配上 Flexible 模式就会变成无限重定向或证书报错。
-
-WebSocket 走 Cloudflare 橙云是原生支持的，不需要额外开关。
+一上来就开橙云会让挑战失败；再配上 Flexible 模式会变成无限重定向。
+WebSocket 走 Cloudflare 代理是原生支持的，不需要额外配置。
 
 ## 运维
 
 ```bash
 docker logs -f poker                      # 看日志
-docker restart poker                      # 重启（内存态会清空，等于重开一桌）
-cd /root/poker && bash deploy/deploy.sh   # 改完代码重新部署
-bash deploy/deploy.sh --rollback          # 下线：停容器 + 从 Caddyfile 摘掉站点块
+docker restart poker                      # 重启（内存态清空，等于重开一桌）
+git pull && bash deploy/deploy.sh         # 更新到最新代码
+bash deploy/deploy.sh --rollback          # 下线
 ```
 
-- Caddyfile 备份在 `/root/matrix-chat/` 下，文件名带时间戳。
-- 容器内存上限 200M，日志上限 10M × 3 份。
-- `.env` 里的 `CADDY_NETWORK` 是脚本探测出来的 docker 网络名，不要手工乱改。
+Caddyfile 备份带时间戳存在原 Caddyfile 旁边。容器内存上限 200M，日志上限 10M × 3 份。
 
-## 资源占用
-
-实测容器稳定在 **约 18 MB 内存**（上限设的 200M，留了很大余量），镜像约 236 MB。
-在跑着 Matrix 的 1GB 小机上再加这一个服务没有压力。
-
-## 已知限制
-
-- **只有一张桌子**：整个服务同时只能进行一局。想同时开两桌需要跑第二个实例 + 第二个子域名。
-- **状态在内存里**：进程重启（`docker restart`、服务器重启、部署更新）会清空牌桌，
-  所有人筹码回到初始值。这是刻意的取舍——朋友局不需要持久化，省掉一整个数据库。
-- **没有鉴权**：知道网址的人就能入座。靠"不公开这个子域名"来控制，别发到公开场合。
-- **筹码没有真实价值**：纯记分，不涉及任何真实结算。
-- 断线玩家的座位保留 15 分钟，超时自动离座，避免死人占座。
-
-## 项目结构
+## 架构
 
 ```
 server/
-  index.js      HTTP 静态服务 + WebSocket 入口、输入校验、限流、心跳
-  room.js       房间：座位、令牌、断线重连、计时器、状态快照脱敏下发
+  index.js      静态文件服务、WebSocket 入口、输入校验、限流、心跳
+  room.js       座位、令牌、断线重连、计时器、按观看者脱敏的状态快照
   engine.js     单手牌状态机：盲注、下注轮、边池分层、摊牌分配
   evaluator.js  7 张牌取最优 5 张的牌型评估
   deck.js       牌堆与密码学安全洗牌
   protocol.js   共享常量
 public/         零构建前端（HTML + CSS + 原生 JS）
-test/           node:test 单元测试
+test/           node:test 测试
 deploy/         部署脚本与 Caddy 站点片段
-SPEC.md         前后端接口契约（改协议先改这里）
+SPEC.md         通信协议与模块契约
 ```
 
-前后端之间的消息格式、状态快照结构全部定义在 `SPEC.md`，改任何一边之前先看它。
+前端是服务端状态的纯函数：只消费完整的 `state` 快照并重绘，`event` 消息仅用于
+音效和短暂动画。别人的底牌在**服务端**就被抹掉，只有摊牌结果里被揭示的座位才下发
+真实底牌——客户端永远拿不到它无权看到的牌。
+
+`SPEC.md` 是前后端之间的契约，改消息格式或状态结构之前先看它。
+
+## 测试
+
+```bash
+npm test
+```
+
+覆盖牌型评估（含与暴力实现的随机对拍）、下注引擎（边池、最小加注规则、大盲 option、
+全下边界情况、筹码守恒硬性不变量、随机模糊测试），以及跑真实 WebSocket 服务端的
+端到端测试。
+
+## 已知限制
+
+- **只有一张桌子**：想同时开两桌需要跑第二个实例。
+- **状态在内存里**：进程重启会清空牌桌，所有人筹码回到初始值。
+  这是刻意的取舍——朋友局不需要持久化，省掉一整个数据库。
+- **没有鉴权**：知道网址的人就能入座。把网址本身当密码，或者自己加一层访问控制。
+- **筹码没有真实价值**：不涉及任何下注、结算、支付，也不打算做。
+- 断线玩家的座位保留 15 分钟，超时自动离座。
+
+## 参与贡献
+
+欢迎提 issue 和 PR，见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+改动如果碰到前后端边界，先读 `SPEC.md`。
+
+## 许可证
+
+[GPL-3.0](LICENSE) © Jinzhengxu
+
+本程序是自由软件：你可以在自由软件基金会发布的 GNU 通用公共许可证（第 3 版，
+或你选择的任何更新版本）条款下重新分发和/或修改它。本程序不提供任何担保，
+详见许可证全文。
