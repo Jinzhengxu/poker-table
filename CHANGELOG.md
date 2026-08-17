@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Randomly generated bot personas: five orthogonal traits, 243 combinations. The
   traits are structured, so the rule fallback shifts its thresholds by them rather
   than the personality being cosmetic.
+- Table defaults can be pinned via environment variables (`POKER_BLINDS`,
+  `POKER_STARTING_STACK`, `POKER_ACTION_TIMEOUT`, …) so a redeploy no longer resets
+  them to the code defaults. Validation ranges match the settings panel exactly —
+  an invalid value is logged with its legal range and falls back instead of being
+  silently accepted. New `server/config.js`.
 - `.env.example` documenting every environment variable, and pass-through of the
   bot settings in `docker-compose.yml`.
 - English `README.md`, with the original Chinese documentation moved to

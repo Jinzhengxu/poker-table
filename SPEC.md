@@ -118,6 +118,36 @@ export const DEFAULT_CONFIG = {
 export const MAX_SEATS = 8
 ```
 
+### 5.1 `server/config.js` — 环境变量覆盖初始配置
+
+`DEFAULT_CONFIG` 是**代码默认值**，不随环境变化。运行时的初始配置由
+`configFromEnv(env)` 算出，层次是：
+
+```
+DEFAULT_CONFIG  ->  环境变量  ->  房主在设置页改（内存态，重启后丢）
+```
+
+| 环境变量 | 对应字段 | 单位 |
+|---|---|---|
+| `POKER_BLINDS`（简写，如 `100/200`） | `smallBlind` + `bigBlind` | — |
+| `POKER_SMALL_BLIND` / `POKER_BIG_BLIND` | 同上，**优先级高于简写** | — |
+| `POKER_ANTE` | `ante` | — |
+| `POKER_STARTING_STACK` | `startingStack` | — |
+| `POKER_ACTION_TIMEOUT` | `actionTimeoutMs` | **秒** |
+| `POKER_NEXT_HAND_DELAY` | `autoNextHandMs` | **秒** |
+| `POKER_AUTO_NEXT_HAND` | `autoNextHand` | `true/false/1/0/yes/no/on/off` |
+
+两条硬要求：
+
+1. **校验范围必须与 `room.js` 的 `setConfig` 完全一致。** 否则环境变量能设出一个
+   UI 会拒绝的值，房主一打开设置页保存就被打回。测试里有一条专门验这个：
+   把环境变量算出的配置原样提交给 `setConfig`，必须被接受。
+2. **非法值报错并回退，不静默接受。** 小数不取整、越界不夹取、布尔值写错就报错，
+   并在日志里写出合法范围。启动时还会打印一行实际生效的配置。
+   大盲小于小盲时**整体回退盲注**（只报错留着的话，设置页一保存就会被拒）。
+
+空串视为没设置——`docker-compose.yml` 里未填的变量会透传成空串。
+
 ## 6. `server/engine.js` — 单手牌状态机
 
 引擎只负责**一手牌**，不关心 WebSocket、不关心计时器、不关心持久玩家。

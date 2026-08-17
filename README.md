@@ -170,9 +170,23 @@ The server reads two environment variables:
 | `PORT`   | `8080`    | HTTP + WebSocket port      |
 | `HOST`   | `0.0.0.0` | Bind address               |
 
-Everything about the game itself (blinds, ante, starting stack, action clock,
-auto-start) is changed at runtime by the host, not through configuration files.
-See [`.env.example`](.env.example) for the full list including bot settings.
+Game parameters (blinds, ante, starting stack, action clock, auto-start) are
+changed by the host at runtime, but that lives in memory — a restart returns them
+to the defaults. To pin them down, put them in `.env`:
+
+```bash
+POKER_BLINDS=100/200
+POKER_STARTING_STACK=20000
+POKER_ACTION_TIMEOUT=45        # seconds
+```
+
+Validation ranges match the settings panel exactly; an invalid value is reported in
+the startup log and falls back rather than being silently accepted, and the effective
+configuration is printed on boot. Full list in [`.env.example`](.env.example).
+
+> **Give the starting stack roughly 100 big blinds.** At 100/200 blinds a stack of
+> 1000 is five big blinds — a depth where there is no postflop game left and correct
+> play collapses to shove-or-fold, however clever the bots are.
 
 ## Deployment
 

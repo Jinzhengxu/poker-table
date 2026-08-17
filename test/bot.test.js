@@ -15,6 +15,8 @@ import { buildUser, buildSystem, coerceAction, sanitizeName, positionName } from
 import { parseJSONObject, ProviderError, isRetryable } from '../server/bot/provider.js';
 import { BotDriver, randomPersona, PERSONA_NAMES, PERSONA_DIMENSIONS } from '../server/bot/index.js';
 import { traitBias } from '../server/bot/persona.js';
+import { configFromEnv } from '../server/config.js';
+import { DEFAULT_CONFIG } from '../server/protocol.js';
 
 /** 测试里用的固定人格，避免随机性影响断言 */
 const P0 = { name: '测试甲', traits: {}, style: '中规中矩。' };
@@ -1204,6 +1206,131 @@ test('有人连回来后自动恢复开局', async () => {
   await new Promise((r) => setTimeout(r, 400));
 
   assert.ok(room.handNo > paused, '有人观战后应该自动继续');
+  room.shutdown();
+});
+
+// ==================== 环境变量覆盖牌桌初始配置 ====================
+
+/** 静默 logger，只收集错误行供断言 */
+function quietLogger() {
+  const errors = [];
+  return { errors, error: (m) => errors.push(m), log: () => {} };
+}
+
+test('configFromEnv：什么都不设时就是 DEFAULT_CONFIG', () => {
+  assert.deepEqual(configFromEnv({}, quietLogger()), DEFAULT_CONFIG);
+});
+
+test('configFromEnv：POKER_BLINDS=100/200 简写', () => {
+  const c = configFromEnv({ POKER_BLINDS: '100/200' }, quietLogger());
+  assert.equal(c.smallBlind, 100);
+  assert.equal(c.bigBlind, 200);
+  // 空格宽容
+  const c2 = configFromEnv({ POKER_BLINDS: ' 50 / 100 ' }, quietLogger());
+  assert.equal(c2.smallBlind, 50);
+  assert.equal(c2.bigBlind, 100);
+});
+
+test('configFromEnv：单独的变量优先级高于 POKER_BLINDS 简写', () => {
+  const c = configFromEnv(
+    { POKER_BLINDS: '100/200', POKER_BIG_BLIND: '500' },
+    quietLogger()
+  );
+  assert.equal(c.smallBlind, 100, '简写里的小盲仍然生效');
+  assert.equal(c.bigBlind, 500, '单独设的大盲应该覆盖简写');
+});
+
+test('configFromEnv：时间类用秒填，内部存毫秒', () => {
+  const c = configFromEnv(
+    { POKER_ACTION_TIMEOUT: '30', POKER_NEXT_HAND_DELAY: '10' },
+    quietLogger()
+  );
+  assert.equal(c.actionTimeoutMs, 30000);
+  assert.equal(c.autoNextHandMs, 10000);
+});
+
+test('configFromEnv：起始筹码与前注', () => {
+  const c = configFromEnv(
+    { POKER_STARTING_STACK: '20000', POKER_ANTE: '25' },
+    quietLogger()
+  );
+  assert.equal(c.startingStack, 20000);
+  assert.equal(c.ante, 25);
+});
+
+test('configFromEnv：布尔值的各种写法', () => {
+  for (const v of ['false', 'FALSE', '0', 'no', 'off']) {
+    assert.equal(configFromEnv({ POKER_AUTO_NEXT_HAND: v }, quietLogger()).autoNextHand, false, v);
+  }
+  for (const v of ['true', '1', 'yes', 'ON']) {
+    assert.equal(configFromEnv({ POKER_AUTO_NEXT_HAND: v }, quietLogger()).autoNextHand, true, v);
+  }
+});
+
+test('configFromEnv：非法值报错并回退，不静默接受', () => {
+  const cases = [
+    ['POKER_STARTING_STACK', '2000O', /POKER_STARTING_STACK/],   // 字母 O
+    ['POKER_STARTING_STACK', '0', /POKER_STARTING_STACK/],       // 越界
+    ['POKER_STARTING_STACK', '12.5', /POKER_STARTING_STACK/],    // 小数不能悄悄取整
+    ['POKER_ACTION_TIMEOUT', '1', /POKER_ACTION_TIMEOUT/],       // 低于 5 秒
+    ['POKER_ACTION_TIMEOUT', '9999', /POKER_ACTION_TIMEOUT/],    // 高于 300 秒
+    ['POKER_AUTO_NEXT_HAND', '大概吧', /POKER_AUTO_NEXT_HAND/],
+    ['POKER_BLINDS', '100-200', /POKER_BLINDS/],
+  ];
+  for (const [key, val, pattern] of cases) {
+    const lg = quietLogger();
+    const c = configFromEnv({ [key]: val }, lg);
+    assert.ok(lg.errors.some((e) => pattern.test(e)), `${key}=${val} 应该报错，实际：${lg.errors}`);
+    assert.deepEqual(c, DEFAULT_CONFIG, `${key}=${val} 应该整体回退到默认值`);
+  }
+});
+
+test('configFromEnv：大盲小于小盲时整体回退盲注（否则设置页一保存就被拒）', () => {
+  const lg = quietLogger();
+  const c = configFromEnv({ POKER_SMALL_BLIND: '500', POKER_BIG_BLIND: '100' }, lg);
+  assert.equal(c.smallBlind, DEFAULT_CONFIG.smallBlind);
+  assert.equal(c.bigBlind, DEFAULT_CONFIG.bigBlind);
+  assert.ok(lg.errors.some((e) => /大盲注/.test(e)), '要说明为什么回退');
+});
+
+test('configFromEnv：空串视为没设置（compose 未填的变量会透传成空串）', () => {
+  const c = configFromEnv(
+    { POKER_BLINDS: '', POKER_STARTING_STACK: '', POKER_AUTO_NEXT_HAND: '  ' },
+    quietLogger()
+  );
+  assert.deepEqual(c, DEFAULT_CONFIG);
+});
+
+test('configFromEnv 的取值范围与 setConfig 完全一致', () => {
+  // 环境变量能设出来的值，房主在设置页保存必须也能通过，否则一打开就被打回
+  const room = new Room({ config: configFromEnv({
+    POKER_BLINDS: '100/200',
+    POKER_STARTING_STACK: '20000',
+    POKER_ACTION_TIMEOUT: '60',
+    POKER_NEXT_HAND_DELAY: '3',
+    POKER_ANTE: '10',
+  }, quietLogger()) });
+
+  const host = stubClient();
+  room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+
+  // 原样提交一遍当前配置，应该被接受
+  const res = room.setConfig(host, { ...room.config });
+  assert.equal(res.ok, true, `环境变量给出的配置被 setConfig 拒了：${res.msg}`);
+  room.shutdown();
+});
+
+test('Room：环境变量配置真的生效到入座发的筹码', () => {
+  const room = new Room({
+    config: configFromEnv({ POKER_STARTING_STACK: '20000', POKER_BLINDS: '100/200' }, quietLogger()),
+  });
+  const c = stubClient();
+  room.attach(c); room.hello(c, null); room.sit(c, 0, '我');
+  assert.equal(room.players.get(room.seats[0]).chips, 20000, '入座应该发环境变量指定的筹码');
+
+  const snap = room.buildStateFor(c.playerId);
+  assert.equal(snap.config.smallBlind, 100);
+  assert.equal(snap.config.bigBlind, 200);
   room.shutdown();
 });
 

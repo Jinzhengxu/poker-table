@@ -13,6 +13,7 @@ import { WebSocketServer } from 'ws';
 import { Room } from './room.js';
 import { MAX_SEATS } from './protocol.js';
 import { BotDriver } from './bot/index.js';
+import { configFromEnv } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
@@ -51,7 +52,16 @@ const MIME = {
 const botDriver = new BotDriver();
 console.log(`[bot] 人机后端：${botDriver.describe()}`);
 
-const room = new Room({ botDriver });
+// 牌桌初始配置：代码默认值 -> 环境变量覆盖。房主之后仍可在设置页改，
+// 但那是内存态，重启后回到这里算出来的值。
+const initialConfig = configFromEnv();
+console.log(
+  `[config] 牌桌初始设置：盲注 ${initialConfig.smallBlind}/${initialConfig.bigBlind}，` +
+  `前注 ${initialConfig.ante}，起始筹码 ${initialConfig.startingStack}，` +
+  `行动时限 ${initialConfig.actionTimeoutMs / 1000}s`
+);
+
+const room = new Room({ botDriver, config: initialConfig });
 
 // ==================== HTTP ====================
 
