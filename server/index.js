@@ -42,6 +42,7 @@ const MIME = {
   '.jpeg': 'image/jpeg',
   '.gif': 'image/gif',
   '.webp': 'image/webp',
+  '.mp3': 'audio/mpeg',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
   '.txt': 'text/plain; charset=utf-8',
@@ -132,8 +133,10 @@ const server = http.createServer(async (req, res) => {
     const headers = {
       'Content-Type': type,
       'Content-Length': data.length,
-      // HTML 不缓存，其余短缓存
-      'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=60',
+      // HTML 不缓存；音频是几 MB 的固定资源，缓一天，不然每分钟重下一次背景音乐；其余短缓存
+      'Cache-Control': ext === '.html'
+        ? 'no-cache'
+        : (ext === '.mp3' ? 'public, max-age=86400' : 'public, max-age=60'),
       'X-Content-Type-Options': 'nosniff',
     };
     res.writeHead(200, headers);

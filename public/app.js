@@ -214,6 +214,7 @@
     D.chipsTitle = $('#chipsTitle');
     D.chipsAmt = $('#chipsAmt');
 
+    D.bgm = $('#bgm');
     D.toasts = $('#toasts');
     D.fatalMask = $('#fatalMask');
     D.fatalTitle = $('#fatalTitle');
@@ -547,174 +548,72 @@
 
   // ============================ 背景音乐 ============================
   //
-  // 小酒馆爵士味的慢速循环：ii–V–I–vi 的和弦垫 + 走低音 + 偶尔一颗单音点缀。
-  // 整段是实时合成的 —— 这个项目不引任何外部资源（连字体和图标都是 CSS 画的），
-  // 塞个 mp3 进来会破掉这条线，何况几分钟的音频文件比整个前端还大。
+  // 一段公有领域的老钢琴曲（Scott Joplin《Solace》1909），文件在 public/music/，
+  // 授权与转码参数见 music/README.md。之前这里是实时合成的和弦垫，
+  // 听着像电子琴演示音而不是酒馆，换成真录音了。
   //
-  // 走自己的一条总线接进限幅器：既不吃音效那 4.6 倍的增益（会吵死），
-  // 又能被限幅器一起兜住峰值。音效响的时候音乐会被压一下，像侧链闪避，正好。
-
-  /** 每个和弦持续多久（秒）。66 BPM 左右的四拍。 */
-  var MUSIC_CHORD_SECS = 3.6;
-  /** 提前排程的时间窗，比调度心跳长，切后台被节流也不至于断拍 */
-  var MUSIC_LOOKAHEAD = 1.6;
-  var MUSIC_TICK_MS = 400;
-  /** 总音量：压得很低，是背景不是主角 */
-  var MUSIC_LEVEL = 0.16;
+  // 走 WebAudio 而不是直接用 <audio>.volume：接进跟音效同一个限幅器，
+  // 音效响的时候音乐会被压一下（侧链闪避），加起来也不会削顶。
 
   /**
-   * 和弦进行，MIDI 音高（60 = 中央 C）。
-   * Dm9 → G13 → Cmaj9 → Am9，四个和弦之间是级进的声部连接，
-   * 所以循环起来不会有明显的"又从头开始了"的接缝。
+   * 播放音量。按文件已归一到 -18 LUFS 调的，换曲子请照 README 一起归一化。
+   * 实测这个值下音乐单独播放约 -13 dBFS 峰值 / -30 dBFS RMS ——
+   * 听得见但压得住，音效盖上去时不会挤成一团。
    */
-  var MUSIC_CHORDS = [
-    { bass: 38, notes: [53, 57, 60, 64] },  // Dm9   D2  / F3 A3 C4 E4
-    { bass: 43, notes: [53, 59, 64, 69] },  // G13   G2  / F3 B3 E4 A4
-    { bass: 36, notes: [52, 55, 59, 62] },  // Cmaj9 C2  / E3 G3 B3 D4
-    { bass: 45, notes: [55, 59, 60, 64] }   // Am9   A2  / G3 B3 C4 E4
-  ];
-  /**
-   * 点缀音。刻意避开 F（77）：它在 Cmaj9 上是避免音、在 Am9 上是 b6，
-   * 单独一颗钟琴音敲上去会有点刺。剩下的 A B C D E G 套在四个和弦上都是协和音。
-   */
-  var MUSIC_MELODY = [69, 71, 72, 74, 76, 79, 81];
+  var MUSIC_LEVEL = 0.2;
 
-  var music = {
-    bus: null,
-    timer: null,
-    nextAt: 0,
-    step: 0
-  };
+  var music = { bus: null, src: null, fadeTimer: null };
 
-  function midiHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
-
-  /** 一颗和弦垫音：两个略微失谐的三角波过低通，慢起慢落 */
-  function musicPad(midi, at, dur, gain) {
-    var ctx = audioCtx;
-    if (!ctx || !music.bus) return;
+  /** 把 <audio> 接进音频图。只能接一次，重复调用会抛错。 */
+  function musicWire() {
+    var ctx = audio();
+    if (!ctx || !D.bgm) return null;
+    if (music.bus) return music.bus;
     try {
-      var f = midiHz(midi);
-      var flt = ctx.createBiquadFilter();
-      flt.type = 'lowpass';
-      flt.frequency.value = 1500;
-      flt.Q.value = 0.5;
-      var g = ctx.createGain();
-      g.gain.setValueAtTime(0.0001, at);
-      g.gain.exponentialRampToValueAtTime(gain, at + 0.9);        // 慢起，不能有攻击感
-      g.gain.setValueAtTime(gain, at + dur * 0.55);
-      g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
-      flt.connect(g);
-      g.connect(music.bus);
-      for (var d = 0; d < 2; d++) {
-        var osc = ctx.createOscillator();
-        osc.type = 'triangle';
-        osc.frequency.value = f * (d === 0 ? 1 : 1.0035);          // 失谐一点点，音色才不干
-        osc.connect(flt);
-        osc.start(at);
-        osc.stop(at + dur + 0.1);
-      }
-    } catch (e) { /* 音乐挂了不影响牌局 */ }
-  }
-
-  /** 低音：圆一点、带点衰减的拨弦感 */
-  function musicBass(midi, at, dur) {
-    var ctx = audioCtx;
-    if (!ctx || !music.bus) return;
-    try {
-      var osc = ctx.createOscillator();
-      osc.type = 'sine';
-      osc.frequency.value = midiHz(midi);
-      var g = ctx.createGain();
-      g.gain.setValueAtTime(0.0001, at);
-      g.gain.exponentialRampToValueAtTime(0.5, at + 0.06);
-      g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
-      osc.connect(g);
-      g.connect(music.bus);
-      osc.start(at);
-      osc.stop(at + dur + 0.05);
-    } catch (e) { /* 忽略 */ }
-  }
-
-  /** 点缀单音：钟琴那种小亮点，稀疏地撒 */
-  function musicBell(midi, at) {
-    var ctx = audioCtx;
-    if (!ctx || !music.bus) return;
-    try {
-      var g = ctx.createGain();
-      g.gain.setValueAtTime(0.0001, at);
-      g.gain.exponentialRampToValueAtTime(0.22, at + 0.04);
-      g.gain.exponentialRampToValueAtTime(0.0001, at + 2.2);
-      g.connect(music.bus);
-      var f = midiHz(midi);
-      [[1, 1], [2, 0.28], [3, 0.1]].forEach(function (h) {          // 泛音堆出金属感
-        var osc = ctx.createOscillator();
-        var hg = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.value = f * h[0];
-        hg.gain.value = h[1];
-        osc.connect(hg);
-        hg.connect(g);
-        osc.start(at);
-        osc.stop(at + 2.3);
-      });
-    } catch (e) { /* 忽略 */ }
-  }
-
-  /** 排一个和弦：低音 + 四声部垫 + 也许一颗点缀 */
-  function musicScheduleChord(at, step) {
-    var ch = MUSIC_CHORDS[step % MUSIC_CHORDS.length];
-    musicBass(ch.bass, at, MUSIC_CHORD_SECS * 0.9);
-    // 第五拍再补一记低音（八度上方），走起来才像在"走"
-    musicBass(ch.bass + 12, at + MUSIC_CHORD_SECS * 0.5, MUSIC_CHORD_SECS * 0.35);
-    for (var i = 0; i < ch.notes.length; i++) {
-      // 每个声部起音错开几十毫秒，像手指按下去的先后
-      musicPad(ch.notes[i], at + i * 0.035, MUSIC_CHORD_SECS * 1.15, 0.24);
-    }
-    if (Math.random() < 0.55) {
-      var m = MUSIC_MELODY[Math.floor(Math.random() * MUSIC_MELODY.length)];
-      musicBell(m, at + MUSIC_CHORD_SECS * (0.3 + Math.random() * 0.5));
+      music.bus = ctx.createGain();
+      music.bus.gain.value = 0.0001;
+      music.bus.connect(limiterNode || ctx.destination);
+      music.src = ctx.createMediaElementSource(D.bgm);
+      music.src.connect(music.bus);
+      return music.bus;
+    } catch (e) {
+      music.bus = null;
+      return null;
     }
   }
 
-  function musicTick() {
+  /** 淡到某个音量，秒为单位 */
+  function musicFade(to, secs) {
     var ctx = audioCtx;
     if (!ctx || !music.bus) return;
-    // 切到后台时 setInterval 会被节流，回来别把积压的和弦一口气全排出去
-    if (music.nextAt < ctx.currentTime) music.nextAt = ctx.currentTime + 0.05;
-    while (music.nextAt < ctx.currentTime + MUSIC_LOOKAHEAD) {
-      musicScheduleChord(music.nextAt, music.step);
-      music.nextAt += MUSIC_CHORD_SECS;
-      music.step += 1;
-    }
+    var t = ctx.currentTime;
+    try {
+      music.bus.gain.cancelScheduledValues(t);
+      music.bus.gain.setValueAtTime(Math.max(0.0001, music.bus.gain.value), t);
+      music.bus.gain.exponentialRampToValueAtTime(Math.max(0.0001, to), t + secs);
+    } catch (e) { /* 音乐失败不影响牌局 */ }
   }
 
   function musicStart() {
-    if (music.timer) return;
-    var ctx = audio();
-    if (!ctx) return;
-    music.bus = ctx.createGain();
-    music.bus.gain.setValueAtTime(0.0001, ctx.currentTime);
-    // 淡入 3 秒：音乐是"慢慢有了"，不是"啪一下开了"
-    music.bus.gain.exponentialRampToValueAtTime(MUSIC_LEVEL, ctx.currentTime + 3);
-    music.bus.connect(limiterNode || ctx.destination);
-    music.nextAt = ctx.currentTime + 0.15;
-    musicTick();
-    music.timer = setInterval(musicTick, MUSIC_TICK_MS);
+    if (!D.bgm) return;
+    if (!musicWire()) return;
+    if (music.fadeTimer) { clearTimeout(music.fadeTimer); music.fadeTimer = null; }
+    // 淡入 4 秒：背景音乐要"慢慢有了"，不是"啪一下开了"
+    musicFade(MUSIC_LEVEL, 4);
+    var pending = D.bgm.play();
+    // 没有用户手势时 play() 会 reject，这不是错误，等下次交互再说
+    if (pending && pending.catch) pending.catch(function () { /* 等手势 */ });
   }
 
   function musicStop() {
-    if (music.timer) { clearInterval(music.timer); music.timer = null; }
-    var bus = music.bus;
-    music.bus = null;
-    if (!bus || !audioCtx) return;
-    // 淡出再断开，免得"咔"一声
-    var t = audioCtx.currentTime;
-    try {
-      bus.gain.cancelScheduledValues(t);
-      bus.gain.setValueAtTime(Math.max(0.0001, bus.gain.value), t);
-      bus.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
-    } catch (e) { /* 忽略 */ }
-    setTimeout(function () { try { bus.disconnect(); } catch (e) { /* 忽略 */ } }, 1500);
+    if (!D.bgm) return;
+    musicFade(0.0001, 1.2);
+    if (music.fadeTimer) clearTimeout(music.fadeTimer);
+    // 等淡出走完再暂停，直接 pause 会"咔"一声
+    music.fadeTimer = setTimeout(function () {
+      music.fadeTimer = null;
+      try { D.bgm.pause(); } catch (e) { /* 忽略 */ }
+    }, 1400);
   }
 
   /** 按当前开关把音乐拉起来或停掉 */
@@ -2468,14 +2367,17 @@
 
     // 首次交互解锁音频。浏览器的自动播放策略要求必须有用户手势，
     // 背景音乐也只能等到这一刻才真正开得起来。
+    // 监听器**不摘**，每次手势都重试一遍：
+    // 自动播放策略只认"用户激活"，而第一次交互不一定给得到（合成点击、
+    // 某些辅助技术路径都拿不到），play() 会被拒。只试一次就把监听摘掉的话，
+    // 那一拒就是永久没有背景音乐。已经在放了就直接返回，开销可以忽略。
     var unlock = function () {
       audio();
-      syncMusic();
-      window.removeEventListener('pointerdown', unlock);
-      window.removeEventListener('keydown', unlock);
+      if (S.musicOn && D.bgm && D.bgm.paused) musicStart();
     };
-    window.addEventListener('pointerdown', unlock);
-    window.addEventListener('keydown', unlock);
+    ['pointerdown', 'touchend', 'keydown', 'click'].forEach(function (evt) {
+      window.addEventListener(evt, unlock);
+    });
   }
 
   // ============================ 启动 ============================
