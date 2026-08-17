@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { Hand } from '../server/engine.js';
 import { Room } from '../server/room.js';
 import { chenScore, handStrength, decideByRule, clamp } from '../server/bot/policy.js';
-import { buildUser, buildSystem, coerceAction, sanitizeName } from '../server/bot/decide.js';
+import { buildUser, buildSystem, coerceAction, sanitizeName, positionName } from '../server/bot/decide.js';
 import { parseJSONObject, ProviderError, isRetryable } from '../server/bot/provider.js';
 import { BotDriver, PERSONAS } from '../server/bot/index.js';
 
@@ -239,6 +239,110 @@ test('提示词只列出当前合法的动作', () => {
   const facing = buildUser(fakeState(LEGAL_FACING_BET));
   assert.ok(facing.includes('- call'), '面对下注时应该列出 call');
   assert.ok(!facing.includes('- check'), '不能过牌时不该列出 check');
+});
+
+// ==================== 位置 / 行动历史 / 底池赔率 ====================
+
+test('positionName：单挑时按钮即小盲', () => {
+  assert.equal(positionName(0, [0, 1], 0), '按钮/小盲');
+  assert.equal(positionName(1, [0, 1], 0), '大盲');
+});
+
+test('positionName：6 人局的六个位置', () => {
+  const order = [0, 1, 2, 3, 4, 5];
+  assert.equal(positionName(0, order, 0), '按钮');
+  assert.equal(positionName(1, order, 0), '小盲');
+  assert.equal(positionName(2, order, 0), '大盲');
+  assert.equal(positionName(3, order, 0), '枪口位');
+  assert.equal(positionName(4, order, 0), '劫位');
+  assert.equal(positionName(5, order, 0), '关煞位');
+});
+
+test('positionName：按钮不在 0 号位时也正确（座位可以不连续）', () => {
+  const order = [1, 3, 6, 7];   // 4 人，按钮在 6
+  assert.equal(positionName(6, order, 6), '按钮');
+  assert.equal(positionName(7, order, 6), '小盲');
+  assert.equal(positionName(1, order, 6), '大盲');
+  assert.equal(positionName(3, order, 6), '枪口位');
+});
+
+test('提示词里 call 统一换算成「跟注到」，不再混用增量和总额', () => {
+  const st = fakeState(LEGAL_FACING_BET, { phase: 'preflop', board: [] });
+  st.table.buttonSeat = 0;
+  st.table.history = [{
+    street: 'preflop',
+    acts: [
+      { seat: 1, type: 'raise', amount: 600 },
+      { seat: 0, type: 'call', amount: 500 },   // 增量 500，其实跟到了 600
+    ],
+  }];
+  const prompt = buildUser(st);
+  assert.ok(prompt.includes('加注到 600'), '加注显示总额');
+  assert.ok(prompt.includes('跟注到 600'), '跟注要显示"跟到多少"而不是增量');
+  assert.ok(!prompt.includes('跟注到 500'), '不该把增量当成跟注额写出去');
+});
+
+test('提示词里带上算好的底池赔率', () => {
+  const st = fakeState(
+    { ...LEGAL_FACING_BET, canCall: true, callAmount: 100 },
+    { pot: 300 }
+  );
+  const prompt = buildUser(st);
+  // 100 / (300 + 100) = 25%
+  assert.ok(prompt.includes('跟注后底池 400'), '要写出跟注后的底池');
+  assert.ok(prompt.includes('高于 25%'), `应该算出 25%，实际提示词：\n${prompt}`);
+});
+
+test('提示词里有行动历史，且历史里不含任何牌面', () => {
+  const st = fakeState(LEGAL_FACING_BET);
+  st.table.buttonSeat = 0;
+  st.table.history = [
+    { street: 'preflop', acts: [{ seat: 0, type: 'raise', amount: 40 }] },
+    { street: 'flop', acts: [{ seat: 1, type: 'check', amount: 0 }] },
+  ];
+  const prompt = buildUser(st);
+  assert.ok(prompt.includes('本手到目前为止'), '应该有历史小节');
+  assert.ok(prompt.includes('翻牌前：'), '应该按街道分段');
+  assert.ok(prompt.includes('翻牌：'), '应该按街道分段');
+
+  // 历史是纯动作数据，不该出现任何牌
+  const histBlock = prompt.split('本手到目前为止：')[1].split('可选动作')[0];
+  assert.ok(!/[♠♥♦♣]/.test(histBlock), '行动历史里不该出现牌面');
+});
+
+test('Room：快照里的 history 按街道分段，且只含座位/动作/金额', () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({
+    botDriver: d,
+    config: { autoNextHand: false, actionTimeoutMs: 60000, smallBlind: 5, bigBlind: 10 },
+  });
+  const a = stubClient(); room.attach(a); room.hello(a, null); room.sit(a, 0, '甲');
+  const b = stubClient(); room.attach(b); room.hello(b, null); room.sit(b, 1, '乙');
+  room.startHand();
+
+  // 走完翻牌前
+  let guard = 0;
+  while (room.hand && !room.hand.isComplete && room.hand.board.length === 0 && guard++ < 10) {
+    const seat = room.hand.actingSeat;
+    const lg = room.hand.legalActions(seat);
+    room.action(seat === 0 ? a : b, { type: lg.canCheck ? 'check' : 'call', handNo: room.hand.handNo });
+  }
+
+  const hist = room.buildStateFor(a.playerId).table.history;
+  assert.ok(Array.isArray(hist) && hist.length >= 1, '应该有历史');
+  assert.equal(hist[0].street, 'preflop');
+  for (const st of hist) {
+    for (const act of st.acts) {
+      assert.deepEqual(
+        Object.keys(act).sort(), ['amount', 'seat', 'type'],
+        'history 条目只该有 seat/type/amount 三个字段'
+      );
+      assert.ok(['fold', 'check', 'call', 'bet', 'raise', 'allin'].includes(act.type));
+    }
+  }
+  const dumped = JSON.stringify(hist);
+  assert.ok(!/[♠♥♦♣]|"[2-9TJQKA][cdhs]"/.test(dumped), 'history 里绝对不该有牌');
+  room.shutdown();
 });
 
 // ==================== 供应商响应解析 ====================

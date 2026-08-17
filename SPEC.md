@@ -231,7 +231,10 @@ export class Hand {
 事件用于前端日志与动画，结构：`{ kind, seat?, amount?, text }`，`text` 是可直接展示的中文。
 必须产生的 kind：`blind` `ante` `deal` `action` `flop` `turn` `river` `showdown` `pot` `win` `return`。
 
-示例：`{kind:'action', seat:3, amount:80, text:'小明 加注到 80'}`
+示例：`{kind:'action', seat:3, amount:80, type:'raise', text:'小明 加注到 80'}`
+
+`action` 事件额外带 `type` 字段（`fold`/`check`/`call`/`bet`/`raise`/`allin`）。
+前端只用 `text`；人机需要结构化的行动历史，从中文 `text` 反解太脆。
 
 中文动作用词：弃牌 / 过牌 / 跟注 {n} / 下注 {n} / 加注到 {n} / 全下 {n}。
 
@@ -325,7 +328,12 @@ export class Hand {
     "actionDeadline": 1734000045000,
     "nextHandAt": null,
     "canStart": false,
-    "seatedCount": 4
+    "seatedCount": 4,
+    "history": [
+      {"street":"preflop","acts":[{"seat":5,"type":"raise","amount":40},
+                                  {"seat":0,"type":"call","amount":30}]},
+      {"street":"flop","acts":[{"seat":0,"type":"check","amount":0}]}
+    ]
   },
   "seats": [
     null,
@@ -361,6 +369,12 @@ export class Hand {
 - `result` 在 `phase === 'handOver'` 时非 `null`，结构见 §6 的 `Hand.result`，
   外加每个 winner 的 `name` 字段方便前端直接展示。
 - `log` 保留最近 40 条，`chat` 保留最近 50 条。
+- `table.history` 是本手牌的行动序列，按街道分段，每条只有 `seat`/`type`/`amount`。
+  **不含任何牌面**，所以给谁看都安全。金额语义沿用引擎约定：
+  `bet`/`raise`/`allin` 是本轮总投入额，`call` 是增量——渲染给人看之前要换算，
+  否则"小盲跟注 500、大盲跟注 400"会被误读成后者投得更少（两人其实都跟到了 600）。
+- `bot` 是人机后端状态，**永远不含真实 apiKey**；打码后的 `maskedKey` 只发给房主，
+  其他人只有 `hasLLM` 与供应商/模型名。见 §8.4.3。
 
 ## 8.4 人机（`server/bot/`）
 
@@ -392,6 +406,23 @@ export class Hand {
    任何无法修正的输出都退回规则策略。
 
 以上三条各有对应的测试（`test/bot.test.js` 的「安全」小节），改动时不要绕过。
+
+### 8.4.1b 提示词包含什么
+
+`buildSystem(persona)` 是稳定的（同一人机每次相同，便于命中前缀缓存），
+`buildUser(state)` 每次决策重新生成，内容全部来自脱敏快照：
+
+| 段落 | 来源 | 说明 |
+|---|---|---|
+| 阶段 / 盲注 / 人数 | `table`、`config` | 房主改了盲注会立刻反映 |
+| 你的位置 | `positionName()` 从 `buttonSeat` 推导 | 枪口位/劫位/关煞位/按钮/小盲/大盲；单挑时按钮即小盲 |
+| 公共牌 / 自己底牌 | `table.board`、`you.cards` | 别人的底牌是 `??`，不会出现 |
+| 其他人 | `seats` | 位置、筹码、本轮投入、是否弃牌/全下 |
+| 本手行动序列 | `table.history` | 按街道分段，`call` 已换算成"跟注到 N" |
+| 可选动作 | `you.legal` | **只列当前合法的**，并写明金额区间 |
+| 底池赔率 | 代码算 | `callAmount / (totalPot + callAmount)`，模型算数不可靠 |
+
+不包含：别人的底牌、聊天记录、其他手牌的历史、任何 API key。
 
 ### 8.4.2 失败行为
 

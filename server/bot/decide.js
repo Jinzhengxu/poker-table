@@ -44,6 +44,46 @@ const PHASE_CN = {
   river: '河牌',
 };
 
+const ACTION_CN = {
+  fold: '弃牌',
+  check: '过牌',
+  call: '跟注',
+  bet: '下注到',
+  raise: '加注到',
+  allin: '全下',
+};
+
+/**
+ * 位置名。德扑里位置比牌力还重要，让模型自己从「谁有按钮」去推太绕。
+ *
+ * @param {number} seat      要算的座位
+ * @param {number[]} order   本手牌参与者的座位，升序
+ * @param {number} buttonSeat
+ */
+export function positionName(seat, order, buttonSeat) {
+  const n = order.length;
+  if (n < 2) return '';
+  const btnIdx = order.indexOf(buttonSeat);
+  if (btnIdx < 0) return '';
+  // 距离按钮左手第一位有多远
+  const idx = order.indexOf(seat);
+  if (idx < 0) return '';
+  const fromBtn = (idx - btnIdx + n) % n;
+
+  if (n === 2) {
+    // 单挑：按钮就是小盲
+    return fromBtn === 0 ? '按钮/小盲' : '大盲';
+  }
+  if (fromBtn === 0) return '按钮';
+  if (fromBtn === 1) return '小盲';
+  if (fromBtn === 2) return '大盲';
+  // 按钮左手第三位 = 大盲左手第一位 = 翻牌前第一个行动的人，人数多少都是枪口位
+  if (fromBtn === 3) return '枪口位';
+  if (fromBtn === n - 1) return '关煞位';        // 按钮右手第一位
+  if (fromBtn === n - 2) return '劫位';
+  return '中位';
+}
+
 /**
  * 系统提示词。这部分是稳定的，放前面便于命中提示缓存。
  * @param {object} persona {name, style}
@@ -79,9 +119,20 @@ export function buildUser(state) {
   const mySeat = you.seat;
   const me = seats[mySeat];
 
+  // 本手牌的参与者（含已弃牌的），按座位升序 —— 算位置要用
+  const inHand = seats
+    .filter((s) => s && ['in', 'folded', 'allin'].includes(s.state))
+    .map((s) => s.seat);
+  const myPos = positionName(mySeat, inHand, table.buttonSeat);
+  const nameOfSeat = (seat) => {
+    const s = seats[seat];
+    return s ? sanitizeName(s.name) : `座位${seat + 1}`;
+  };
+
   const lines = [];
   lines.push(`阶段：${PHASE_CN[table.phase] || table.phase}（第 ${table.handNo} 手）`);
-  lines.push(`盲注：${config.smallBlind}/${config.bigBlind}`);
+  lines.push(`盲注：${config.smallBlind}/${config.bigBlind}，本手 ${inHand.length} 人参与`);
+  lines.push(`你的位置：${myPos}`);
   lines.push(`公共牌：${prettyCards(table.board)}`);
   lines.push(`你的底牌：${prettyCards(you.cards)}`);
   lines.push(`底池：${table.totalPot}`);
@@ -92,25 +143,53 @@ export function buildUser(state) {
   for (const s of seats) {
     if (!s || s.seat === mySeat) continue;
     if (s.state === 'empty' || s.state === 'sittingOut') continue;
-    const tags = [];
-    if (s.isButton) tags.push('按钮');
-    if (s.isSB) tags.push('小盲');
-    if (s.isBB) tags.push('大盲');
+    const tags = [positionName(s.seat, inHand, table.buttonSeat) || '在座'];
     if (s.state === 'folded') tags.push('已弃牌');
     if (s.state === 'allin') tags.push('全下');
-    const act = s.lastAction ? `，最近：${s.lastAction.label}` : '';
     lines.push(
-      `- ${sanitizeName(s.name)}（${tags.join('/') || '在座'}）筹码 ${s.chips}，本轮投入 ${s.committedRound}${act}`
+      `- ${sanitizeName(s.name)}（${tags.join('，')}）筹码 ${s.chips}，本轮投入 ${s.committedRound}`
     );
   }
   lines.push('');
+
+  // 本手行动序列：让模型能看出对手这一手打得凶不凶，
+  // 而不是只知道他最近一个动作。
+  const history = Array.isArray(table.history) ? table.history : [];
+  if (history.length) {
+    lines.push('本手到目前为止：');
+    for (const st of history) {
+      // 引擎里 bet/raise/allin 的 amount 是「本轮总投入额」，call 的 amount 是「增量」。
+      // 两种语义混排会让模型以为后跟注的人投得更少（小盲跟注 500、大盲跟注 400，
+      // 其实都跟到了 600）。这里统一换算成「跟到多少」再写出去。
+      let level = st.street === 'preflop' ? (config.bigBlind || 0) : 0;
+      const acts = st.acts.map((a) => {
+        const verb = ACTION_CN[a.type] || a.type;
+        if (a.type === 'fold' || a.type === 'check') {
+          return `${nameOfSeat(a.seat)} ${verb}`;
+        }
+        if (a.type === 'call') {
+          return `${nameOfSeat(a.seat)} 跟注到 ${level}`;
+        }
+        // bet / raise / allin 的 amount 本身就是总额
+        level = Math.max(level, a.amount);
+        return `${nameOfSeat(a.seat)} ${verb} ${a.amount}`;
+      });
+      lines.push(`  ${PHASE_CN[st.street] || st.street}：${acts.join(' → ')}`);
+    }
+    lines.push('');
+  }
 
   lines.push('可选动作：');
   if (legal.canFold) lines.push('- fold（弃牌）');
   if (legal.canCheck) lines.push('- check（过牌，不用花钱）');
   if (legal.canCall) {
+    // 底池赔率算好了给它。模型算数不可靠，而这个数直接决定该不该跟。
+    const need = legal.callAmount / (table.totalPot + legal.callAmount);
     lines.push(
-      `- call（跟注，需要再投入 ${legal.callAmount}${legal.isAllInCall ? '，这会让你全下' : ''}）`
+      `- call（跟注，需要再投入 ${legal.callAmount}` +
+      `${legal.isAllInCall ? '，这会让你全下' : ''}）` +
+      ` —— 跟注后底池 ${table.totalPot + legal.callAmount}，` +
+      `你的胜率需要高于 ${Math.round(need * 100)}% 才划算`
     );
   }
   if (legal.canBet) {

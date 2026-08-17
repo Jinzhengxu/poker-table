@@ -224,10 +224,16 @@ export class Hand {
     return this._deck[this._deckIndex++];
   }
 
-  _pushEvent(kind, seat, amount, text) {
+  /**
+   * @param {object} [extra] 追加字段。action 事件用它带上具体动作类型
+   *   （`type`: fold/check/call/bet/raise/allin），前端只用 text，
+   *   但人机需要结构化的行动历史，从 text 反解中文太脆。
+   */
+  _pushEvent(kind, seat, amount, text, extra) {
     const ev = { kind, text };
     if (seat !== null && seat !== undefined) ev.seat = seat;
     if (amount !== null && amount !== undefined) ev.amount = amount;
+    if (extra) Object.assign(ev, extra);
     this._events.push(ev);
     return ev;
   }
@@ -647,14 +653,14 @@ export class Hand {
         p.folded = true;
         p.hasActed = true;
         p.lastAction = { type: 'fold', amount: 0 };
-        this._pushEvent('action', seat, 0, `${nameOf(p)} 弃牌`);
+        this._pushEvent('action', seat, 0, `${nameOf(p)} 弃牌`, { type: 'fold' });
         break;
       }
       case 'check': {
         if (!legal.canCheck) return { ok: false, error: '当前有下注，不能过牌' };
         p.hasActed = true;
         p.lastAction = { type: 'check', amount: 0 };
-        this._pushEvent('action', seat, 0, `${nameOf(p)} 过牌`);
+        this._pushEvent('action', seat, 0, `${nameOf(p)} 过牌`, { type: 'check' });
         break;
       }
       case 'call': {
@@ -662,7 +668,7 @@ export class Hand {
         const paid = this._commit(p, legal.callAmount);
         p.hasActed = true;
         p.lastAction = { type: 'call', amount: paid };
-        this._pushEvent('action', seat, paid, `${nameOf(p)} 跟注 ${paid}`);
+        this._pushEvent('action', seat, paid, `${nameOf(p)} 跟注 ${paid}`, { type: 'call' });
         break;
       }
       case 'bet': {
@@ -692,7 +698,7 @@ export class Hand {
           this._commit(p, p.chips);
           p.hasActed = true;
           p.lastAction = { type: 'allin', amount: p.committedRound };
-          this._pushEvent('action', seat, p.committedRound, `${nameOf(p)} 全下 ${p.committedRound}`);
+          this._pushEvent('action', seat, p.committedRound, `${nameOf(p)} 全下 ${p.committedRound}`, { type: 'allin' });
         } else {
           this._applyAggression(p, to, 'allin');
         }
@@ -738,7 +744,7 @@ export class Hand {
     if (allIn) text = `${nameOf(p)} 全下 ${p.committedRound}`;
     else if (kind === 'bet') text = `${nameOf(p)} 下注 ${p.committedRound}`;
     else text = `${nameOf(p)} 加注到 ${p.committedRound}`;
-    this._pushEvent('action', p.seat, p.committedRound, text);
+    this._pushEvent('action', p.seat, p.committedRound, text, { type: p.lastAction.type });
   }
 
   /** 超时自动动作：能过牌就过牌，否则弃牌 */
@@ -764,7 +770,7 @@ export class Hand {
     p.folded = true;
     p.hasActed = true;
     p.lastAction = { type: 'fold', amount: 0 };
-    this._pushEvent('action', seat, 0, `${nameOf(p)} 弃牌`);
+    this._pushEvent('action', seat, 0, `${nameOf(p)} 弃牌`, { type: 'fold' });
     this._progress(this._actingSeat !== null ? this._actingSeat : this._nextSeat(seat));
     return { ok: true, events: this._events.slice(mark) };
   }

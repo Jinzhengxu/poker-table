@@ -916,12 +916,43 @@ export class Room {
     if (e.kind === 'deal') {
       return { kind: 'deal', seat: e.seat, amount: null, text: '发底牌' };
     }
-    return {
+    const out = {
       kind: e.kind,
       seat: e.seat,
       amount: e.amount,
       text: typeof e.text === 'string' ? e.text : '',
     };
+    // action 事件带上具体动作类型（引擎给的），前端做音效区分、人机做行动历史
+    if (e.kind === 'action' && typeof e.type === 'string') out.type = e.type;
+    return out;
+  }
+
+  /**
+   * 本手牌到目前为止的行动序列，按街道分段。
+   *
+   * 从 hand.events 里提取，只保留 action 事件的结构化部分
+   * （座位 + 动作类型 + 金额），**不含任何牌面信息**，
+   * 所以给谁看都安全。人机靠它推理对手这一手打得凶不凶。
+   */
+  #actionHistory() {
+    if (!this.hand || !Array.isArray(this.hand.events)) return [];
+    const streets = [{ street: PHASES.PREFLOP, acts: [] }];
+    const marker = { flop: PHASES.FLOP, turn: PHASES.TURN, river: PHASES.RIVER };
+    for (const e of this.hand.events) {
+      if (!e) continue;
+      if (marker[e.kind]) {
+        streets.push({ street: marker[e.kind], acts: [] });
+        continue;
+      }
+      if (e.kind !== 'action' || typeof e.type !== 'string') continue;
+      streets[streets.length - 1].acts.push({
+        seat: e.seat,
+        type: e.type,
+        amount: Number.isFinite(e.amount) ? e.amount : 0,
+      });
+    }
+    // 丢掉还没发生任何动作的街道（比如刚翻牌还没人行动）
+    return streets.filter((s) => s.acts.length > 0);
   }
 
   /** 结算：回写筹码、进入 handOver、安排下一手 */
@@ -1223,6 +1254,8 @@ export class Room {
       currentBet: live ? hand.currentBet || 0 : 0,
       minRaiseTo: live ? hand.minRaiseTo || 0 : 0,
       actingSeat: live ? (hand.actingSeat ?? null) : null,
+      // 本手牌的行动序列（按街道分段）。不含牌面，给谁看都安全。
+      history: this.#actionHistory(),
       actionDeadline: live ? this.actionDeadline : null,
       nextHandAt: this.nextHandAt,
       canStart: !live && this.#eligiblePlayers().length >= 2,
