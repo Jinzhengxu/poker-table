@@ -12,18 +12,104 @@
 
   var MAX_SEATS = 8;
 
-  /** 座位在牌桌上的百分比坐标（预先按椭圆算好）：
-   *  显示槽位 0 永远在正下方（自己的位置），槽位号沿顺时针递增。 */
+  /** 座位在牌桌上的百分比坐标（x 按牌桌宽、y 按牌桌高），由 computeSeats()
+   *  按当前桌形算出来；这里的初值只是 buildSeats() 先用一下。
+   *  bx/by 是这个座位的下注筹码摆放点，落在下注线内侧。 */
   var POS = [
-    { x: 50.0, y: 92.5, bx: 50, by: 74 },
-    { x: 21.4, y: 80.0, bx: 28, by: 66 },
-    { x: 9.5,  y: 50.0, bx: 21, by: 50 },
-    { x: 21.4, y: 19.9, bx: 28, by: 34 },
-    { x: 50.0, y: 7.5,  bx: 50, by: 26 },
-    { x: 78.6, y: 19.9, bx: 72, by: 34 },
-    { x: 90.5, y: 50.0, bx: 79, by: 50 },
-    { x: 78.6, y: 80.0, bx: 72, by: 66 }
+    { x: 50.0, y: 95.0, bx: 50, by: 74 },
+    { x: 21.0, y: 92.0, bx: 32, by: 74 },
+    { x: 5.5,  y: 50.0, bx: 24, by: 50 },
+    { x: 21.0, y: 8.0,  bx: 32, by: 26 },
+    { x: 50.0, y: 5.0,  bx: 50, by: 26 },
+    { x: 79.0, y: 8.0,  bx: 68, by: 26 },
+    { x: 94.5, y: 50.0, bx: 76, by: 50 },
+    { x: 79.0, y: 92.0, bx: 68, by: 74 }
   ];
+
+  /* 牌桌是跑道形（racetrack）：两条长边是直线，两端是半圆。座位就贴着这条
+     轮廓摆，长边各 3 人、两端各 1 人。轮廓随窗口比例变（手机竖屏时跑道会
+     立起来），所以坐标不能写死成百分比，得按当前尺寸现算。 */
+
+  // 毡面相对牌桌盒子的内缩，必须和 style.css 里 .rail 的 inset 一致
+  var RAIL_INSET_X = 0.055;
+  var RAIL_INSET_Y = 0.05;
+  // 斜角座位落在"四分之一圈"的什么位置（0 = 长边正中，1 = 端点正中）
+  var SEAT_U = 0.5;
+  // 下注筹码摆在座位到桌心的这个比例上
+  var BET_PULL = 0.57;
+
+  /** 每个槽位：走到四分之一圈的哪儿（u），以及往哪个象限镜像（sx/sy） */
+  var SEAT_SLOTS = [
+    { u: 0,      sx: 1,  sy: 1 },
+    { u: SEAT_U, sx: 1,  sy: 1 },
+    { u: 1,      sx: 1,  sy: 1 },
+    { u: SEAT_U, sx: 1,  sy: -1 },
+    { u: 0,      sx: 1,  sy: -1 },
+    { u: SEAT_U, sx: -1, sy: -1 },
+    { u: 1,      sx: -1, sy: 1 },
+    { u: SEAT_U, sx: -1, sy: 1 }
+  ];
+
+  /** 从"正下方"沿轮廓往左走 u 个四分之一圈，返回相对桌心的像素偏移
+   *  和该处的朝外法线。横向跑道：先走直边再拐弯；竖向跑道：反过来。 */
+  function outlineQuarter(u, horizontal, r, s) {
+    var arc = Math.PI * r / 2;
+    var a = u * (s + arc);
+    var t;
+    if (horizontal) {
+      if (a <= s) return { dx: -a, dy: r, nx: 0, ny: 1 };
+      t = (a - s) / r;
+      return {
+        dx: -s - r * Math.sin(t), dy: r * Math.cos(t),
+        nx: -Math.sin(t), ny: Math.cos(t)
+      };
+    }
+    if (a <= arc) {
+      t = a / r;
+      return {
+        dx: -r * Math.sin(t), dy: s + r * Math.cos(t),
+        nx: -Math.sin(t), ny: Math.cos(t)
+      };
+    }
+    return { dx: -r, dy: s - (a - arc), nx: -1, ny: 0 };
+  }
+
+  /** 按牌桌当前像素尺寸重算 POS */
+  function computeSeats(w, h) {
+    var rw = w * (1 - 2 * RAIL_INSET_X);
+    var rh = h * (1 - 2 * RAIL_INSET_Y);
+    var horizontal = rw >= rh;
+    var r = Math.min(rw, rh) / 2;
+    var s = (Math.max(rw, rh) - 2 * r) / 2;
+    // 座位牌骑在桌沿上，但不能整块悬在桌外：按它在法线方向上的宽/高
+    // 各往桌里收一点，两端的座位（横着的胶囊）自然收得多些。
+    var podW = Math.min(122, Math.max(60, w * 0.158));
+    var podH = podW * 0.42;
+    for (var k = 0; k < SEAT_SLOTS.length; k++) {
+      var m = SEAT_SLOTS[k];
+      var q = outlineQuarter(m.u, horizontal, r, s);
+      var pull = 0.9 * (podW / 2) * Math.abs(q.nx) + 0.35 * (podH / 2) * Math.abs(q.ny);
+      var dx = (q.dx - q.nx * pull) * m.sx;
+      var dy = (q.dy - q.ny * pull) * m.sy;
+      POS[k].x = (0.5 + dx / w) * 100;
+      POS[k].y = (0.5 + dy / h) * 100;
+      POS[k].bx = (0.5 + dx * BET_PULL / w) * 100;
+      POS[k].by = (0.5 + dy * BET_PULL / h) * 100;
+    }
+  }
+
+  /** 把算好的坐标写回座位节点 */
+  function applySeatPos() {
+    for (var i = 0; i < S.seatNodes.length; i++) {
+      var n = S.seatNodes[i];
+      var p = POS[i];
+      if (!n || !p) continue;
+      n.root.style.setProperty('--x', p.x.toFixed(2) + '%');
+      n.root.style.setProperty('--y', p.y.toFixed(2) + '%');
+      n.bet.style.setProperty('--bx', p.bx.toFixed(2) + '%');
+      n.bet.style.setProperty('--by', p.by.toFixed(2) + '%');
+    }
+  }
 
   // U+FE0E 强制文本呈现，避免部分系统把花色渲染成彩色 emoji
   var SUIT_CH = { s: '♠︎', h: '♥︎', d: '♦︎', c: '♣︎' };
@@ -74,13 +160,62 @@
   function lsGet(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } }
   function lsSet(k, v) { try { window.localStorage.setItem(k, v); } catch (e) { /* 隐私模式忽略 */ } }
 
-  function chipTier(n) {
-    if (n < 25) return 0;
-    if (n < 100) return 1;
-    if (n < 500) return 2;
-    if (n < 2000) return 3;
-    if (n < 10000) return 4;
-    return 5;
+  /** 筹码面额表（大到小）。tier 对应 .chip[data-tier] 的配色：
+   *  白 1 / 红 5 / 绿 25 / 蓝 100 / 黑 500 / 金 1000，照赌场惯例。 */
+  var DENOMS = [
+    { v: 1000, tier: 5 },
+    { v: 500,  tier: 4 },
+    { v: 100,  tier: 3 },
+    { v: 25,   tier: 2 },
+    { v: 5,    tier: 1 },
+    { v: 1,    tier: 0 }
+  ];
+
+  /** 把金额换成筹码：从大面额开始找零，总枚数封顶在 max（不然一万块要摆几百枚）。
+   *  返回 [{tier, n}]，大面额在前。 */
+  function chipSplit(amount, max) {
+    amount = Math.max(0, Math.round(Number(amount) || 0));
+    max = max || 6;
+    var out = [];
+    var used = 0;
+    for (var i = 0; i < DENOMS.length && used < max; i++) {
+      var n = Math.floor(amount / DENOMS[i].v);
+      if (n <= 0) continue;
+      n = Math.min(n, max - used);
+      amount -= n * DENOMS[i].v;
+      used += n;
+      out.push({ tier: DENOMS[i].tier, n: n });
+    }
+    // 下注了却一枚都摆不出来最难看，兜一枚最小面额
+    if (!out.length) out.push({ tier: 0, n: 1 });
+    return out;
+  }
+
+  /** 把金额画成若干摞筹码塞进 host；签名没变就不重建 DOM。
+   *  perStack 是一摞最多几枚，超了就另起一摞。 */
+  function renderChipPile(host, amount, max, perStack) {
+    if (!host) return;
+    var parts = chipSplit(amount, max);
+    var sig = String(amount) + '|' + max + '|' + perStack;
+    if (host.__sig === sig) return;
+    host.__sig = sig;
+    host.textContent = '';
+    for (var i = 0; i < parts.length; i++) {
+      var left = parts[i].n;
+      while (left > 0) {
+        var n = Math.min(left, perStack);
+        left -= n;
+        var stack = elt('i', 'chip-stack');
+        stack.style.setProperty('--n', String(n));
+        for (var k = 0; k < n; k++) {
+          var c = elt('i', 'chip');
+          c.setAttribute('data-tier', String(parts[i].tier));
+          c.style.setProperty('--i', String(k));
+          stack.appendChild(c);
+        }
+        host.appendChild(stack);
+      }
+    }
   }
 
   // ============================ 客户端状态 ============================
@@ -109,6 +244,7 @@
     shownResultHand: -1,
     resultOverlayHand: -1,    // 结算大屏已经为哪一手弹过
     resultHideTimer: null,
+    resultHideAt: 0,          // 结算大屏预计什么时候退场（推池动画等它）
     logSeen: null,
     chatSeen: null,
     chatUnread: 0,
@@ -139,10 +275,12 @@
     D.table = $('#table');
     D.seatLayer = $('#seatLayer');
     D.betLayer = $('#betLayer');
+    D.chipLayer = $('#chipLayer');
     D.floatLayer = $('#floatLayer');
     D.phaseTag = $('#phaseTag');
     D.potRow = $('#potRow');
     D.potMain = $('#potMain');
+    D.potPile = $('#potPile');
     D.potSide = $('#potSide');
     D.board = $('#board');
     D.resultOverlay = $('#resultOverlay');
@@ -951,7 +1089,7 @@
       bet.style.setProperty('--bx', p.bx + '%');
       bet.style.setProperty('--by', p.by + '%');
       bet.hidden = true;
-      var chipNode = elt('i', 'chip');
+      var chipNode = elt('i', 'bet-chips');
       var amtNode = elt('span', 'amt');
       bet.appendChild(chipNode);
       bet.appendChild(amtNode);
@@ -1018,10 +1156,86 @@
     if (D.metaHost) D.metaHost.hidden = !you.isHost;
   }
 
+  // ============================ 筹码动画 ============================
+
+  /** 牌桌百分比坐标 -> 相对 #table 的像素坐标 */
+  function tableXY(xPct, yPct) {
+    if (!D.table) return { x: 0, y: 0 };
+    return { x: D.table.clientWidth * xPct / 100, y: D.table.clientHeight * yPct / 100 };
+  }
+
+  /** 底池筹码堆的中心；量不到就用牌桌中偏上兜底 */
+  function potXY() {
+    if (D.potPile && D.table && D.potRow && !D.potRow.hidden) {
+      var a = D.potPile.getBoundingClientRect();
+      var b = D.table.getBoundingClientRect();
+      if (a.width > 0) {
+        return { x: a.left - b.left + a.width / 2, y: a.top - b.top + a.height / 2 };
+      }
+    }
+    return tableXY(50, 44);
+  }
+
+  /** 一把筹码从 from 飞到 to（像素，相对 #table）。纯装饰，失败也不影响状态。 */
+  function flyChips(from, to, amount, opt) {
+    if (!D.chipLayer) return;
+    opt = opt || {};
+    var parts = chipSplit(amount, opt.max || 4);
+    var tiers = [];
+    for (var a = 0; a < parts.length; a++) {
+      for (var b = 0; b < parts[a].n; b++) tiers.push(parts[a].tier);
+    }
+    var dur = opt.dur || 520;
+    var gap = opt.gap == null ? 55 : opt.gap;
+    var base = opt.delay || 0;
+    for (var i = 0; i < tiers.length; i++) {
+      // 出发点稍微散开，看着像抓了一把筹码推出去，而不是一根线
+      var jx = (i - (tiers.length - 1) / 2) * 5;
+      var jy = -i * 2;
+      var node = elt('i', 'fly-chip chip');
+      node.setAttribute('data-tier', String(tiers[i]));
+      node.style.left = (from.x + jx) + 'px';
+      node.style.top = (from.y + jy) + 'px';
+      node.style.setProperty('--dx', (to.x - from.x - jx + (i % 3 - 1) * 4) + 'px');
+      node.style.setProperty('--dy', (to.y - from.y - jy - i * 2) + 'px');
+      node.style.setProperty('--dur', dur + 'ms');
+      node.style.setProperty('--delay', (base + i * gap) + 'ms');
+      D.chipLayer.appendChild(node);
+      (function (n) {
+        setTimeout(function () { if (n.parentNode) n.parentNode.removeChild(n); }, base + i * gap + dur + 60);
+      })(node);
+    }
+  }
+
+  /** 一条街打完：各家台面上的筹码收进底池 */
+  function sweepChipsToPot(list) {
+    var to = potXY();
+    for (var i = 0; i < list.length; i++) {
+      var p = POS[list[i].slot];
+      if (!p) continue;
+      flyChips(tableXY(p.bx, p.by), to, list[i].amount, { max: 3, dur: 460, gap: 45 });
+    }
+    sndChips(2, 0.45);
+  }
+
+  /** 一手结束：底池推给赢家。等结算大屏退场之后再推，
+   *  不然筹码全在遮罩底下飞，等于白飞。 */
+  function payChipsToWinner(slot, amount) {
+    var p = POS[slot];
+    if (!p) return;
+    var wait = (S.resultHideAt || 0) - Date.now() + 150;
+    // 落在座位牌和下注位之间——荷官把池子推到人面前，而不是盖在人脸上
+    var to = tableXY((p.x + p.bx) / 2, (p.y + p.by) / 2);
+    flyChips(potXY(), to, amount, {
+      max: 6, dur: 620, gap: 60, delay: clamp(wait, 420, 4000)
+    });
+  }
+
   function renderSeats(st, table, seats, you, result) {
     var rot = (S.mySeat === null) ? 0 : S.mySeat;
     var actingSeat = (typeof table.actingSeat === 'number') ? table.actingSeat : null;
     S.ringNode = null;
+    var swept = [];   // 本次快照里"下注被收走"的座位，用来放归池动画
 
     // 摊牌高亮：每位摊牌玩家高亮自己的最优五张
     var showdownBySeat = {};
@@ -1136,11 +1350,11 @@
 
       // 本轮下注筹码
       var bet = Number(data.committedRound) || 0;
+      var prev = S.lastBets[seatNum] || 0;
       if (bet > 0) {
-        var prev = S.lastBets[seatNum] || 0;
         node.bet.hidden = false;
         node.amt.textContent = fmt(bet);
-        node.chip.setAttribute('data-tier', String(chipTier(bet)));
+        renderChipPile(node.chip, bet, 4, 4);
         if (bet !== prev) {
           node.bet.classList.remove('bump');
           void node.bet.offsetWidth;
@@ -1148,6 +1362,8 @@
         }
       } else {
         node.bet.hidden = true;
+        // 这一轮打完了，桌上的筹码要收进底池——飞过去，别凭空消失
+        if (prev > 0) swept.push({ slot: i, amount: prev });
       }
       S.lastBets[seatNum] = bet;
 
@@ -1160,6 +1376,8 @@
       var d2 = seats[s2];
       if (!d2 || !(Number(d2.committedRound) > 0)) S.lastBets[s2] = 0;
     }
+
+    if (swept.length) sweepChipsToPot(swept);
   }
 
   function renderCenter(st, table, result) {
@@ -1173,6 +1391,7 @@
     if (D.potRow) {
       D.potRow.hidden = !(total > 0);
       if (total > 0) {
+        renderChipPile(D.potPile, total, 12, 4);
         if (D.potMain.textContent !== fmt(total)) {
           D.potMain.textContent = fmt(total);
           D.potMain.classList.remove('bump');
@@ -1402,7 +1621,9 @@
       D.resultOverlay.classList.add('is-in');
       if (v.hype !== 'plain') sndFanfare(v.hype);
       if (S.resultHideTimer) clearTimeout(S.resultHideTimer);
-      S.resultHideTimer = setTimeout(dismissResultOverlay, v.hype === 'plain' ? 2400 : 3400);
+      var hold = v.hype === 'plain' ? 2400 : 3400;
+      S.resultHideAt = Date.now() + hold;
+      S.resultHideTimer = setTimeout(dismissResultOverlay, hold);
     }
   }
 
@@ -1479,7 +1700,7 @@
       if (table.canStart) statusText = you.isHost ? '人数够了，可以开始' : '等待房主开始';
       else statusText = '等待更多玩家入座（至少 2 人）';
     } else if (you.sittingOut) {
-      statusText = '你已坐出，下一手不参与';
+      statusText = '你暂时离开了，下一手不参与';
     } else {
       statusText = '牌局进行中';
     }
@@ -1523,7 +1744,7 @@
     if (!D.btnRebuy.hidden) D.btnRebuy.setAttribute('data-seat', String(S.mySeat));
     D.btnStart.hidden = !(seated && you.isHost && table.canStart && !myTurn);
     D.btnSitOut.hidden = !seated;
-    D.btnSitOut.textContent = you.sittingOut ? '回到牌桌' : '坐出一手';
+    D.btnSitOut.textContent = you.sittingOut ? '回到牌桌' : '暂时离开';
     D.btnStand.hidden = !seated;
     D.btnJoin.hidden = seated;
   }
@@ -1769,6 +1990,9 @@
     }
     Object.keys(merged).forEach(function (seatStr) {
       var seat = Number(seatStr);
+      var slot0 = ((seat - rot) % MAX_SEATS + MAX_SEATS) % MAX_SEATS;
+      // 筹码从底池推到赢家面前——自己赢了也要看到这一下
+      payChipsToWinner(slot0, merged[seat].amount);
       // 自己的那份不飘：结算大屏就在正中央，两个数字叠一起反而看不清，
       // 而且飘的是毛收入、大屏报的是净收支，摆一起容易被当成矛盾。
       if (seat === S.mySeat) return;
@@ -2012,15 +2236,18 @@
     var padY = narrow ? 24 : 36;
     var availW = Math.max(220, D.tableWrap.clientWidth - padX * 2);
     var availH = Math.max(150, D.tableWrap.clientHeight - padY * 2);
-    // 桌面固定成横向椭圆；手机竖屏时按可用区域的比例把牌桌拉高，
-    // 否则固定宽高比会让上下留出大片空白，牌桌被挤成中间一条。
+    // 桌面固定成横向跑道（真桌大约 2:1，这里留一点余量给两侧的座位牌）；
+    // 手机竖屏时按可用区域的比例把牌桌拉高，否则固定宽高比会让上下留出
+    // 大片空白，牌桌被挤成中间一条。
     var ar = window.innerWidth <= 760
-      ? Math.min(1.35, Math.max(0.75, availW / availH))
-      : 1.55;
-    var w = Math.min(availW, availH * ar, 920);
+      ? Math.min(1.6, Math.max(0.75, availW / availH))
+      : 1.85;
+    var w = Math.min(availW, availH * ar, 1040);
     w = Math.max(240, w);
     D.root.style.setProperty('--tw', Math.round(w) + 'px');
     D.root.style.setProperty('--ar', String(ar));
+    computeSeats(Math.round(w), Math.round(w) / ar);
+    applySeatPos();
   }
 
   // ============================ 计时（rAF） ============================
@@ -2148,7 +2375,7 @@
       send({ t: 'sitOut', value: !cur });
     });
     D.btnStand.addEventListener('click', function () {
-      askConfirm('离座', '确定离开座位吗？如果牌局进行中会自动弃牌。', function () {
+      askConfirm('退出牌桌', '确定退出、离开座位吗？如果牌局进行中会自动弃牌。', function () {
         send({ t: 'stand' });
       });
     });

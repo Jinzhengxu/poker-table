@@ -57,6 +57,7 @@
           <div id="center">
             <div id="phaseTag" class="phase-tag">等待开局</div>
             <div id="potRow" class="pot-row" hidden>
+              <div id="potPile" class="pot-pile" aria-hidden="true"></div>
               <div class="pot-main"><span class="pot-label">底池</span><span id="potMain" class="pot-amt">0</span></div>
               <div id="potSide" class="pot-side"></div>
             </div>
@@ -85,6 +86,9 @@
 
           <!-- 下注筹码层 -->
           <div id="betLayer"></div>
+
+          <!-- 筹码飞行层（下注归池 / 底池归赢家） -->
+          <div id="chipLayer" aria-hidden="true"></div>
 
           <!-- 飘字层（+N / 牌型名） -->
           <div id="floatLayer" aria-hidden="true"></div>
@@ -139,8 +143,8 @@
           <div id="idleBar" class="idle-bar">
             <button id="btnStart"  class="act act-start" type="button" hidden>开始这一手</button>
             <button id="btnRebuy"  class="act act-rebuy" type="button" hidden>补充筹码</button>
-            <button id="btnSitOut" class="act act-ghost" type="button" hidden>坐出一手</button>
-            <button id="btnStand"  class="act act-ghost" type="button" hidden>离座</button>
+            <button id="btnSitOut" class="act act-ghost" type="button" hidden>暂时离开</button>
+            <button id="btnStand"  class="act act-ghost" type="button" hidden>退出</button>
             <button id="btnJoin"   class="act act-start" type="button" hidden>选个座位坐下</button>
           </div>
         </div>

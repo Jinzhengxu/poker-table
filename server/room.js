@@ -357,7 +357,7 @@ export class Room {
     const v = !!value;
     if (p.sittingOut !== v) {
       p.sittingOut = v;
-      this.#pushLog(`${p.name} ${v ? '暂时坐出' : '回到牌局'}`);
+      this.#pushLog(`${p.name} ${v ? '暂时离开' : '回到牌局'}`);
       if (!v) this.#maybeAutoStart();
     }
     this.broadcast();

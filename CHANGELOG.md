@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `shellcheck` on the deploy script, and a Docker build that boots the image and
   verifies `/healthz`.
 
+- **Chips you can see.** Bets and the pot are drawn as real chip stacks, split
+  into casino denominations (white 1, red 5, green 25, blue 100, black 500, gold
+  1000). At the end of each street the chips on the felt fly into the pot, and
+  when a hand is settled the pot is pushed to the winner once the result screen
+  steps aside.
+
 ### Fixed
 
 - `POKER_DOMAIN` had no effect on the generated Caddy site block. The domain was
@@ -64,6 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The table is a racetrack instead of an ellipse: straight long sides, semicircular
+  ends, the shape a real hold'em table has. Seats are placed on the outline from
+  the current geometry — three along each long side, one at each end — so they stay
+  glued to the rail when the table turns upright on a phone in portrait.
+- The two idle buttons say what they do: 「坐出一手」 is now 「暂时离开」 and
+  「离座」 is now 「退出」.
 - `POKER_DOMAIN` is now required and has no default. It can be set once in
   `.env` on the server, which `deploy.sh` reads at startup; a real environment
   variable still takes precedence.
