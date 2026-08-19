@@ -4,8 +4,11 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg)](package.json)
 
-A self-hosted, no-signup Texas Hold'em table for playing with friends.
+Self-hosted, no-signup card tables for playing with friends.
 Open the page, click an empty seat, type a nickname — you're in.
+
+One service, two tables: **Texas Hold'em** at `/` and **Guandan** (掼蛋) at
+`/guandan`. They are fully independent; the top bar links between them.
 
 **[中文文档 →](README.zh-CN.md)**
 
@@ -21,8 +24,11 @@ from a URL.
 
 ## Features
 
-- **No signup.** A nickname is your identity. Avatars are derived from it.
-- **One table, eight seats.** All state lives in memory. No database to run.
+- **Two games.** Texas Hold'em (8 seats) and Guandan (4 seats, two teams,
+  level-climbing).
+- **No signup.** A nickname is your identity. Avatars are derived from it, and
+  both tables share the same avatar rules.
+- **All state lives in memory.** No database to run.
 - **Reconnect-safe.** A seat token in `localStorage` puts you back in the same
   seat with the same stack after a refresh or a dropped connection.
 - **Phone-friendly.** Portrait layout, the table scales proportionally, and
@@ -68,6 +74,44 @@ docker run --rm -p 8080:8080 poker-table:local
 
 Defaults: blinds 5/10, ante 0, starting stack 1000, 45 s action clock, auto-start
 enabled. All of them are configurable by the host between hands.
+
+## Guandan
+
+Served at `/guandan`. Four players in two teams; the deal starts as soon as all
+four seats are taken. Guandan is played differently from region to region, so
+the exact house rules this table implements are written out in the **Rules** tab
+of the sidebar — worth a look before the first deal.
+
+What is implemented:
+
+- Two decks, 108 cards, 27 each. Seats 1 and 3 are the red team, 2 and 4 the
+  blue team; your partner sits opposite you.
+- Order is `2 < 3 < … < K < A < level card < small joker < big joker`. The level
+  card outranks A in singles, pairs, triples and bombs, but keeps its natural
+  rank inside straights, consecutive pairs and plates.
+- The **wild card** is the level card in hearts. It stands in for any card except
+  a joker; there are two of them in the deck.
+- Combinations: single, pair, triple, triple-with-pair, straight, three
+  consecutive pairs, two consecutive triples, bomb, straight flush, four jokers.
+  Bombs rank `4 < 5 < straight flush < 6 < 7 < 8 cards < four jokers`.
+- Scoring: both winners finishing first and second is +3 levels, first and third
+  +2, first and last +1. The deal ends the moment one team has both players out.
+- **Relay**: when a player goes out and nobody can beat their last play, the lead
+  passes to their partner.
+- **Tribute**: the two losers each pay a card when double-defeated, otherwise the
+  last player pays the first. Tribute follows placing, not team, so when first and
+  last happen to be partners the card simply moves within the team. The largest
+  card must be paid (the wild card is exempt) and the receiver returns a card of 10
+  or lower. Holding both big jokers lets the paying side refuse. The payer leads
+  after tribute; on a refusal the previous winner leads.
+- **Playing at A**: levels cap at A, finishing first while at A wins the match,
+  and three failed attempts drop the team back to 2.
+
+Select cards by tapping them; the bar underneath shows in real time what they
+form and whether it beats the current play. The **Hint** button cycles through
+every legal play and selects it for you. Keyboard: `Space` to play, `P` to pass,
+`H` for a hint. The host can add rule-based bots to fill empty seats — no API key
+needed.
 
 ## Bots
 
@@ -239,17 +283,28 @@ configuration.
 
 ```
 server/
-  index.js      Static file server, WebSocket entry, input validation, rate limiting, heartbeat
-  room.js       Seats, tokens, reconnection, timers, per-viewer redacted state snapshots
-  engine.js     Single-hand state machine: blinds, betting rounds, side pots, showdown
+  index.js      Static files, both WebSocket entries (/ws hold'em, /gd guandan), validation, rate limiting, heartbeat
+  room.js       Hold'em: seats, tokens, reconnection, timers, per-viewer redacted snapshots
+  engine.js     Hold'em: single-hand state machine (blinds, betting, side pots, showdown)
   evaluator.js  Best five of seven card evaluation
   deck.js       Deck and cryptographically seeded shuffle
   protocol.js   Shared constants
+  guandan/
+    engine.js   Guandan: one deal (dealing, tribute, trick rotation, relay, placings)
+    room.js     Guandan: seats, tokens, reconnection, timers, levels and passing A
 public/         Zero-build frontend (HTML + CSS + vanilla JS)
+  gd-combos.js  Guandan combination library — imported by both browser and server
+  gd-hints.js   Guandan candidate enumeration — shared by the bots and the Hint button
 test/           node:test suites
 deploy/         Deployment script and Caddy site snippet
 SPEC.md         Wire protocol and module contracts
 ```
+
+Guandan's combination rules exist exactly once: `public/gd-combos.js` is imported
+by the browser and by the server. Whether the Play button lights up and whether
+the server accepts the play are therefore always the same answer — though the
+server still revalidates independently. The client-side check buys responsiveness,
+not authority.
 
 The client is a pure function of server state: it consumes full `state`
 snapshots and re-renders, using `event` messages only for sounds and transient
@@ -274,7 +329,8 @@ server.
 
 ## Known limitations
 
-- **One table.** Running a second game means running a second instance.
+- **One table per game.** One hold'em table and one guandan table; more
+  concurrent games means more instances.
 - **State is in memory.** Restarting the process resets the table and every
   stack. This is a deliberate trade-off — a private game does not need a
   database.

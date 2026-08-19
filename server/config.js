@@ -15,6 +15,7 @@
 // 一个 UI 会拒绝的值，否则房主打开设置页保存一下就会被打回。
 
 import { DEFAULT_CONFIG } from './protocol.js';
+import { DEFAULT_GD_CONFIG } from './guandan/room.js';
 
 /** 每个字段的解析方式与取值范围。范围必须和 room.js setConfig 保持一致。 */
 const FIELDS = [
@@ -98,6 +99,57 @@ export function configFromEnv(env = process.env, logger = console) {
 
   if (applied.length) {
     logger.log?.(`[config] 环境变量覆盖了牌桌初始设置：${applied.join('，')}`);
+  }
+  return cfg;
+}
+
+
+/** 掼蛋桌的环境变量，规则与上面德州那套一致 */
+const GD_FIELDS = [
+  { key: 'actionTimeoutMs', env: 'GUANDAN_ACTION_TIMEOUT',   kind: 'sec',  min: 10000, max: 300000 },
+  { key: 'autoNextDealMs',  env: 'GUANDAN_NEXT_DEAL_DELAY',  kind: 'sec',  min: 2000,  max: 60000 },
+  { key: 'autoNextDeal',    env: 'GUANDAN_AUTO_NEXT_DEAL',   kind: 'bool' },
+];
+
+/**
+ * 掼蛋桌的【初始】配置。和德州那张桌子一样：环境变量只决定启动时的值，
+ * 房主随时能在设置页改，但改动是内存态，重启后回到这里。
+ * @param {object} [env]
+ * @param {object} [logger]
+ * @returns {typeof DEFAULT_GD_CONFIG}
+ */
+export function guandanConfigFromEnv(env = process.env, logger = console) {
+  const cfg = { ...DEFAULT_GD_CONFIG };
+  const applied = [];
+
+  for (const f of GD_FIELDS) {
+    const raw = str(env[f.env]);
+    if (raw === null) continue;
+
+    if (f.kind === 'bool') {
+      const v = parseBool(raw);
+      if (v === null) {
+        logger.error(`[config] ${f.env}="${raw}" 不是布尔值（用 true/false 或 1/0），已忽略`);
+        continue;
+      }
+      cfg[f.key] = v;
+      applied.push(`${f.env}=${v}`);
+      continue;
+    }
+
+    const v = clampInt(Number(raw) * 1000, f.min, f.max);
+    if (v === null) {
+      logger.error(
+        `[config] ${f.env}="${raw}" 不合法（需要 ${f.min / 1000}~${f.max / 1000} 的整数秒），已忽略`
+      );
+      continue;
+    }
+    cfg[f.key] = v;
+    applied.push(`${f.env}=${raw}`);
+  }
+
+  if (applied.length) {
+    logger.log?.(`[config] 环境变量覆盖了掼蛋桌初始设置：${applied.join('，')}`);
   }
   return cfg;
 }

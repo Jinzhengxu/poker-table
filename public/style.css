@@ -161,6 +161,8 @@ h3, h4 { margin: 0; font-weight: 600; }
   min-height: 32px;
 }
 .icon-btn:hover { color: var(--txt); background: rgba(255, 255, 255, .09); }
+/* 顶栏上那个跳到另一张桌子的链接，也用 .icon-btn 的壳 */
+.table-link { text-decoration: none; font-size: 12px; }
 .icon-btn[aria-pressed="false"] { color: var(--txt-faint); }
 .icon-btn[aria-pressed="false"] .ico-snd,
 .icon-btn[aria-pressed="false"] .ico-mus { opacity: .45; }

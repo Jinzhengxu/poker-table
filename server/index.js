@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // HTTP 静态服务 + WebSocket 入口（SPEC §9 与 §8）
 //
-// 只有一张桌子，进程内内存状态。
-// 这里负责：静态文件、/healthz、/ws 握手、协议层输入校验、限流、心跳、优雅退出。
-// 具体的牌桌逻辑全部在 room.js。
+// 两张桌子，都是进程内内存状态：/ws 是德州扑克，/gd 是掼蛋。
+// 这里负责：静态文件、/healthz、WebSocket 握手、协议层输入校验、限流、心跳、优雅退出。
+// 具体的牌桌逻辑在 room.js 与 guandan/room.js。
 
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -13,7 +13,9 @@ import { WebSocketServer } from 'ws';
 import { Room } from './room.js';
 import { MAX_SEATS } from './protocol.js';
 import { BotDriver } from './bot/index.js';
-import { configFromEnv } from './config.js';
+import { GuandanRoom } from './guandan/room.js';
+import { GD_SEATS } from './guandan/engine.js';
+import { configFromEnv, guandanConfigFromEnv } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
@@ -64,6 +66,15 @@ console.log(
 
 const room = new Room({ botDriver, config: initialConfig });
 
+// 掼蛋是完全独立的第二张桌子：另一个 WebSocket 路径、另一份内存状态。
+// 两张桌子互不影响，同一个人可以同时开两个标签页分别玩。
+const guandanConfig = guandanConfigFromEnv();
+const guandanRoom = new GuandanRoom({ config: guandanConfig });
+console.log(
+  `[guandan] 掼蛋牌桌已就绪：行动时限 ${guandanConfig.actionTimeoutMs / 1000}s，` +
+  `下一局间隔 ${guandanConfig.autoNextDealMs / 1000}s`
+);
+
 // ==================== HTTP ====================
 
 function sendText(res, status, body, type = 'text/plain; charset=utf-8') {
@@ -113,6 +124,9 @@ const server = http.createServer(async (req, res) => {
       sendText(res, 200, 'ok');
       return;
     }
+
+    // 掼蛋页面给一个好记的短地址
+    if (pathname === '/guandan' || pathname === '/gd') pathname = '/guandan.html';
 
     const filePath = resolveStatic(pathname === '/' ? '/index.html' : pathname);
     if (!filePath) {
@@ -180,7 +194,16 @@ const ACTION_TYPES = new Set(['fold', 'check', 'call', 'bet', 'raise', 'allin'])
 
 // ==================== WebSocket ====================
 
+// 两张桌子各有一个 WebSocketServer：/ws 是德州，/gd 是掼蛋。
+// 连接管理、限流、心跳、消息解析这一层是共用的，只有 dispatch 不同。
 const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
+const gdWss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
+
+/** 路径 -> 该路径对应的 WebSocketServer */
+const WS_ROUTES = new Map([
+  ['/ws', wss],
+  ['/gd', gdWss],
+]);
 
 server.on('upgrade', (req, socket, head) => {
   let pathname;
@@ -190,17 +213,25 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy();
     return;
   }
-  if (pathname !== '/ws') {
+  const target = WS_ROUTES.get(pathname);
+  if (!target) {
     socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
     socket.destroy();
     return;
   }
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit('connection', ws, req);
+  target.handleUpgrade(req, socket, head, (ws) => {
+    target.emit('connection', ws, req);
   });
 });
 
-wss.on('connection', (ws) => {
+/**
+ * 把一条 ws 连接包装成房间认识的"客户端"对象，并接上限流与消息分发。
+ * @param {import('ws').WebSocket} ws
+ * @param {{attach:Function, detach:Function}} targetRoom 这条连接属于哪张桌子
+ * @param {(client:object, msg:object, fail:Function)=>void} dispatch 该桌子的消息处理器
+ * @param {string} tag 日志前缀
+ */
+function attachConnection(ws, targetRoom, dispatch, tag) {
   const client = {
     ws,
     playerId: null,
@@ -213,7 +244,7 @@ wss.on('connection', (ws) => {
       try {
         ws.send(JSON.stringify(obj));
       } catch (err) {
-        logError('[ws] 发送失败', err);
+        logError(`${tag} 发送失败`, err);
       }
     },
     close() {
@@ -222,7 +253,7 @@ wss.on('connection', (ws) => {
       } catch { /* 忽略 */ }
     },
   };
-  room.attach(client);
+  targetRoom.attach(client);
 
   const fail = (code, msg) => client.send({ t: 'error', code, msg });
 
@@ -271,21 +302,24 @@ wss.on('connection', (ws) => {
     }
 
     try {
-      handleMessage(client, msg, fail);
+      dispatch(client, msg, fail);
     } catch (err) {
-      logError('[ws] 处理消息出错', msg.t, err);
+      logError(`${tag} 处理消息出错`, msg.t, err);
       fail('ILLEGAL_ACTION', '服务器无法处理这条消息');
     }
   });
 
   ws.on('error', (err) => {
-    logError('[ws] 连接错误', err?.message || err);
+    logError(`${tag} 连接错误`, err?.message || err);
   });
 
   ws.on('close', () => {
-    room.detach(client);
+    targetRoom.detach(client);
   });
-});
+}
+
+wss.on('connection', (ws) => attachConnection(ws, room, handleMessage, '[ws]'));
+gdWss.on('connection', (ws) => attachConnection(ws, guandanRoom, handleGuandanMessage, '[gd]'));
 
 /** 把 room 方法的返回值转成 error 消息 */
 function reply(client, res) {
@@ -378,21 +412,125 @@ function handleMessage(client, msg, fail) {
   }
 }
 
+// ==================== 掼蛋消息处理 ====================
+
+/** 一张掼蛋牌：点数+花色，或 jb（小王）/ jr（大王） */
+const GD_CARD_RE = /^([23456789TJQKA][cdhs]|jb|jr)$/;
+
+/** GD_SEATS 个座位，0..3 */
+function validGdSeat(v) {
+  return isInt(v) && v >= 0 && v < GD_SEATS;
+}
+
+/** cards 必须是 1..27 张合法牌 */
+function validCards(v) {
+  if (!Array.isArray(v) || v.length < 1 || v.length > 27) return false;
+  return v.every((c) => typeof c === 'string' && GD_CARD_RE.test(c));
+}
+
+const GD_COMBO_TYPES = new Set([
+  'single', 'pair', 'triple', 'full', 'straight', 'tube', 'plate', 'bomb', 'sflush', 'jokers',
+]);
+
+/** as：前端声明的牌型。可以不传（服务端自己挑），传了就必须长得对 */
+function validDeclared(v) {
+  if (v === undefined || v === null) return true;
+  if (typeof v !== 'object' || Array.isArray(v)) return false;
+  return GD_COMBO_TYPES.has(v.type) && isInt(v.rank) && isInt(v.size)
+    && v.rank >= 0 && v.rank <= 100 && v.size >= 1 && v.size <= 27;
+}
+
+function handleGuandanMessage(client, msg, fail) {
+  const reply = (res) => {
+    if (res && res.ok === false) {
+      client.send({ t: 'error', code: res.code || 'ILLEGAL_ACTION', msg: res.msg || '操作失败' });
+    }
+  };
+
+  switch (msg.t) {
+    case 'hello': {
+      const token = typeof msg.token === 'string' ? msg.token : null;
+      guandanRoom.hello(client, token);
+      return;
+    }
+    case 'ping':
+      client.send({ t: 'pong' });
+      return;
+    case 'sit': {
+      if (!validGdSeat(msg.seat)) return fail('ILLEGAL_ACTION', '座位号不合法');
+      const name = normalizeName(msg.name);
+      if (name === null) return fail('NAME_INVALID', '昵称需要 1 到 12 个字符');
+      return reply(guandanRoom.sit(client, msg.seat, name));
+    }
+    case 'stand':
+      return reply(guandanRoom.stand(client));
+    case 'start':
+      return reply(guandanRoom.start(client));
+    case 'reset':
+      return reply(guandanRoom.reset(client));
+    case 'play': {
+      if (!validCards(msg.cards)) return fail('ILLEGAL_ACTION', '出的牌不合法');
+      if (!validDeclared(msg.as)) return fail('ILLEGAL_ACTION', '牌型声明不合法');
+      if (msg.dealNo !== undefined && msg.dealNo !== null && !isInt(msg.dealNo)) {
+        return fail('ILLEGAL_ACTION', '局号不合法');
+      }
+      return reply(guandanRoom.play(client, msg));
+    }
+    case 'pass': {
+      if (msg.dealNo !== undefined && msg.dealNo !== null && !isInt(msg.dealNo)) {
+        return fail('ILLEGAL_ACTION', '局号不合法');
+      }
+      return reply(guandanRoom.pass(client, msg));
+    }
+    case 'returnTribute': {
+      if (typeof msg.card !== 'string' || !GD_CARD_RE.test(msg.card)) {
+        return fail('ILLEGAL_ACTION', '还贡的牌不合法');
+      }
+      return reply(guandanRoom.returnTribute(client, msg.card));
+    }
+    case 'addBot': {
+      if (msg.seat !== undefined && msg.seat !== null && !validGdSeat(msg.seat)) {
+        return fail('ILLEGAL_ACTION', '座位号不合法');
+      }
+      return reply(guandanRoom.addBot(client, msg.seat ?? null));
+    }
+    case 'kick': {
+      if (!validGdSeat(msg.seat)) return fail('ILLEGAL_ACTION', '座位号不合法');
+      return reply(guandanRoom.kick(client, msg.seat));
+    }
+    case 'config': {
+      if (!msg.patch || typeof msg.patch !== 'object' || Array.isArray(msg.patch)) {
+        return fail('ILLEGAL_ACTION', '配置格式错误');
+      }
+      return reply(guandanRoom.setConfig(client, msg.patch));
+    }
+    case 'chat': {
+      if (typeof msg.text !== 'string') return fail('ILLEGAL_ACTION', '聊天内容不合法');
+      if ([...msg.text].length > 200) return fail('ILLEGAL_ACTION', '消息最长 200 字');
+      return reply(guandanRoom.sendChat(client, msg.text));
+    }
+    default:
+      return fail('ILLEGAL_ACTION', '未知的消息类型');
+  }
+}
+
 // 心跳：每 30s 给所有连接发一次 ping；超过 60s 没有任何响应（pong 或业务消息）就断开
 const heartbeat = setInterval(() => {
   const now = Date.now();
-  for (const c of [...room.clients]) {
-    if (now - c.lastSeen > HEARTBEAT_TIMEOUT_MS) {
+  for (const r of [room, guandanRoom]) {
+    for (const c of [...r.clients]) {
+      if (now - c.lastSeen > HEARTBEAT_TIMEOUT_MS) {
+        try {
+          c.ws.terminate();
+        } catch { /* 忽略 */ }
+        r.detach(c);
+        continue;
+      }
+      if (c.ws.readyState !== c.ws.OPEN) continue;
       try {
-        c.ws.terminate();
+        c.ws.ping();
       } catch { /* 忽略 */ }
-      room.detach(c);
-      continue;
     }
-    if (c.ws.readyState !== c.ws.OPEN) continue;
-    try {
-      c.ws.ping();
-    } catch { /* 忽略 */ }
   }
 }, HEARTBEAT_MS);
 heartbeat.unref?.();
@@ -439,12 +577,15 @@ function shutdown(signal) {
   try {
     clearInterval(heartbeat);
     room.shutdown();
-    for (const ws of wss.clients) {
-      try {
-        ws.close(1001, 'server shutdown');
-      } catch { /* 忽略 */ }
+    guandanRoom.shutdown();
+    for (const server of [wss, gdWss]) {
+      for (const ws of server.clients) {
+        try {
+          ws.close(1001, 'server shutdown');
+        } catch { /* 忽略 */ }
+      }
+      server.close(() => {});
     }
-    wss.close(() => {});
   } catch (err) {
     logError('[server] 关闭时出错', err);
   }
@@ -464,6 +605,7 @@ server.on('error', (err) => {
 
 server.listen(PORT, HOST, () => {
   log(`[server] 德州扑克牌桌已启动： http://${HOST}:${PORT}`);
+  log(`[server] 掼蛋牌桌：           http://${HOST}:${PORT}/guandan`);
 });
 
-export { server, wss, room };
+export { server, wss, gdWss, room, guandanRoom };

@@ -616,3 +616,119 @@ token，离座后没有任何东西再引用它），然后清空牌局状态、
   `caddy reload` → 自检 `curl -fsS localhost` 与 `https://poker.example.com/healthz`。
   失败要有清晰的中文报错，且不能把已有的 matrix 服务搞挂（改 Caddyfile 前先 `cp` 备份，
   reload 失败自动回滚）。
+
+---
+
+## 12. 掼蛋桌（`server/guandan/` + `public/gd*`）
+
+同一个进程上的第二张桌子，和德州桌**完全独立**：另一个 WebSocket 路径、另一份内存
+状态、另一套座位与令牌。页面在 `/guandan`（`/gd` 是同一个页面的短地址）。
+
+### 12.1 牌的表示
+
+一张牌仍是 2 字符字符串，点数与花色沿用 §2；两张王是 `"jb"`（小王）与 `"jr"`（大王）。
+一副掼蛋牌是**两副扑克 = 108 张**，所以同一个字符串会出现两次——
+**牌面字符串不是唯一 id**，客户端选牌一律按手牌数组下标，发给服务端的是牌面字符串，
+服务端按「多重集包含」校验。
+
+### 12.2 共享牌型库（前后端唯一真相来源）
+
+`public/gd-combos.js` 与 `public/gd-hints.js` 是**纯函数、零依赖**模块，
+浏览器与服务端同时 `import`。不允许出现第二份牌型实现。
+
+```js
+// gd-combos.js
+export function freshDeck(): string[]                        // 108 张
+export function wildCard(level: number): string              // 逢人配 = 红桃级牌
+export function powerValue(card: string, level: number): number   // 级牌 15，小王 16，大王 17
+export function naturalValue(card: string): number                // 顺子/连对/钢板 用，级牌不升位
+export function classify(cards: string[], level: number): Combo|null   // 具体牌 -> 牌型
+export function interpret(cards: string[], level: number): Combo[]     // 含逢人配的所有解释
+export function beats(a: Combo, b: Combo|null): boolean
+export function comboName(c: Combo, level: number): string
+export function sortHand(cards: string[], level: number): string[]
+
+// Combo = { type: string, rank: number, size: number }
+// type ∈ single | pair | triple | full | straight | tube | plate | bomb | sflush | jokers
+
+// gd-hints.js
+export function findPlays(hand, level, req): {cards: string[], combo: Combo}[]   // 从弱到强
+export function choosePlay(hand, level, req, ctx): {cards, combo}|null           // 人机/托管
+```
+
+**不变量**：`findPlays` 声明的每个 `combo`，必须能被 `interpret(cards, level)` 复现，
+否则服务端会以「牌型对不上」拒绝前端算出来的合法出牌。测试里有模糊用例守着这一条。
+
+炸弹战力档位（`bombPower`）：4 张 20、5 张 25、同花顺 30、6 张 40、7 张 50、8 张 60、
+天王炸 1000。同档位再比 `rank`。
+
+### 12.3 `server/guandan/engine.js` — 一局的状态机
+
+```js
+export const GD_SEATS = 4, HAND_SIZE = 27
+export const GD_PHASE = { TRIBUTE: 'tribute', PLAYING: 'playing', OVER: 'over' }
+export function teamOf(seat): 0|1        // seat % 2
+export function partnerOf(seat): number  // (seat + 2) % 4
+
+new GuandanDeal({ level, firstSeat?, deck?, tributePlan? })
+  .play(seat, cards, declared?) -> { ok, msg? }
+  .pass(seat)                   -> { ok, msg? }
+  .returnTribute(seat, card)    -> { ok, msg? }
+  .returnCandidates(seat)       -> string[]      // 自然点数 ≤ 10
+  .pendingReturns()             -> number[]      // 还欠着还贡的座位
+```
+
+`tributePlan = { double, payers: number[], receivers: number[], headSeat }` 由 room 依据
+上一局名次算出：双下（头游二游同队）时 `payers = [三游, 末游]`、`receivers = [头游, 二游]`；
+其余情况 `payers = [末游]`、`receivers = [头游]`。**进贡按名次算，不按队伍**——
+头游与末游正好是队友时这一贡发生在队内，是规则的正常结果，不是 bug。
+
+engine 负责：抗贡判定（进贡方合计两张 `jr`）、强制交出最大非逢人配牌、
+双下时贡牌大的给头游、还贡校验、以及**首出座位**（有进贡时是贡牌最大的进贡者，
+抗贡时是 `headSeat`）。
+
+一轮结束的判定是「除 `req.seat` 外所有还有牌的座位都已 pass」。
+牌权归属：`req.seat` 还有牌就他领出；他已出完则交给**对家（接风）**；对家也出完才顺延。
+一方两人都出完时本局**立即结束**，剩下两人按手上牌少者为三游。
+
+### 12.4 `server/guandan/room.js` — 房间与升级
+
+内存状态：`levels[2]`（各队打到几，2..14）、`dealingTeam`（本局打谁的级）、
+`aFail[2]`（打 A 失败次数）。
+
+- 升级：头游与二游同队 +3，头游三游同队 +2，头游末游同队 +1；升级封顶在 14（A）。
+- 打 A：坐庄方级数为 14 时，本方拿头游即 `matchOver`；对方拿头游则 `aFail[dealingTeam] += 1`，
+  攒够 3 次该队退回打 2 且计数清零。
+- 4 人坐满自动开局；牌局中不允许入座；中途有人离座则本局作废；真人全部离座后人机一并清场。
+
+### 12.5 WebSocket 协议（路径 `/gd`）
+
+客户端 → 服务端：
+
+| `t` | 字段 | 说明 |
+|-----|------|------|
+| `hello` | `token?` | 同 §8，令牌是 32 位 hex |
+| `ping` | — | 回 `pong` |
+| `sit` | `seat` 0..3, `name` | 昵称 1..12 字符 |
+| `stand` / `start` / `reset` | — | `start`/`reset` 仅房主 |
+| `play` | `cards: string[]`, `as?: Combo`, `dealNo?` | `as` 是前端声明的牌型，可省略 |
+| `pass` | `dealNo?` | 本轮第一个出牌的人不能 pass |
+| `returnTribute` | `card` | 必须是 `returnCandidates` 里的 |
+| `addBot` | `seat?` | 仅房主 |
+| `kick` | `seat` | 仅房主 |
+| `config` | `patch` | 仅房主：`actionTimeoutMs` 10~300s、`autoNextDealMs` 2~60s、`autoNextDeal` |
+| `chat` | `text` | ≤ 200 字 |
+
+服务端 → 客户端：`welcome` / `state` / `error` / `pong`，语义同 §8。
+
+`state` 快照的**安全红线**：`you.hand` 只含 viewer 本人的手牌，别人一律只给
+`seats[].count` 张数；各家剩牌只在本局结束后随 `result.places[].rest` 下发。
+`req` 与 `table` 会带上 `combo`，供前端本地预判出牌合法性——但服务端每次都会重新校验，
+前端算的只是体验，不是权限。
+
+### 12.6 前端（`public/guandan.html` / `guandan.css` / `gd.js`）
+
+- `gd.js` 是原生 ES module（`<script type="module">`），仍然零构建、零外链。
+- 复用 `style.css` 的色板、卡牌、按钮、对话框与侧栏抽屉；`guandan.css` 只写掼蛋特有布局。
+- 座位按 viewer 旋转：自己在下方、下家在右、对家（队友）在上、上家在左。
+- 侧栏必须有「规则」标签，把本桌实际采用的打法逐条写清楚（掼蛋各地规矩不一）。

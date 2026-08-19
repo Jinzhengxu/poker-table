@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Guandan (掼蛋), a second table.** Served at `/guandan` on the same process,
+  with its own WebSocket path (`/gd`), its own in-memory room, and its own seats
+  and tokens — the hold'em table is untouched. Four players in two teams, 108
+  cards, level-climbing to A. Implements the level card outranking A, the
+  wild card (level card in hearts), all ten combination types with the full bomb
+  ladder, relay when a finished player's team keeps the lead, tribute and return
+  with the two-big-jokers refusal, and the A-level rules including the three-strike
+  demotion. The exact house ruleset is written out in a Rules tab in the sidebar,
+  because guandan varies by region and it is better to settle that before the deal
+  than during it.
+- Guandan combination logic lives in one file, `public/gd-combos.js`, imported by
+  both the browser and the server; `public/gd-hints.js` does the same for candidate
+  enumeration and is shared by the bots and the Hint button. Whether the Play button
+  lights up and whether the server accepts the play are therefore the same
+  computation. The server still revalidates independently — the client-side check
+  buys responsiveness, not authority. A fuzz test asserts every combination the
+  enumerator declares can be reproduced by the interpreter, which is the invariant
+  holding the two halves together.
+- Rule-based guandan bots so a short table can still play. The host fills empty
+  seats from the sidebar; no API key is involved. The same policy drives the
+  auto-play that covers a human's turn when their clock runs out, so a deal can
+  never stall on one idle player.
+- `GUANDAN_ACTION_TIMEOUT`, `GUANDAN_NEXT_DEAL_DELAY` and `GUANDAN_AUTO_NEXT_DEAL`
+  set the guandan table's starting configuration, matching how the `POKER_*`
+  variables work for hold'em.
 - **Bots.** The host can seat up to seven bots, each with a distinct persona.
   They run on Kimi (Moonshot) or DeepSeek when a key is configured and fall back
   to a built-in rule policy — Chen formula preflop, hand category and pot odds

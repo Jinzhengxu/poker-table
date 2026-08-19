@@ -1,0 +1,291 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0f0d">
+<meta name="color-scheme" content="dark">
+<title>掼蛋</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23124b36'/%3E%3Ctext x='16' y='23' font-size='18' text-anchor='middle' fill='%23e9c46a'%3E%E2%99%A5%3C/text%3E%3C/svg%3E">
+<!-- 先加载德州那份样式：色板、卡牌、按钮、对话框、侧栏抽屉全部复用 -->
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/guandan.css">
+</head>
+<body class="gd-body">
+<div id="app">
+
+  <!-- ============ 顶部状态条 ============ -->
+  <header id="topbar">
+    <div class="brand" aria-hidden="true"><span class="brand-pip">♥</span><span class="brand-txt">掼蛋</span></div>
+
+    <div id="connBadge" class="badge" data-conn="connecting" role="status" aria-live="polite">
+      <i class="dot"></i><span id="connText">连接中…</span>
+    </div>
+
+    <div id="handMeta" class="meta">
+      <span id="metaDeal">—</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span id="metaLevel">打 —</span>
+      <span id="metaHost" class="host-tag" hidden>房主</span>
+    </div>
+
+    <div class="grow"></div>
+
+    <a class="icon-btn gd-link" href="/" title="回到德州扑克桌">♠ 德州</a>
+    <button id="btnSound" class="icon-btn" type="button" aria-label="提示音开关" aria-pressed="true">
+      <span class="ico-snd" aria-hidden="true"></span><span class="lbl">音效</span>
+    </button>
+    <button id="btnSide" class="icon-btn only-narrow" type="button" aria-label="打开日志与聊天面板">
+      <span class="ico-menu" aria-hidden="true"></span><span class="lbl">面板</span>
+      <i id="sideBadge" class="side-badge" hidden></i>
+    </button>
+  </header>
+
+  <!-- ============ 主体 ============ -->
+  <div id="main">
+    <section id="gdCol">
+
+      <!-- 比分条：两队各打到几 -->
+      <div id="scoreBar" class="score-bar">
+        <div class="score-team" data-team="0">
+          <span class="st-name">红队</span>
+          <span class="st-lv" id="lv0">2</span>
+          <span class="st-seats" id="mem0"></span>
+          <i class="st-deal" id="deal0" hidden title="本局坐庄">庄</i>
+        </div>
+        <div class="score-mid">
+          <div class="sm-wild" id="wildTag">逢人配 —</div>
+          <div class="sm-hint" id="phaseTag">等待开局</div>
+        </div>
+        <div class="score-team" data-team="1">
+          <i class="st-deal" id="deal1" hidden title="本局坐庄">庄</i>
+          <span class="st-seats" id="mem1"></span>
+          <span class="st-lv" id="lv1">2</span>
+          <span class="st-name">蓝队</span>
+        </div>
+      </div>
+
+      <!-- 牌桌 -->
+      <div id="gdTable">
+        <div class="gd-felt" aria-hidden="true"></div>
+
+        <!-- 三个对手：相对自己的左 / 对家 / 右 -->
+        <div class="gd-seat" id="seatTop"   data-slot="top"></div>
+        <div class="gd-seat" id="seatLeft"  data-slot="left"></div>
+        <div class="gd-seat" id="seatRight" data-slot="right"></div>
+        <div class="gd-seat" id="seatSelf"  data-slot="self"></div>
+
+        <!-- 中央：最后打出的一手牌 -->
+        <div id="gdCenter" class="gd-center">
+          <div id="tableCombo" class="tc-name"></div>
+          <div id="tableCards" class="tc-cards"></div>
+          <div id="tableWho" class="tc-who"></div>
+        </div>
+
+        <!-- 进贡横幅 -->
+        <div id="tributeBar" class="tribute-bar" hidden></div>
+
+        <!-- 本局结算浮层 -->
+        <div id="resultOverlay" class="gd-result" hidden role="status" aria-live="polite">
+          <div class="gr-card">
+            <div id="grTitle" class="gr-title"></div>
+            <div id="grSub" class="gr-sub"></div>
+            <ol id="grPlaces" class="gr-places"></ol>
+            <div id="grLevels" class="gr-levels"></div>
+            <div id="grNext" class="gr-next"></div>
+          </div>
+        </div>
+
+        <!-- 整场结束 -->
+        <div id="matchOverlay" class="gd-result gd-match" hidden role="status" aria-live="polite">
+          <div class="gr-card">
+            <div class="gr-trophy" aria-hidden="true">🏆</div>
+            <div id="moTitle" class="gr-title"></div>
+            <div id="moSub" class="gr-sub"></div>
+            <button id="btnAgain" class="act act-start" type="button" hidden>再来一场</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 我的手牌与操作 ============ -->
+      <section id="gdHero" aria-label="我的手牌与操作">
+        <div id="heroStatus" class="gd-status">
+          <span id="heroStatusText">正在连接服务器…</span>
+          <div id="heroTimer" class="hero-timer" hidden><i id="heroTimerBar"></i></div>
+        </div>
+
+        <div id="gdHand" class="gd-hand" aria-label="我的手牌"></div>
+
+        <div id="gdBar" class="gd-bar">
+          <div id="pickInfo" class="pick-info"></div>
+          <div class="gd-actions">
+            <button id="btnPass"  class="act act-fold"  type="button" hidden>不要</button>
+            <button id="btnPlay"  class="act act-raise" type="button" hidden>出牌</button>
+            <button id="btnHint"  class="act act-ghost" type="button" hidden>提示</button>
+            <button id="btnClear" class="act act-ghost" type="button" hidden>清空</button>
+            <button id="btnSortRank" class="act act-ghost" type="button" hidden>理牌</button>
+            <button id="btnReturn" class="act act-start" type="button" hidden>确认还贡</button>
+            <button id="btnStart" class="act act-start" type="button" hidden>开始这一局</button>
+            <button id="btnAddBot" class="act act-ghost" type="button" hidden>＋ 加人机</button>
+            <button id="btnStand" class="act act-ghost" type="button" hidden>离座</button>
+            <button id="btnJoin"  class="act act-start" type="button" hidden>选个座位坐下</button>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ============ 侧栏 / 抽屉 ============ -->
+    <aside id="side" aria-label="牌局日志、聊天与规则">
+      <div class="side-head">
+        <div class="tabs" role="tablist">
+          <button class="tab is-on" type="button" role="tab" data-tab="log"  aria-selected="true">牌局</button>
+          <button class="tab"       type="button" role="tab" data-tab="chat" aria-selected="false">聊天</button>
+          <button class="tab"       type="button" role="tab" data-tab="rule" aria-selected="false">规则</button>
+          <button class="tab"       type="button" role="tab" data-tab="cfg"  aria-selected="false">设置</button>
+        </div>
+        <button id="btnSideClose" class="icon-btn only-narrow" type="button" aria-label="关闭面板">关闭</button>
+      </div>
+
+      <div class="pane is-on" id="paneLog" role="tabpanel">
+        <ol id="logList" class="log-list"></ol>
+      </div>
+
+      <div class="pane" id="paneChat" role="tabpanel">
+        <ol id="chatList" class="chat-list"></ol>
+        <form id="chatForm" class="chat-form" autocomplete="off">
+          <input id="chatInput" type="text" maxlength="200" placeholder="说点什么…" aria-label="聊天输入框">
+          <button type="submit" class="act act-ghost" aria-label="发送聊天">发送</button>
+        </form>
+      </div>
+
+      <!-- 这一桌到底按哪套规矩打，写清楚，省得开局吵架 -->
+      <div class="pane" id="paneRule" role="tabpanel">
+        <div class="rule-doc">
+          <h4>这张桌子的规矩</h4>
+          <p>掼蛋各地打法不一，这里用的是下面这套，开局前先看一眼。</p>
+
+          <h5>牌与队伍</h5>
+          <ul>
+            <li>两副牌共 108 张，四人每人 27 张。</li>
+            <li>座位 1、3 是<b>红队</b>，2、4 是<b>蓝队</b>，对家就是队友。</li>
+          </ul>
+
+          <h5>大小顺序</h5>
+          <p class="rule-order">2 &lt; 3 &lt; … &lt; K &lt; A &lt; <b>级牌</b> &lt; 小王 &lt; 大王</p>
+          <ul>
+            <li><b>级牌</b>就是当前打的那一级，它在单张、对子、三张、炸弹里升到 A 之上；
+              但在顺子、连对、钢板里按本来的点数算。</li>
+            <li><b>逢人配</b>是红桃级牌，可以当除大小王以外的任意一张牌用，一副牌里有两张。</li>
+          </ul>
+
+          <h5>牌型</h5>
+          <ul>
+            <li>单张、对子、三张、三带二</li>
+            <li>顺子＝5 张连号（A2345 最小，10JQKA 最大）</li>
+            <li>连对＝3 组连号对子，钢板＝2 组连号三张</li>
+            <li>炸弹＝4 张及以上同点数；四王为天王炸</li>
+          </ul>
+          <p class="rule-order">
+            4 张炸 &lt; 5 张炸 &lt; 同花顺 &lt; 6 张炸 &lt; 7 张炸 &lt; 8 张炸 &lt; 天王炸
+          </p>
+
+          <h5>升级</h5>
+          <ul>
+            <li>头游与二游同队（<b>双下</b>）升 3 级；头游三游同队升 2 级；头游末游同队升 1 级。</li>
+            <li>一方两人都出完，本局立即结束。</li>
+            <li>某人出完后其余人都要不起，牌权交给他的队友（<b>接风</b>）。</li>
+          </ul>
+
+          <h5>进贡</h5>
+          <ul>
+            <li>双下时三游、末游各进贡一张；否则一律由<b>末游</b>给<b>头游</b>进贡一张。</li>
+            <li>进贡按名次算，不按队伍。所以头游和末游正好是队友时，这一贡是队内调牌
+              ——大牌集中到头游手上，等于本方自己受益。</li>
+            <li>进贡必须交出手里最大的一张，<b>逢人配除外</b>。</li>
+            <li>收贡方要还一张 <b>10 以内</b>的牌。</li>
+            <li>进贡方手上合计有两张大王可以<b>抗贡</b>，本局免贡。</li>
+            <li>有进贡时由<b>进贡者先出</b>（双下时贡牌大的那位先出）；抗贡时由上局头游先出。</li>
+          </ul>
+
+          <h5>打 A</h5>
+          <ul>
+            <li>升级封顶在 A，不能跳过 A。</li>
+            <li>打 A 那一局拿到头游即<b>过 A</b>，赢下整场。</li>
+            <li>三次打 A 未过，退回打 2。</li>
+          </ul>
+
+          <h5>发牌</h5>
+          <p>每局开始前用 <code>crypto.randomInt</code> 做一次 Fisher-Yates 洗牌，
+            牌堆顺序当场定死，服务端不会中途重排，也不会偷看谁的牌。</p>
+        </div>
+      </div>
+
+      <div class="pane" id="paneCfg" role="tabpanel">
+        <div id="cfgHostOnly" class="cfg-note" hidden>只有房主可以修改牌桌设置。</div>
+        <form id="cfgForm" class="cfg-form">
+          <h4>牌桌设置</h4>
+          <label>行动时限（秒）<input id="cfgTimeout" type="number" min="10" max="300" step="1" inputmode="numeric"></label>
+          <label>下一局间隔（秒）<input id="cfgNext" type="number" min="2" max="60" step="1" inputmode="numeric"></label>
+          <label class="chk"><input id="cfgAuto" type="checkbox"><span>自动开始下一局</span></label>
+          <div class="cfg-actions">
+            <button type="submit" class="act act-start">保存设置</button>
+            <button id="btnReset" type="button" class="act act-danger">重开一场</button>
+          </div>
+          <p class="cfg-hint">重开一场会把双方级数都清回打 2。</p>
+        </form>
+
+        <h4>座位管理</h4>
+        <div class="cfg-actions">
+          <button id="btnAddBot2" type="button" class="act act-ghost">＋ 加入人机</button>
+        </div>
+        <div id="seatAdmin" class="seat-admin"></div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="drawerMask" class="drawer-mask" hidden></div>
+</div>
+
+<!-- ============ 入座对话框 ============ -->
+<dialog id="sitDlg" class="dlg" aria-label="入座">
+  <form method="dialog">
+    <h3 id="sitTitle">坐到 1 号位</h3>
+    <label class="dlg-field">
+      <span>昵称（1–12 个字符）</span>
+      <input id="sitName" type="text" maxlength="12" required autocomplete="nickname" placeholder="例如：小明">
+    </label>
+    <div id="sitErr" class="dlg-err" hidden></div>
+    <menu class="dlg-actions">
+      <button value="cancel" class="act act-ghost" type="submit" formnovalidate>取消</button>
+      <button value="ok" class="act act-start" type="submit">入座</button>
+    </menu>
+  </form>
+</dialog>
+
+<!-- ============ 确认对话框 ============ -->
+<dialog id="confirmDlg" class="dlg" aria-label="确认">
+  <form method="dialog">
+    <h3 id="confirmTitle">确认</h3>
+    <p id="confirmText" class="dlg-text"></p>
+    <menu class="dlg-actions">
+      <button value="cancel" class="act act-ghost" type="submit" formnovalidate>取消</button>
+      <button value="ok" class="act act-danger" type="submit">确定</button>
+    </menu>
+  </form>
+</dialog>
+
+<!-- 断线兜底提示 -->
+<div id="fatalMask" class="fatal-mask" hidden>
+  <div class="fatal-box">
+    <h3 id="fatalTitle">连接已断开</h3>
+    <p id="fatalText"></p>
+    <button id="fatalRetry" class="act act-start" type="button">重新连接</button>
+  </div>
+</div>
+
+<div id="toasts" class="toasts" role="alert" aria-live="assertive"></div>
+
+<script type="module" src="/gd.js"></script>
+</body>
+</html>
