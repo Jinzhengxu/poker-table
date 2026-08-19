@@ -38,11 +38,18 @@
     <button id="btnMusic" class="icon-btn" type="button" aria-label="背景音乐开关" aria-pressed="true">
       <span class="ico-mus" aria-hidden="true"></span><span class="lbl">音乐</span>
     </button>
+    <button id="btnVoice" class="icon-btn" type="button" aria-label="语音连麦" aria-pressed="false" hidden>
+      <span class="ico-mic" aria-hidden="true"></span><span class="lbl">连麦</span>
+      <i id="voiceBadge" class="voice-badge" hidden></i>
+    </button>
     <button id="btnSide" class="icon-btn only-narrow" type="button" aria-label="打开日志与聊天面板">
       <span class="ico-menu" aria-hidden="true"></span><span class="lbl">面板</span>
       <i id="sideBadge" class="side-badge" hidden></i>
     </button>
   </header>
+
+  <!-- 语音连麦名单：不占布局，浮在顶栏正下方 -->
+  <div id="voiceMount" class="voice-mount"></div>
 
   <!-- ============ 主体 ============ -->
   <div id="main">
@@ -154,6 +161,8 @@
 
     <!-- ============ 侧栏 / 抽屉 ============ -->
     <aside id="side" aria-label="牌局日志、聊天与设置">
+      <!-- 宽屏时语音名单停在这儿；窄屏侧栏是抽屉，名单会自己搬到 #voiceMount -->
+      <div id="voiceDock" class="voice-dock"></div>
       <div class="side-head">
         <div class="tabs" role="tablist">
           <button class="tab is-on" type="button" role="tab" data-tab="log"  aria-selected="true">牌局</button>
@@ -286,6 +295,7 @@
      preload=none —— 3MB 的东西不该抢开局时的带宽，等用户第一次交互再拉。 -->
 <audio id="bgm" src="/music/lounge.mp3" loop preload="none"></audio>
 
+<script src="/voice.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

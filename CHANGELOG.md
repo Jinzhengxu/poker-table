@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Voice chat, with a separate channel per table.** A mic button in the top bar
+  puts you on the table's voice channel. Hold'em and guandan get their own
+  channel each: every `Room` owns a `VoiceChannel`, rosters are stored
+  separately, and signalling is only ever relayed within that room's own client
+  set — the two tables' client sets are disjoint by construction (different
+  WebSocket paths), so audio cannot cross tables even in principle.
+
+  Audio itself never touches the server. Browsers connect to each other over
+  WebRTC in a full mesh (8 people max, `POKER_VOICE_MAX` to lower it) and the
+  server only forwards a few kilobytes of SDP/ICE — it never parses SDP, only
+  validates the envelope shape and size, and rebuilds the payload from an
+  allow-list before forwarding. Signalling gets its own rate-limit bucket
+  because ICE candidates arrive in bursts that would blow the 20/s table budget.
+
+  In the UI: a green ring and a mic dot on the seat of whoever is speaking
+  (detected locally from the audio streams, never reported to the server), a
+  roster that docks into the sidebar on desktop and collapses to a row of
+  avatars on phones, self-mute, and per-peer local mute. Leaving the table,
+  being kicked, disconnecting, or reconnecting all drop you off the mic so peers
+  tear down immediately instead of waiting for an ICE timeout.
+
+  Requires HTTPS (or localhost) for microphone access. STUN defaults to servers
+  reachable from mainland China; symmetric NATs need a TURN relay
+  (`POKER_TURN_URL` and friends), and a pair that cannot connect says so in the
+  roster rather than failing silently. `POKER_VOICE=off` disables it entirely.
+
 - **Guandan (掼蛋), a second table.** Served at `/guandan` on the same process,
   with its own WebSocket path (`/gd`), its own in-memory room, and its own seats
   and tokens — the hold'em table is untouched. Four players in two teams, 108

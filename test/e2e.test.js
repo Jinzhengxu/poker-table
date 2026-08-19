@@ -18,6 +18,7 @@ class Client {
     this.states = [];
     this.errors = [];
     this.events = [];
+    this.voiceMsgs = [];
     this.token = null;
     this.playerId = null;
     this.seat = null;
@@ -46,6 +47,8 @@ class Client {
           this.events.push(msg);
         } else if (msg.t === 'error') {
           this.errors.push(msg);
+        } else if (msg.t === 'voiceReady' || msg.t === 'voiceSignal') {
+          this.voiceMsgs.push(msg);
         }
       });
       ws.on('error', reject);
@@ -341,4 +344,66 @@ test('非法操作被拒绝：占用座位、非房主开局、不到自己回�
   d.send({ t: 'action', handNo: 1, type: 'fold' });
   await new Promise((r) => setTimeout(r, 200));
   assert.ok(d.errors.length > 0, '未入座就行动应报错');
+});
+
+test('语音连麦：上麦进名单、信令点对点转发、非法信令被拒', async () => {
+  const a = await makeClient('语音A');
+  const b = await makeClient('语音B');
+  const c = await makeClient('语音C');
+
+  a.send({ t: 'voiceJoin' });
+  await a.waitFor((s) => s.voice.members.some((m) => m.playerId === a.playerId), 4000, 'A 上麦');
+  assert.ok(a.voiceMsgs.some((m) => m.t === 'voiceReady'), '上麦要收到 voiceReady');
+  assert.ok(Array.isArray(a.voiceMsgs.find((m) => m.t === 'voiceReady').iceServers));
+
+  b.send({ t: 'voiceJoin' });
+  await b.waitFor((s) => s.voice.members.length === 2, 4000, 'B 上麦');
+  // 没上麦的 C 也看得到名单，这样才知道"他们在语音里聊"
+  await c.waitFor((s) => s.voice.members.length === 2, 4000, 'C 看到名单');
+
+  // 信令只到 B，不会广播给 C
+  a.send({ t: 'voiceSignal', to: b.playerId, data: { kind: 'offer', sdp: 'v=0\r\n' } });
+  await new Promise((r) => setTimeout(r, 200));
+  const got = b.voiceMsgs.filter((m) => m.t === 'voiceSignal');
+  assert.equal(got.length, 1);
+  assert.equal(got[0].from, a.playerId);
+  assert.equal(c.voiceMsgs.filter((m) => m.t === 'voiceSignal').length, 0, '第三个人不该收到信令');
+
+  // 收件人格式不对 / 负载不对，都要被拒
+  a.errors.length = 0;
+  a.send({ t: 'voiceSignal', to: '不是个 id', data: { kind: 'offer', sdp: 'v=0' } });
+  a.send({ t: 'voiceSignal', to: b.playerId, data: { kind: 'chat', text: '偷渡' } });
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(a.errors.length, 2, '两条非法信令都该报错');
+  assert.equal(b.voiceMsgs.filter((m) => m.t === 'voiceSignal').length, 1, '非法信令不该转发');
+
+  // 静音同步 + 下麦
+  a.send({ t: 'voiceMute', value: true });
+  await b.waitFor((s) => s.voice.members.some((m) => m.playerId === a.playerId && m.muted), 4000, '静音同步');
+  a.send({ t: 'voiceLeave' });
+  await b.waitFor((s) => s.voice.members.length === 1, 4000, 'A 下麦');
+
+  // 断线也要自动下麦
+  b.close();
+  await c.waitFor((s) => s.voice.members.length === 0, 4000, 'B 断线后自动下麦');
+});
+
+test('语音信令不吃牌桌那 20 条/秒的额度', async () => {
+  const a = await makeClient('限流A');
+  const b = await makeClient('限流B');
+  a.send({ t: 'voiceJoin' });
+  b.send({ t: 'voiceJoin' });
+  await a.waitFor((s) => s.voice.members.length === 2, 4000, '两个人都上麦');
+
+  a.errors.length = 0;
+  // 一口气发 60 条信令：牌桌消息这个量早就被限流打回了
+  for (let i = 0; i < 60; i++) {
+    a.send({ t: 'voiceSignal', to: b.playerId, data: { kind: 'candidate', candidate: { candidate: `candidate:${i}` } } });
+  }
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(a.errors.filter((e) => e.code === 'RATE_LIMIT').length, 0, '语音信令不该被牌桌限流打回');
+  assert.equal(b.voiceMsgs.filter((m) => m.t === 'voiceSignal').length, 60, '60 条应该全部送达');
+
+  a.send({ t: 'voiceLeave' });
+  b.send({ t: 'voiceLeave' });
 });

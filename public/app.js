@@ -220,6 +220,9 @@
 
   // ============================ 客户端状态 ============================
 
+  /** 语音连麦（public/voice.js）。掼蛋那边用的是同一份代码、另一个频道。 */
+  var voice = null;
+
   var S = {
     ws: null,
     conn: 'connecting',       // connecting | online | offline
@@ -270,6 +273,9 @@
     D.btnMusic = $('#btnMusic');
     D.btnSide = $('#btnSide');
     D.sideBadge = $('#sideBadge');
+    D.btnVoice = $('#btnVoice');
+    D.voiceMount = $('#voiceMount');
+    D.voiceDock = $('#voiceDock');
 
     D.tableWrap = $('#tableWrap');
     D.table = $('#table');
@@ -848,6 +854,7 @@
 
     ws.onclose = function () {
       stopPing();
+      if (voice) voice.onDisconnect();
       if (S.ws === ws) S.ws = null;
       if (S.fatal) {
         showFatal(S.fatal.title, S.fatal.text);
@@ -890,17 +897,21 @@
   }
 
   function handleMessage(m) {
+    // 语音的信令自己吃掉，不进下面这套牌桌逻辑
+    if (voice && voice.handle(m)) return;
     switch (m.t) {
       case 'welcome':
         if (typeof m.token === 'string' && m.token) lsSet(LS_TOKEN, m.token);
         S.playerId = m.playerId || null;
         if (typeof m.seat === 'number') S.mySeat = m.seat;
+        if (voice) voice.onWelcome();
         break;
 
       case 'state':
         S.state = m;
         if (typeof m.serverNow === 'number') S.clockOffset = m.serverNow - Date.now();
         clearPending();
+        if (voice) voice.applyState(m);
         render();
         pushRememberedBotConfig(m);
         break;
@@ -1058,8 +1069,11 @@
       var avWrap = elt('div', 'av-wrap');
       var avatar = elt('div', 'avatar');
       var ring = elt('div', 'ring');
+      var mic = elt('i', 'pod-mic');
+      mic.hidden = true;
       avWrap.appendChild(avatar);
       avWrap.appendChild(ring);
+      avWrap.appendChild(mic);
       var info = elt('div', 'pod-info');
       var name = elt('div', 'pod-name');
       var chips = elt('div', 'pod-chips');
@@ -1098,7 +1112,7 @@
       D.betLayer.appendChild(bet);
 
       S.seatNodes.push({
-        root: root, pod: pod, avWrap: avWrap, avatar: avatar, ring: ring,
+        root: root, pod: pod, avWrap: avWrap, avatar: avatar, ring: ring, mic: mic,
         info: info, name: name, chips: chips, offDot: offDot, emptyTxt: emptyTxt,
         tags: tags, bubble: bubble, mini: mini,
         bet: bet, chip: chipNode, amt: amtNode,
@@ -1266,6 +1280,7 @@
         if (seatNum === S.mySeat) cls += ' is-me';
         if (data.isWinner) cls += ' winner';
         if (data.lastAction && data.lastAction.label) cls += ' has-bubble';
+        if (voice && voice.speakingSeat(seatNum)) cls += ' speaking';
       }
       if (data && actingSeat === seatNum) cls += ' acting';
       node.root.className = cls;
@@ -1274,6 +1289,7 @@
         node.avWrap.hidden = true;
         node.info.hidden = true;
         node.offDot.hidden = true;
+        node.mic.hidden = true;
         node.emptyTxt.hidden = false;
         node.emptyTxt.textContent = (S.mySeat === null) ? '＋ 入座' : ((seatNum + 1) + ' 号空位');
         node.pod.setAttribute('role', S.mySeat === null ? 'button' : 'presentation');
@@ -1304,6 +1320,14 @@
       node.chips.textContent = fmt(data.chips);
       node.chips.className = 'pod-chips' + ((Number(data.chips) || 0) <= 0 ? ' dim' : '');
       node.offDot.hidden = !!data.connected;
+
+      // 麦上的人在头像角上挂个小灯：绿色＝开着麦，灰色＝自己静音了
+      var mem = voice ? voice.onMic(seatNum) : null;
+      node.mic.hidden = !mem;
+      if (mem) {
+        node.mic.classList.toggle('muted', !!mem.muted);
+        node.mic.title = mem.muted ? mem.name + ' 已静音' : mem.name + ' 在语音里';
+      }
 
       node.pod.setAttribute('aria-label',
         (data.name || '') + '，筹码 ' + fmt(data.chips) +
@@ -2611,6 +2635,15 @@
 
   function boot() {
     cacheDom();
+    voice = window.TableVoice ? window.TableVoice.create({
+      send: send,
+      toast: toast,
+      mount: D.voiceMount,
+      dock: D.voiceDock,
+      button: D.btnVoice,
+      // 说话状态一变就重画座位，头像上的绿圈才跟得上
+      onSpeakingChange: function () { if (S.state) render(); },
+    }) : null;
     buildSeats();
     bindEvents();
     layout();

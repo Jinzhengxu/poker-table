@@ -1610,3 +1610,144 @@ h3, h4 { margin: 0; font-weight: 600; }
   }
   .act.acted::before { animation-duration: 1.4s !important; }
 }
+
+
+/* =========================== 语音连麦 =========================== */
+/* 德州和掼蛋共用这一套（两个页面都引 style.css）。
+   声音是浏览器点对点直传的，这里只是它的仪表盘。 */
+
+/* 麦克风图标：话筒头 + 支架 */
+.ico-mic { width: 13px; height: 13px; display: inline-block; position: relative; }
+.ico-mic::before {
+  content: ""; position: absolute; left: 4px; top: 0;
+  width: 5px; height: 7.5px; border-radius: 3px; background: currentColor;
+}
+.ico-mic::after {
+  content: ""; position: absolute; left: 1.5px; top: 6px;
+  width: 10px; height: 5px; border: 1.5px solid currentColor;
+  border-top-color: transparent; border-radius: 0 0 6px 6px;
+  box-shadow: 0 5.5px 0 -4.2px currentColor;
+}
+.icon-btn.is-on { color: var(--green); background: rgba(47, 164, 106, .14); border-color: rgba(47, 164, 106, .4); }
+.icon-btn.is-busy { opacity: .6; }
+/* 麦上有人时按钮右上角挂个数字，手机上标签被藏起来也看得见 */
+.voice-badge {
+  position: absolute; top: -5px; right: -5px;
+  min-width: 15px; height: 15px; padding: 0 3px;
+  border-radius: 8px; background: var(--green); color: #04120b;
+  font-size: 10px; font-weight: 700; line-height: 15px; text-align: center;
+  box-shadow: 0 0 8px rgba(47, 164, 106, .55);
+}
+
+/* 挂载点本身不占任何布局空间，面板浮在顶栏正下方 */
+.voice-mount { position: relative; height: 0; z-index: 25; }
+
+.voice-box {
+  position: absolute; right: 8px; top: 6px; width: 236px;
+  max-height: min(46vh, 340px); overflow: auto;
+  padding: 8px 9px 9px;
+  background: linear-gradient(180deg, rgba(20, 30, 26, .97), rgba(11, 18, 15, .97));
+  border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  font-size: 12px; color: var(--txt-dim);
+}
+/* 停靠在侧栏里的形态：跟着排版走，不再是浮层 */
+.voice-box.is-docked {
+  position: static; width: auto; max-height: 34vh;
+  border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+  box-shadow: none; background: rgba(47, 164, 106, .06);
+}
+.voice-dock:empty { display: none; }
+
+.vb-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.vb-title { color: var(--gold); font-weight: 600; letter-spacing: .3px; }
+.vb-count { color: var(--txt-faint); font-family: var(--font-num); font-size: 11px; }
+.vb-btn {
+  margin-left: auto; padding: 3px 8px; border-radius: 7px;
+  font-size: 11px; color: var(--txt-dim);
+  background: rgba(255, 255, 255, .06); border: 1px solid var(--line-soft);
+}
+.vb-btn + .vb-btn { margin-left: 0; }
+.vb-btn:hover { color: var(--txt); background: rgba(255, 255, 255, .1); }
+.vb-btn.is-on { color: var(--red); border-color: rgba(211, 63, 74, .45); background: rgba(211, 63, 74, .14); }
+.vb-btn.vb-join { color: var(--green); border-color: rgba(47, 164, 106, .4); background: rgba(47, 164, 106, .14); }
+
+.vb-fold {
+  padding: 0 4px; font-size: 11px; line-height: 1;
+  color: var(--txt-faint); background: none; border: 0;
+}
+.vb-fold:hover { color: var(--txt); }
+
+/* 收起态：只留一排头像。手机上默认就是这个样子，不然面板会压住牌桌顶上的座位。 */
+.voice-box.is-compact .vb-list { flex-direction: row; flex-wrap: wrap; gap: 5px; }
+.voice-box.is-compact .vb-mem { flex: 0 0 auto; padding: 3px; }
+.voice-box.is-compact .vb-main,
+.voice-box.is-compact .vb-flag,
+.voice-box.is-compact .vb-off,
+.voice-box.is-compact .vb-tip { display: none; }
+
+.vb-list { list-style: none; margin: 7px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.vb-mem {
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 5px; border-radius: 8px;
+  background: rgba(255, 255, 255, .035); border: 1px solid transparent;
+}
+.vb-mem.speaking { border-color: rgba(47, 164, 106, .55); background: rgba(47, 164, 106, .12); }
+.vb-av {
+  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: #31514a; color: #fff; font-size: 11px; font-style: normal; font-weight: 600;
+}
+.vb-mem.speaking .vb-av { box-shadow: 0 0 0 2px rgba(47, 164, 106, .85), 0 0 10px rgba(47, 164, 106, .5); }
+/* 收起态看不到「静音」那个标签了，就把头像压暗，状态不能只靠文字传达 */
+.vb-mem.is-muted .vb-av { opacity: .4; }
+.vb-main { min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.vb-name { color: var(--txt); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vb-sub { color: var(--txt-faint); font-size: 10px; white-space: nowrap; }
+.vb-flag {
+  margin-left: auto; flex: 0 0 auto; font-style: normal; font-size: 10px;
+  color: var(--red); border: 1px solid rgba(211, 63, 74, .4);
+  border-radius: 5px; padding: 1px 4px;
+}
+.vb-off {
+  margin-left: auto; flex: 0 0 auto; padding: 2px 6px; border-radius: 6px;
+  font-size: 10px; color: var(--txt-faint);
+  background: rgba(255, 255, 255, .05); border: 1px solid var(--line-soft);
+}
+.vb-flag + .vb-off { margin-left: 4px; }
+.vb-off:hover { color: var(--txt); }
+.vb-off.is-on { color: var(--red); border-color: rgba(211, 63, 74, .45); }
+.vb-tip { margin-top: 6px; font-size: 11px; color: var(--txt-faint); line-height: 1.4; }
+.vb-gesture {
+  margin-top: 6px; width: 100%; padding: 5px; border-radius: 7px;
+  font-size: 11px; color: #04120b; background: var(--gold); font-weight: 600;
+}
+.vb-sinks { display: none; }
+
+/* 座位上的说话指示：牌桌上一眼看出谁在开口，比看名单快 */
+.pod-mic {
+  position: absolute; right: -2px; bottom: -2px;
+  width: 13px; height: 13px; border-radius: 50%;
+  background: var(--green); color: #04120b;
+  display: grid; place-items: center; font-style: normal; font-size: 8px;
+  border: 1.5px solid var(--bg-1);
+}
+.pod-mic.muted { background: var(--txt-faint); color: #101613; }
+/* 光圈挂在 .av-wrap 上而不是 .avatar 上：头像有四种形状，其中一种用 clip-path
+   切成六边形，clip-path 会把自己的 box-shadow 一起切掉，光圈就没了。
+   .av-wrap 是个规规矩矩的方块，套个圆形光圈对四种形状都成立。 */
+.seat.speaking .av-wrap {
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px rgba(47, 164, 106, .9), 0 0 14px rgba(47, 164, 106, .55);
+  animation: podSpeak 1.1s ease-in-out infinite;
+}
+@keyframes podSpeak {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(47, 164, 106, .9), 0 0 12px rgba(47, 164, 106, .45); }
+  50%      { box-shadow: 0 0 0 4px rgba(47, 164, 106, .5), 0 0 22px rgba(47, 164, 106, .75); }
+}
+
+@media (max-width: 620px) {
+  /* 手机上面板改成通栏。默认是收起态（只有一排头像），点标题旁边的箭头能展开。 */
+  .voice-box { left: 8px; right: 8px; width: auto; max-height: 40vh; }
+  .voice-box:not(.is-compact) .vb-mem { flex: 1 1 44%; min-width: 0; }
+}

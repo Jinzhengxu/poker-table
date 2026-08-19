@@ -46,8 +46,18 @@ for (const id of [
   'seatAdmin', 'sitDlg', 'sitTitle', 'sitName', 'sitErr',
   'confirmDlg', 'confirmTitle', 'confirmText',
   'fatalMask', 'fatalTitle', 'fatalText', 'fatalRetry',
-  'toasts', 'btnSound',
+  'toasts', 'btnSound', 'btnVoice', 'voiceMount', 'voiceDock',
 ]) D[id] = $(id);
+
+/** 语音连麦（/voice.js）。德州那张桌子用同一份代码、另一个频道，两边不串。 */
+const voice = window.TableVoice ? window.TableVoice.create({
+  send: (obj) => send(obj),
+  toast: (msg) => toast(msg),
+  mount: D.voiceMount,
+  dock: D.voiceDock,
+  button: D.btnVoice,
+  onSpeakingChange: () => { if (S.state) renderSeats(S.state); },
+}) : null;
 
 const S = {
   ws: null,
@@ -301,6 +311,7 @@ function renderSeats(s) {
     if (info.waiting) pod.classList.add('acting');
     if (info.place) pod.classList.add('gone');
     if (!info.connected) pod.classList.add('off');
+    if (voice && voice.speakingSeat(info.seat)) pod.classList.add('speaking');
     if (isSeated() && info.seat === (S.mySeat + 2) % 4 && info.seat !== S.mySeat) {
       pod.classList.add('is-mate');
     }
@@ -317,6 +328,8 @@ function renderSeats(s) {
     sub.appendChild(cnt);
     if (info.place) sub.appendChild(elt('i', 'pod-tag place', info.place));
     else if (info.passed) sub.appendChild(elt('i', 'pod-tag pass', '不要'));
+    const mic = voice ? voice.onMic(info.seat) : null;
+    if (mic) sub.appendChild(elt('i', 'pod-tag mic' + (mic.muted ? ' muted' : ''), mic.muted ? '静音' : '麦'));
     if (info.isBot) sub.appendChild(elt('i', 'pod-tag bot', '人机'));
     if (info.isHost) sub.appendChild(elt('i', 'pod-tag host', '房主'));
     if (!info.connected) sub.appendChild(elt('i', 'pod-tag', '掉线'));
@@ -743,6 +756,7 @@ function connect() {
   ws.onerror = () => { /* onclose 会接手 */ };
 
   ws.onclose = () => {
+    if (voice) voice.onDisconnect();
     if (S.pingTimer) { clearInterval(S.pingTimer); S.pingTimer = null; }
     if (S.ws === ws) S.ws = null;
     if (S.fatal) { showFatal(S.fatal.title, S.fatal.text); return; }
@@ -759,17 +773,21 @@ function scheduleReconnect() {
 }
 
 function handleMessage(m) {
+  // 语音信令自己吃掉，不进牌桌逻辑
+  if (voice && voice.handle(m)) return;
   switch (m.t) {
     case 'welcome':
       if (typeof m.token === 'string' && m.token) lsSet(LS_TOKEN, m.token);
       S.playerId = m.playerId || null;
       S.mySeat = typeof m.seat === 'number' ? m.seat : null;
+      if (voice) voice.onWelcome();
       break;
 
     case 'state': {
       const prev = S.state;
       S.state = m;
       S.mySeat = m.you.seat;
+      if (voice) voice.applyState(m);
       // 换局就清空选牌，别让上一局的选择残留
       if (m.dealNo !== S.lastDealNo) {
         S.lastDealNo = m.dealNo;

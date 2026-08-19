@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto';
 import { PHASES, SEAT_STATE, DEFAULT_CONFIG, MAX_SEATS } from './protocol.js';
 import { Hand } from './engine.js';
 import { randomPersona } from './bot/index.js';
+import { VoiceChannel } from './voice.js';
 
 /** 日志与聊天保留条数（SPEC §8.3） */
 const MAX_LOG = 40;
@@ -133,6 +134,9 @@ export class Room {
 
     /** 本手牌里主动亮牌的座位（每手牌开始时清空） */
     this.shownSeats = new Set();
+
+    /** 这张桌子的语音频道。掼蛋那张桌子有它自己的一个，两边互不相通。 */
+    this.voice = new VoiceChannel(this, { label: '德州语音', ...(opts.voice || {}) });
   }
 
   // ==================== 连接管理 ====================
@@ -150,6 +154,8 @@ export class Room {
     client.playerId = null;
     if (!p) return;
     if (this.#hasClient(p.id)) return; // 同一玩家还有别的连接
+    // 人走了，麦也得下——他那些 WebRTC 连接已经跟着页面一起没了
+    this.voice.remove(p.id);
     p.connected = false;
     if (p.seat === null) {
       // 没入座的观众直接回收，避免内存无限增长
@@ -186,6 +192,7 @@ export class Room {
 
   #deletePlayer(p) {
     this.#clearDropTimer(p);
+    this.voice.remove(p.id);
     this.players.delete(p.id);
     this.tokens.delete(p.token);
   }
@@ -240,6 +247,9 @@ export class Room {
     client.playerId = player.id;
     player.connected = true;
     this.#clearDropTimer(player);
+    // 新连接意味着旧的 WebRTC 连接已经作废（刷新页面、或断线重连）。
+    // 先把人从麦上摘掉，让其他人拆干净；前端如果本来就在连麦，会自己再上一次麦。
+    this.voice.remove(player.id);
     client.send({ t: 'welcome', playerId: player.id, token: player.token, seat: player.seat });
     // 有人回来了：如果之前因为没观众停在等待状态（比如一桌人机），现在可以继续
     this.#maybeAutoStart();
@@ -476,6 +486,7 @@ export class Room {
     if (!target) return { ok: false, code: 'NOT_SEATED', msg: '该座位没有人' };
     if (target.id === host.id) return { ok: false, code: 'ILLEGAL_ACTION', msg: '不能踢自己，请用离座' };
     this.#pushLog(`${target.name} 被房主请出了牌桌`);
+    this.voice.remove(target.id);
     for (const c of this.clients) {
       if (c.playerId === target.id) {
         c.send({ t: 'error', code: 'ILLEGAL_ACTION', msg: '你被房主请出了牌桌' });
@@ -1352,6 +1363,7 @@ export class Room {
       result: this.#publicResult(),
       log: this.log.slice(-MAX_LOG),
       chat: this.chat.slice(-MAX_CHAT),
+      voice: this.voice.publicState(),
     };
   }
 

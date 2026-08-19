@@ -27,10 +27,12 @@ poker/
 │   ├── deck.js              牌堆与洗牌
 │   ├── evaluator.js         7 张牌取最优 5 张的牌力评估
 │   ├── engine.js            单手牌状态机（下注轮、底池、摊牌）
+│   ├── voice.js             语音连麦：频道成员表与信令中转（两张桌子各一个频道）
 │   └── room.js              房间：座位、令牌、断线重连、状态快照下发
 ├── public/
 │   ├── index.html
 │   ├── style.css
+│   ├── voice.js             语音连麦前端（两个页面共用）
 │   └── app.js
 ├── test/
 │   ├── evaluator.test.js
@@ -320,6 +322,7 @@ export class Hand {
 {"t":"reset"}                                // 仅房主：清空牌桌，所有人筹码回到 startingStack
 {"t":"chat","text":"..."}                    // 最长 200 字符
 {"t":"ping"}
+{"t":"voiceJoin"} / {"t":"voiceLeave"} / {"t":"voiceMute"} / {"t":"voiceSignal"}  // 语音连麦，见 §13
 ```
 
 `action` 消息里的 `handNo` 用于丢弃过期点击：与当前手牌号不符时服务端静默忽略。
@@ -332,10 +335,12 @@ export class Hand {
 {"t":"error","code":"SEAT_TAKEN","msg":"该座位已被占用"}
 {"t":"event","kind":"...","seat":3,"amount":80,"text":"小明 加注到 80"}  // 建议性，用于音效/动画
 {"t":"pong"}
+{"t":"voiceReady", ...} / {"t":"voiceSignal", ...}   // 语音连麦，见 §13
 ```
 
 错误码：`SEAT_TAKEN` `NAME_INVALID` `NOT_HOST` `NOT_YOUR_TURN` `ILLEGAL_ACTION`
-`TABLE_FULL` `NOT_SEATED` `HAND_IN_PROGRESS` `NOT_ENOUGH_PLAYERS` `RATE_LIMIT`。
+`TABLE_FULL` `NOT_SEATED` `HAND_IN_PROGRESS` `NOT_ENOUGH_PLAYERS` `RATE_LIMIT`
+`VOICE_OFF` `VOICE_FULL`。
 
 ### 8.3 状态快照（**前后端共同契约，字段名不得更改**）
 
@@ -408,6 +413,7 @@ export class Hand {
   否则"小盲跟注 500、大盲跟注 400"会被误读成后者投得更少（两人其实都跟到了 600）。
 - `bot` 是人机后端状态，**永远不含真实 apiKey**；打码后的 `maskedKey` 只发给房主，
   其他人只有 `hasLLM` 与供应商/模型名。见 §8.4.3。
+- `voice` 是语音连麦的麦上名单，见 §13.2。两张桌子的名单各存各的。
 
 ## 8.4 人机（`server/bot/`）
 
@@ -719,7 +725,10 @@ engine 负责：抗贡判定（进贡方合计两张 `jr`）、强制交出最�
 | `config` | `patch` | 仅房主：`actionTimeoutMs` 10~300s、`autoNextDealMs` 2~60s、`autoNextDeal` |
 | `chat` | `text` | ≤ 200 字 |
 
-服务端 → 客户端：`welcome` / `state` / `error` / `pong`，语义同 §8。
+`voiceJoin` / `voiceLeave` / `voiceMute` / `voiceSignal` 同 §13，
+走的是掼蛋桌自己那个频道——和德州桌的语音完全隔离。
+
+服务端 → 客户端：`welcome` / `state` / `error` / `pong` / `voiceReady` / `voiceSignal`，语义同 §8 与 §13。
 
 `state` 快照的**安全红线**：`you.hand` 只含 viewer 本人的手牌，别人一律只给
 `seats[].count` 张数；各家剩牌只在本局结束后随 `result.places[].rest` 下发。
@@ -732,3 +741,91 @@ engine 负责：抗贡判定（进贡方合计两张 `jr`）、强制交出最�
 - 复用 `style.css` 的色板、卡牌、按钮、对话框与侧栏抽屉；`guandan.css` 只写掼蛋特有布局。
 - 座位按 viewer 旋转：自己在下方、下家在右、对家（队友）在上、上家在左。
 - 侧栏必须有「规则」标签，把本桌实际采用的打法逐条写清楚（掼蛋各地规矩不一）。
+
+---
+
+## 13. 语音连麦（`server/voice.js` + `public/voice.js`）
+
+**两张桌子的语音是分开的**：德州桌上说的话，掼蛋桌那边听不到，反之亦然。
+这不是靠某个 `if` 守着，而是结构上的——每个 Room 各持有一个 `VoiceChannel`
+实例，成员表各存一份，转发信令时只在自己房间的 `clients` 集合里找收件人，
+而两张桌子的 `clients` 本来就不相交（WebSocket 路径就不同：`/ws` 与 `/gd`）。
+
+### 13.1 拓扑
+
+- **音频不经过服务器。** 浏览器之间直接建 WebRTC 连接（mesh，人人互连），
+  服务端只转发 SDP / ICE 这些几 KB 的小纸条。带宽成本恒定为零，延迟是端到端最短的那条。
+- 代价是连接数按 n² 涨：`MAX_VOICE_MEMBERS = 8`（8 人 = 28 条连接，
+  单人上行约 7 × 24kbps）。可用 `POKER_VOICE_MAX` 调小。
+- 服务端**不解析 SDP**。`voice.js` 的 `validSignal()` 只管形状与大小
+  （kind 白名单、SDP ≤ 12000 字符、candidate ≤ 1200 字符），转发前还会按白名单
+  重建对象，塞在信令里的多余字段不会被转出去。
+
+### 13.2 消息（两张桌子完全一样，各走各的路径）
+
+客户端 → 服务端：
+
+```jsonc
+{"t":"voiceJoin"}                       // 上麦。幂等：已在麦上只会重发一次 voiceReady
+{"t":"voiceLeave"}                      // 下麦
+{"t":"voiceMute","value":true}          // 自己静音（麦是在浏览器本地关的，这里只同步图标）
+{"t":"voiceSignal","to":"p_ab12","data":{"kind":"offer"|"answer","sdp":"..."}}
+{"t":"voiceSignal","to":"p_ab12","data":{"kind":"candidate","candidate":{...}|null}}
+{"t":"voiceSignal","to":"p_ab12","data":{"kind":"bye"}}
+```
+
+服务端 → 客户端：
+
+```jsonc
+{"t":"voiceReady","self":"p_ab12","max":8,"iceServers":[{"urls":["stun:..."]}]}
+{"t":"voiceSignal","from":"p_cd34","data":{...}}   // 只发给 to 指定的那一个人
+```
+
+快照里多一个 `voice` 字段（见 §8.3 / §12.5）：
+
+```jsonc
+"voice": {
+  "enabled": true,
+  "max": 8,
+  "members": [{"playerId":"p_ab12","seat":3,"name":"小明","avatar":{...},"muted":false}]
+}
+```
+
+`members` 按上麦先后排序；观众也能上麦，`seat` 为 `null`、`name` 为 `"观众"`。
+新增错误码：`VOICE_OFF`（没开语音 / 自己还没上麦）、`VOICE_FULL`。
+
+### 13.3 生命周期
+
+下面这几件事都会把人从麦上摘掉，然后广播新名单，让其他人立刻拆掉 P2P 连接
+（而不是干等 ICE 超时）：**断线**、**被房主请出牌桌**、**重新 `hello`**。
+最后一条是关键：一次新的握手意味着页面刷新过或断线重连过，
+旧的 RTCPeerConnection 已经作废；前端如果本来在麦上，会在收到 `welcome` 后自己再上一次麦。
+
+### 13.4 限流
+
+信令在建连的那两秒是成串涌出来的（7 个对端一起打洞），牌桌那 20 条/秒根本不够。
+所以 `index.js` 的限流分两个桶：**总量** 160 条/秒（在 `JSON.parse` 之前拦，最便宜），
+**牌桌动作**仍然是 20 条/秒。语音消息只吃总量那个桶。
+
+### 13.5 打洞与 HTTPS
+
+- `getUserMedia` 只在**安全上下文**里可用：必须是 HTTPS（或本机 `localhost`）。
+  不满足时前端会明确提示，而不是静默失败。
+- STUN 默认用国内能连上的几家（`stun.qq.com` / `stun.miwifi.com` / `stun.cloudflare.com`），
+  可用 `POKER_STUN_URLS` 覆盖，填 `none` 表示只走局域网直连。
+- 对称型 NAT / 部分蜂窝网络之间打不通，只能过 TURN 中转：
+  自己搭一个 coturn，填 `POKER_TURN_URL` / `POKER_TURN_USERNAME` / `POKER_TURN_CREDENTIAL`。
+  没配 TURN 时，打不通的那一对会在名单里显示「连不通」，并弹一次提示——**不能静默失败**。
+- `POKER_VOICE=off` 整体关掉，前端连按钮都不显示。
+
+### 13.6 前端（`public/voice.js`）
+
+两个页面共用同一份文件（普通 `<script>`，挂 `window.TableVoice`），因为德州那边的
+`app.js` 不是 module。宿主页面只需要给它四样东西：`send` / `toast` / 挂载点 / 顶栏按钮，
+然后把每条服务端消息喂给 `handle()`、每个快照喂给 `applyState()`。
+
+- 谁在说话是**本地算的**：对本地流和每条远端流各挂一个 `AnalyserNode`，
+  按 RMS 判定，开口/闭嘴两条阈值加 350ms 保持时间，避免指示灯频闪。
+  这条信息一个字节都不走服务器。
+- 名单面板宽屏停在侧栏顶部（跟着排版走，不挡日志），窄屏浮在顶栏底下并默认收起成一排头像。
+- 座位上必须能一眼看出谁在开口：头像绿圈 + 麦克风小灯（静音时变灰）。

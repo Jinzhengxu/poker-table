@@ -533,3 +533,22 @@
   .tc-cards .card, .gr-card, .gd-result { animation: none; }
   .score-team.at-a .st-lv { animation: none; }
 }
+
+/* =========================== 语音连麦 =========================== */
+/* 面板与按钮的样式在 style.css 里，两张桌子共用；这里只补掼蛋座位牌上的指示。 */
+
+.pod { position: relative; }
+.pod.speaking { border-color: rgba(47, 164, 106, .55); }
+.pod.speaking .pod-av {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .16),
+              0 0 0 2px rgba(47, 164, 106, .9), 0 0 14px rgba(47, 164, 106, .55);
+  animation: gdPodSpeak 1.1s ease-in-out infinite;
+}
+@keyframes gdPodSpeak {
+  0%, 100% { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .16),
+                         0 0 0 2px rgba(47, 164, 106, .9), 0 0 12px rgba(47, 164, 106, .45); }
+  50%      { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .16),
+                         0 0 0 4px rgba(47, 164, 106, .5), 0 0 22px rgba(47, 164, 106, .75); }
+}
+.pod-tag.mic { color: #04120b; background: var(--green); border-color: transparent; }
+.pod-tag.mic.muted { background: var(--txt-faint); color: #101613; }

@@ -16,6 +16,7 @@
 
 import { DEFAULT_CONFIG } from './protocol.js';
 import { DEFAULT_GD_CONFIG } from './guandan/room.js';
+import { MAX_VOICE_MEMBERS } from './voice.js';
 
 /** 每个字段的解析方式与取值范围。范围必须和 room.js setConfig 保持一致。 */
 const FIELDS = [
@@ -152,6 +153,84 @@ export function guandanConfigFromEnv(env = process.env, logger = console) {
     logger.log?.(`[config] 环境变量覆盖了掼蛋桌初始设置：${applied.join('，')}`);
   }
   return cfg;
+}
+
+/** 默认 STUN。选在国内能连上的几家——Google 那台在墙内是打不通的，
+ *  真要用它得自己在 POKER_STUN_URLS 里填。STUN 只用来问"我的公网地址是多少"，
+ *  不经手任何音频，所以用谁家的都不涉及隐私。 */
+const DEFAULT_STUN = [
+  'stun:stun.qq.com:3478',
+  'stun:stun.miwifi.com:3478',
+  'stun:stun.cloudflare.com:3478',
+];
+
+const ICE_SCHEME = /^(stun|stuns|turn|turns):[^\s]+$/i;
+
+/**
+ * 语音连麦的配置。
+ *
+ * 音频是浏览器之间直连的，服务端只转发信令，所以这里唯一要操心的就是
+ * 【打洞打不通怎么办】：
+ *   - STUN 负责告诉双方各自的公网地址，绝大多数家宽都够用；
+ *   - 对称型 NAT / 部分手机蜂窝网络打不通，那就只能过 TURN 中转。
+ *     TURN 要自己搭（coturn），填 POKER_TURN_URL 那三个变量即可。
+ *
+ * @param {object} [env]
+ * @param {object} [logger]
+ * @returns {{enabled:boolean, maxMembers:number, iceServers:object[]}}
+ */
+export function voiceConfigFromEnv(env = process.env, logger = console) {
+  const enabledRaw = str(env.POKER_VOICE);
+  let enabled = true;
+  if (enabledRaw !== null) {
+    const v = parseBool(enabledRaw);
+    if (v === null) logger.error(`[config] POKER_VOICE="${enabledRaw}" 不是布尔值，按开启处理`);
+    else enabled = v;
+  }
+
+  let maxMembers = MAX_VOICE_MEMBERS;
+  const maxRaw = str(env.POKER_VOICE_MAX);
+  if (maxRaw !== null) {
+    const v = clampInt(maxRaw, 2, MAX_VOICE_MEMBERS);
+    if (v === null) {
+      logger.error(`[config] POKER_VOICE_MAX="${maxRaw}" 不合法（需要 2~${MAX_VOICE_MEMBERS} 的整数），已忽略`);
+    } else {
+      maxMembers = v;
+    }
+  }
+
+  const stunRaw = str(env.POKER_STUN_URLS);
+  let stun = DEFAULT_STUN;
+  if (stunRaw !== null) {
+    // 明确填空列表（POKER_STUN_URLS=none）表示只走局域网直连，不问任何外部服务器
+    stun = /^none$/i.test(stunRaw) ? [] : stunRaw.split(',').map((x) => x.trim()).filter(Boolean);
+    const bad = stun.filter((u) => !ICE_SCHEME.test(u));
+    if (bad.length) {
+      logger.error(`[config] POKER_STUN_URLS 里这些地址不合法，已丢弃：${bad.join('，')}`);
+      stun = stun.filter((u) => ICE_SCHEME.test(u));
+    }
+  }
+
+  const iceServers = [];
+  if (stun.length) iceServers.push({ urls: stun });
+
+  const turnUrl = str(env.POKER_TURN_URL);
+  if (turnUrl) {
+    const urls = turnUrl.split(',').map((x) => x.trim()).filter((u) => ICE_SCHEME.test(u));
+    if (!urls.length) {
+      logger.error(`[config] POKER_TURN_URL="${turnUrl}" 不合法（要像 turn:host:3478），已忽略`);
+    } else {
+      const username = str(env.POKER_TURN_USERNAME);
+      const credential = str(env.POKER_TURN_CREDENTIAL);
+      if (!username || !credential) {
+        logger.error('[config] 配了 POKER_TURN_URL 却没配 POKER_TURN_USERNAME / POKER_TURN_CREDENTIAL，TURN 已忽略');
+      } else {
+        iceServers.push({ urls, username, credential });
+      }
+    }
+  }
+
+  return { enabled, maxMembers, iceServers };
 }
 
 /** 空串视为没设置（compose 里未填的变量会透传成空串） */

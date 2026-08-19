@@ -28,6 +28,9 @@ from a URL.
   level-climbing).
 - **No signup.** A nickname is your identity. Avatars are derived from it, and
   both tables share the same avatar rules.
+- **Voice chat at the table.** Audio goes browser-to-browser, never through the
+  server. **Hold'em and guandan have separate voice channels** — the two tables
+  never bleed into each other.
 - **All state lives in memory.** No database to run.
 - **Reconnect-safe.** A seat token in `localStorage` puts you back in the same
   seat with the same stack after a refresh or a dropped connection.
@@ -239,6 +242,36 @@ configuration is printed on boot. Full list in [`.env.example`](.env.example).
 > 1000 is five big blinds — a depth where there is no postflop game left and correct
 > play collapses to shove-or-fold, however clever the bots are.
 
+## Voice chat
+
+There is a mic button in the top bar. Click it to join the table's voice channel
+and talk while you play. **Hold'em and guandan are two separate channels** — what
+you say at the poker table does not reach the guandan table.
+
+Audio uses WebRTC and travels **directly between browsers**; the server only
+relays a few kilobytes of handshake signalling. Voice adds no bandwidth cost to
+the server and needs no extra ports opened.
+
+Things to know:
+
+- **HTTPS is required** (or `localhost` for local testing). Browsers only grant
+  microphone access in a secure context. `deploy/deploy.sh` already puts Caddy in
+  front with a certificate, so there is nothing extra to do.
+- Up to 8 people per table (`POKER_VOICE_MAX` lowers it). The mesh topology means
+  connection count grows with the square of the participants — 8 people is 28
+  connections.
+- Whoever is talking gets a green ring on their seat avatar. You can mute an
+  individual person locally (handy when someone is typing next to their mic).
+- The default STUN servers are ones reachable from mainland China. **Symmetric
+  NATs and some mobile carrier networks cannot be traversed with STUN alone** —
+  those pairs need a TURN relay. Run your own coturn and set `POKER_TURN_URL`,
+  `POKER_TURN_USERNAME` and `POKER_TURN_CREDENTIAL`. When a pair fails to
+  connect, the roster says so and a toast explains why; it never fails silently.
+- **Everyone on the mic is listed**, spectators included. The trust boundary is
+  the same as the table itself: anyone with the URL can join. If you do not want
+  to be heard, do not join voice.
+- Turn the whole thing off with `POKER_VOICE=off`; the button disappears.
+
 ## Deployment
 
 `deploy/deploy.sh` deploys the container behind an existing Caddy instance —
@@ -289,10 +322,12 @@ server/
   evaluator.js  Best five of seven card evaluation
   deck.js       Deck and cryptographically seeded shuffle
   protocol.js   Shared constants
+  voice.js      Voice chat: channel roster and signalling relay (one channel per table)
   guandan/
     engine.js   Guandan: one deal (dealing, tribute, trick rotation, relay, placings)
     room.js     Guandan: seats, tokens, reconnection, timers, levels and passing A
 public/         Zero-build frontend (HTML + CSS + vanilla JS)
+  voice.js      Voice chat frontend: WebRTC mesh, speaking detection, roster (shared by both pages)
   gd-combos.js  Guandan combination library — imported by both browser and server
   gd-hints.js   Guandan candidate enumeration — shared by the bots and the Hint button
 test/           node:test suites
@@ -339,6 +374,9 @@ server.
 - **Chips have no value.** There is no wagering, settlement, or payment of any
   kind, and none is planned.
 - Disconnected players keep their seat for 15 minutes before being removed.
+- **Voice is a mesh.** It caps out at 8 people; beyond that you would want an
+  SFU, which means running a media server — at odds with "the only dependency is
+  `ws`". Without a TURN server, symmetric NATs cannot be traversed.
 
 ## Contributing
 

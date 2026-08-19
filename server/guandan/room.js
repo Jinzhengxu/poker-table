@@ -11,6 +11,7 @@ import { GuandanDeal, GD_PHASE, GD_SEATS, teamOf, partnerOf } from './engine.js'
 import { choosePlay } from '../../public/gd-hints.js';
 import { comboName, cardName, levelName, wildCard, sortHand } from '../../public/gd-combos.js';
 import { makeAvatar } from '../room.js';
+import { VoiceChannel } from '../voice.js';
 
 const MAX_LOG = 40;
 const MAX_CHAT = 50;
@@ -80,6 +81,9 @@ export class GuandanRoom {
 
     this.log = [];
     this.chat = [];
+
+    /** 这张桌子的语音频道。和德州那张桌子的完全是两份，声音不会串过去。 */
+    this.voice = new VoiceChannel(this, { label: '掼蛋语音', ...(opts.voice || {}) });
   }
 
   // ==================== 连接与身份 ====================
@@ -95,6 +99,8 @@ export class GuandanRoom {
     client.playerId = null;
     if (!p) return;
     if (this.#hasClient(p.id)) return;
+    // 人走了，麦也得下——他那些 WebRTC 连接已经跟着页面一起没了
+    this.voice.remove(p.id);
     p.connected = false;
     if (p.seat === null) {
       this.#deletePlayer(p);
@@ -129,6 +135,7 @@ export class GuandanRoom {
 
   #deletePlayer(p) {
     this.#clearDropTimer(p);
+    this.voice.remove(p.id);
     this.players.delete(p.id);
     this.tokens.delete(p.token);
   }
@@ -177,6 +184,9 @@ export class GuandanRoom {
     client.playerId = player.id;
     player.connected = true;
     this.#clearDropTimer(player);
+    // 新连接意味着旧的 WebRTC 连接已经作废（刷新页面、或断线重连）。
+    // 先把人从麦上摘掉，让别人拆干净；前端本来在连麦的话，会自己再上一次麦。
+    this.voice.remove(player.id);
     client.send({ t: 'welcome', playerId: player.id, token: player.token, seat: player.seat });
     this.broadcast();
     return { ok: true };
@@ -280,6 +290,7 @@ export class GuandanRoom {
     if (!target) return { ok: false, code: 'ILLEGAL_ACTION', msg: '那个座位是空的' };
     if (target.id === me.id) return { ok: false, code: 'ILLEGAL_ACTION', msg: '想走请点"离座"' };
     this.#pushLog(`${target.name} 被房主请下了牌桌`);
+    this.voice.remove(target.id);
     this.#vacate(target);
     if (!target.isBot) {
       for (const c of this.clients) {
@@ -814,6 +825,7 @@ export class GuandanRoom {
       config: { ...this.config },
       log: this.log.slice(-MAX_LOG),
       chat: this.chat.slice(-MAX_CHAT),
+      voice: this.voice.publicState(),
     };
   }
 

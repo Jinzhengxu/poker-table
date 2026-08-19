@@ -15,7 +15,7 @@ import { MAX_SEATS } from './protocol.js';
 import { BotDriver } from './bot/index.js';
 import { GuandanRoom } from './guandan/room.js';
 import { GD_SEATS } from './guandan/engine.js';
-import { configFromEnv, guandanConfigFromEnv } from './config.js';
+import { configFromEnv, guandanConfigFromEnv, voiceConfigFromEnv } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
@@ -23,9 +23,13 @@ const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = '0.0.0.0';
 
-/** 限流：单连接每秒最多 20 条消息 */
+// 限流分两个桶。
+// 先按【总条数】拦一道（在 JSON.parse 之前，最便宜），再按【类型】收紧：
+// 牌桌动作仍然是每秒 20 条，语音信令单独走大桶——建连那两秒 ICE candidate
+// 是成串涌出来的，7 个对端一起打洞的话 20 条根本不够，会把语音卡死在连接中。
 const RATE_WINDOW_MS = 1000;
 const RATE_MAX = 20;
+const RATE_MAX_TOTAL = 160;
 /** 心跳：30s 一次 ping，60s 没有任何响应就断开 */
 const HEARTBEAT_MS = 30000;
 const HEARTBEAT_TIMEOUT_MS = 60000;
@@ -64,12 +68,27 @@ console.log(
   `行动时限 ${initialConfig.actionTimeoutMs / 1000}s`
 );
 
-const room = new Room({ botDriver, config: initialConfig });
+// 语音连麦。两张桌子各建一个频道，成员表分开存，信令也只在各自的连接集合里转，
+// 所以在德州桌说的话，掼蛋桌那边永远听不到。
+const voiceConfig = voiceConfigFromEnv();
+if (voiceConfig.enabled) {
+  const turn = voiceConfig.iceServers.some((s) => /^turns?:/i.test([].concat(s.urls)[0] || ''));
+  console.log(
+    `[voice] 语音连麦已开启：每桌最多 ${voiceConfig.maxMembers} 人上麦，` +
+    `${voiceConfig.iceServers.length ? `ICE ${voiceConfig.iceServers.length} 组` : '没有配 STUN，只能局域网内直连'}` +
+    `${turn ? '（含 TURN 中转）' : '（没有 TURN，对称型 NAT 之间可能打不通）'}`
+  );
+} else {
+  console.log('[voice] 语音连麦已关闭（POKER_VOICE=off）');
+}
+const voiceOpts = { enabled: voiceConfig.enabled, max: voiceConfig.maxMembers, iceServers: voiceConfig.iceServers };
+
+const room = new Room({ botDriver, config: initialConfig, voice: voiceOpts });
 
 // 掼蛋是完全独立的第二张桌子：另一个 WebSocket 路径、另一份内存状态。
 // 两张桌子互不影响，同一个人可以同时开两个标签页分别玩。
 const guandanConfig = guandanConfigFromEnv();
-const guandanRoom = new GuandanRoom({ config: guandanConfig });
+const guandanRoom = new GuandanRoom({ config: guandanConfig, voice: voiceOpts });
 console.log(
   `[guandan] 掼蛋牌桌已就绪：行动时限 ${guandanConfig.actionTimeoutMs / 1000}s，` +
   `下一局间隔 ${guandanConfig.autoNextDealMs / 1000}s`
@@ -192,6 +211,55 @@ function normalizeName(v) {
 
 const ACTION_TYPES = new Set(['fold', 'check', 'call', 'bet', 'raise', 'allin']);
 
+// ==================== 语音连麦 ====================
+
+/** 走"语音大桶"的消息类型（见上面的限流说明） */
+const VOICE_TYPES = new Set(['voiceJoin', 'voiceLeave', 'voiceMute', 'voiceSignal']);
+
+/** playerId 的形状，room.js 里是 'p_' + 6 位十六进制 */
+const PLAYER_ID_RE = /^[pb]_[0-9a-f]{6}$/;
+
+/**
+ * 两张桌子共用的语音消息处理。
+ *
+ * 注意这里的 `channel` 是【调用方传进来的】——德州桌传德州的频道，掼蛋桌传掼蛋的，
+ * 不存在一个全局频道让人挑。这就是"两边语音分开"这件事的落点。
+ *
+ * @returns {boolean} 这条消息是不是语音消息（是的话已经处理完了）
+ */
+function handleVoiceMessage(channel, client, msg, fail) {
+  if (!VOICE_TYPES.has(msg.t)) return false;
+
+  const reply = (res) => {
+    if (res && res.ok === false) {
+      client.send({ t: 'error', code: res.code || 'ILLEGAL_ACTION', msg: res.msg || '操作失败' });
+    }
+  };
+
+  switch (msg.t) {
+    case 'voiceJoin':
+      reply(channel.join(client));
+      return true;
+    case 'voiceLeave':
+      reply(channel.leave(client));
+      return true;
+    case 'voiceMute':
+      reply(channel.setMuted(client, !!msg.value));
+      return true;
+    case 'voiceSignal': {
+      if (typeof msg.to !== 'string' || !PLAYER_ID_RE.test(msg.to)) {
+        fail('ILLEGAL_ACTION', '信令的收件人不合法');
+        return true;
+      }
+      // data 的细节交给 voice.js 校验：服务端不解析 SDP，只管住形状和大小
+      reply(channel.signal(client, msg.to, msg.data));
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
 // ==================== WebSocket ====================
 
 // 两张桌子各有一个 WebSocketServer：/ws 是德州，/gd 是掼蛋。
@@ -238,6 +306,7 @@ function attachConnection(ws, targetRoom, dispatch, tag) {
     lastSeen: Date.now(),
     rateStart: Date.now(),
     rateCount: 0,
+    gameCount: 0,
     rateWarned: false,
     send(obj) {
       if (ws.readyState !== ws.OPEN) return;
@@ -268,15 +337,16 @@ function attachConnection(ws, targetRoom, dispatch, tag) {
       return;
     }
 
-    // 限流
+    // 限流第一道：总条数。放在 parse 前面，最省。
     const now = Date.now();
     if (now - client.rateStart >= RATE_WINDOW_MS) {
       client.rateStart = now;
       client.rateCount = 0;
+      client.gameCount = 0;
       client.rateWarned = false;
     }
     client.rateCount += 1;
-    if (client.rateCount > RATE_MAX) {
+    if (client.rateCount > RATE_MAX_TOTAL) {
       if (!client.rateWarned) {
         client.rateWarned = true;
         fail('RATE_LIMIT', '操作太快了，请稍后再试');
@@ -299,6 +369,18 @@ function attachConnection(ws, targetRoom, dispatch, tag) {
     if (!msg || typeof msg !== 'object' || typeof msg.t !== 'string') {
       fail('ILLEGAL_ACTION', '消息格式错误');
       return;
+    }
+
+    // 限流第二道：牌桌动作仍然守着每秒 20 条这条线，语音信令不算在内
+    if (!VOICE_TYPES.has(msg.t)) {
+      client.gameCount = (client.gameCount || 0) + 1;
+      if (client.gameCount > RATE_MAX) {
+        if (!client.rateWarned) {
+          client.rateWarned = true;
+          fail('RATE_LIMIT', '操作太快了，请稍后再试');
+        }
+        return;
+      }
     }
 
     try {
@@ -329,6 +411,7 @@ function reply(client, res) {
 }
 
 function handleMessage(client, msg, fail) {
+  if (handleVoiceMessage(room.voice, client, msg, fail)) return;
   switch (msg.t) {
     case 'hello': {
       const token = typeof msg.token === 'string' ? msg.token : null;
@@ -441,6 +524,7 @@ function validDeclared(v) {
 }
 
 function handleGuandanMessage(client, msg, fail) {
+  if (handleVoiceMessage(guandanRoom.voice, client, msg, fail)) return;
   const reply = (res) => {
     if (res && res.ok === false) {
       client.send({ t: 'error', code: res.code || 'ILLEGAL_ACTION', msg: res.msg || '操作失败' });
