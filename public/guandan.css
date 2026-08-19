@@ -12,11 +12,6 @@
     var(--bg-0);
 }
 
-.gd-link {
-  text-decoration: none;
-  font-size: 12px;
-}
-
 #gdCol {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;

@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* =========================================================================
    德州扑克 · 前端样式
-   全部资源自洽：无外链字体、无图片，牌面与筹码均用 CSS 绘制。
+   全部资源自洽：无外链字体、无外链图片，牌面与筹码均用 CSS 绘制，
+   顶栏图标是内嵌的 SVG data URI（详见 :root 里的 --ico-*）。
    尺寸体系：--tw 是牌桌当前像素宽度（由 JS 测量后写入 :root），
    桌面元素统一按 --tw 等比缩放，同时用 clamp() 保证手机上的最小可读尺寸。
    ========================================================================= */
@@ -50,6 +51,15 @@
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC",
           "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --font-num: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 顶栏图标：内嵌 SVG（不是 CSS 画的），用 mask 上色，
+     所以任何屏幕密度下都不会糊、不会歪，缩放也保持比例。 */
+  --ico-snd-on: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 9.2h3.6L12.4 5.2v13.6L7.6 14.8H4z' fill='%23000'/%3E%3Cpath d='M16.2 9.6a3.6 3.6 0 0 1 0 4.8'/%3E%3Cpath d='M19.2 6.8a7.6 7.6 0 0 1 0 10.4'/%3E%3C/svg%3E");
+  --ico-snd-off: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 9.2h3.6L12.4 5.2v13.6L7.6 14.8H4z' fill='%23000'/%3E%3Cpath d='M16.4 9.4l5.2 5.2M21.6 9.4l-5.2 5.2'/%3E%3C/svg%3E");
+  --ico-mus-on: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9.4 17.2V6.4l9.6-2.1v10.8'/%3E%3Cellipse cx='6.8' cy='17.3' rx='2.9' ry='2.4' fill='%23000' stroke='none'/%3E%3Cellipse cx='16.4' cy='15.2' rx='2.9' ry='2.4' fill='%23000' stroke='none'/%3E%3C/svg%3E");
+  --ico-mus-off: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8.8 16.8V4.4c2.9 .9 4.3 2.2 4.3 4'/%3E%3Cellipse cx='6.2' cy='16.9' rx='2.9' ry='2.4' fill='%23000' stroke='none'/%3E%3Cpath d='M16.4 12.6l4.6 4.6M21 12.6l-4.6 4.6'/%3E%3C/svg%3E");
+  --ico-mic: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='9' y='2.6' width='6' height='11' rx='3' fill='%23000'/%3E%3Cpath d='M5.6 11.4a6.4 6.4 0 0 0 12.8 0'/%3E%3Cpath d='M12 17.8v3.6'/%3E%3C/svg%3E");
+  --ico-menu: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6.5h16M4 12h16M4 17.5h16'/%3E%3C/svg%3E");
 }
 
 * { box-sizing: border-box; }
@@ -141,8 +151,11 @@ h3, h4 { margin: 0; font-weight: 600; }
 .meta {
   display: flex; align-items: center; gap: 6px;
   font-size: 12px; color: var(--txt-dim); white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
+  overflow: hidden; min-width: 0;
 }
+/* 顶栏挤不下的时候，每段各自打省略号；不加这一句就会从半个汉字上切开 */
+.meta > * { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.meta > .sep, .meta > .host-tag, #metaHand, #metaDeal { flex: 0 0 auto; }
 .meta .sep { color: var(--txt-faint); }
 .host-tag {
   padding: 2px 7px; border-radius: 999px; font-size: 11px;
@@ -162,39 +175,38 @@ h3, h4 { margin: 0; font-weight: 600; }
 }
 .icon-btn:hover { color: var(--txt); background: rgba(255, 255, 255, .09); }
 /* 顶栏上那个跳到另一张桌子的链接，也用 .icon-btn 的壳 */
-.table-link { text-decoration: none; font-size: 12px; }
+.table-link, .gd-link { text-decoration: none; font-size: 12px; white-space: nowrap; }
+/* 花色占位和图标一样宽，手机上标签收起来之后按钮不会突然变窄一截 */
+.table-link .suit, .gd-link .suit {
+  width: 15px; text-align: center; flex: 0 0 auto; font-size: 14px; line-height: 1;
+}
+/* 红花色染成红的，手机上只剩一个符号时也一眼看出这是「另一张桌子」，
+   而不是旁边那几个开关 */
+.table-link .suit { color: #e2707a; }
 .icon-btn[aria-pressed="false"] { color: var(--txt-faint); }
-.icon-btn[aria-pressed="false"] .ico-snd,
-.icon-btn[aria-pressed="false"] .ico-mus { opacity: .45; }
-.ico-snd, .ico-menu, .ico-mus { width: 13px; height: 13px; display: inline-block; position: relative; }
-/* 八分音符：符头 + 符干 */
-.ico-mus::before {
-  content: ""; position: absolute; left: 0; bottom: 1px;
-  width: 6px; height: 4.5px; border-radius: 50%;
-  background: currentColor; transform: rotate(-18deg);
+
+/* 图标本体：一个被 SVG 遮罩裁出形状的色块，颜色跟着 currentColor 走 */
+.ico-snd, .ico-mus, .ico-mic, .ico-menu {
+  width: 15px; height: 15px;
+  flex: 0 0 auto;
+  display: inline-block;
+  background-color: currentColor;
+  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+  -webkit-mask-position: center;  mask-position: center;
+  -webkit-mask-size: 100% 100%;   mask-size: 100% 100%;
 }
-.ico-mus::after {
-  content: ""; position: absolute; left: 5px; top: 1px;
-  width: 1.6px; height: 9px; background: currentColor; border-radius: 1px;
-  box-shadow: 2px -1px 0 -.4px currentColor;
+.ico-snd  { -webkit-mask-image: var(--ico-snd-on);  mask-image: var(--ico-snd-on); }
+.ico-mus  { -webkit-mask-image: var(--ico-mus-on);  mask-image: var(--ico-mus-on); }
+.ico-mic  { -webkit-mask-image: var(--ico-mic);     mask-image: var(--ico-mic); }
+.ico-menu { -webkit-mask-image: var(--ico-menu);    mask-image: var(--ico-menu); }
+
+/* 关掉的时候直接换一张带叉的图，比单纯调透明度好认 */
+.icon-btn[aria-pressed="false"] .ico-snd {
+  -webkit-mask-image: var(--ico-snd-off); mask-image: var(--ico-snd-off);
 }
-.ico-snd::before {
-  content: ""; position: absolute; left: 0; top: 3px;
-  width: 5px; height: 7px; background: currentColor;
-  clip-path: polygon(0 0, 55% 0, 100% -35%, 100% 135%, 55% 100%, 0 100%);
+.icon-btn[aria-pressed="false"] .ico-mus {
+  -webkit-mask-image: var(--ico-mus-off); mask-image: var(--ico-mus-off);
 }
-.ico-snd::after {
-  content: ""; position: absolute; left: 7px; top: 2px;
-  width: 6px; height: 9px; border-radius: 50%;
-  border: 1.5px solid currentColor; border-left-color: transparent; border-top-color: transparent;
-}
-.icon-btn[aria-pressed="false"] .ico-snd::after { border-color: transparent; }
-.ico-menu::before, .ico-menu::after {
-  content: ""; position: absolute; left: 0; width: 13px; height: 1.6px;
-  background: currentColor; border-radius: 2px;
-}
-.ico-menu::before { top: 3px; box-shadow: 0 4px 0 currentColor; }
-.ico-menu::after { top: 11px; }
 .side-badge {
   position: absolute; top: -3px; right: -3px;
   width: 8px; height: 8px; border-radius: 50%;
@@ -1559,11 +1571,19 @@ h3, h4 { margin: 0; font-weight: 600; }
 }
 
 @media (max-width: 620px) {
-  .brand-txt { display: none; }
+  /* 顶栏在手机上要塞进五个按钮，纯装饰的品牌花色让位给手数和盲注 */
+  .brand { display: none; }
   #topbar { gap: 7px; padding-left: 8px; padding-right: 8px; }
   .icon-btn .lbl { display: none; }
   .icon-btn { padding: 7px 9px; }
+  /* 标签藏起来之后，图标是唯一的信息，放大一档 */
+  .ico-snd, .ico-mus, .ico-mic, .ico-menu { width: 17px; height: 17px; }
+  .table-link .suit, .gd-link .suit { width: 17px; font-size: 16px; }
   .meta { font-size: 11.5px; }
+  /* 连上之后那颗绿点已经说明一切，「已连接」三个字让位给手数和盲注；
+     连接中／掉线仍然把字留着，那两种状态光靠一颗点说不清楚。 */
+  .badge[data-conn="online"] #connText { display: none; }
+  .badge[data-conn="online"] { padding: 4px 7px; gap: 0; }
 
   /* 手机上保持「手牌在左、操作在右」的横向布局，把垂直空间留给牌桌 */
   #hero {
@@ -1616,18 +1636,7 @@ h3, h4 { margin: 0; font-weight: 600; }
 /* 德州和掼蛋共用这一套（两个页面都引 style.css）。
    声音是浏览器点对点直传的，这里只是它的仪表盘。 */
 
-/* 麦克风图标：话筒头 + 支架 */
-.ico-mic { width: 13px; height: 13px; display: inline-block; position: relative; }
-.ico-mic::before {
-  content: ""; position: absolute; left: 4px; top: 0;
-  width: 5px; height: 7.5px; border-radius: 3px; background: currentColor;
-}
-.ico-mic::after {
-  content: ""; position: absolute; left: 1.5px; top: 6px;
-  width: 10px; height: 5px; border: 1.5px solid currentColor;
-  border-top-color: transparent; border-radius: 0 0 6px 6px;
-  box-shadow: 0 5.5px 0 -4.2px currentColor;
-}
+/* 麦克风图标定义在顶栏那一节，和音效/音乐一起走 SVG 遮罩 */
 .icon-btn.is-on { color: var(--green); background: rgba(47, 164, 106, .14); border-color: rgba(47, 164, 106, .4); }
 .icon-btn.is-busy { opacity: .6; }
 /* 麦上有人时按钮右上角挂个数字，手机上标签被藏起来也看得见 */
