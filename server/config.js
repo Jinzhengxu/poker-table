@@ -14,6 +14,7 @@
 // 校验范围与 room.js 的 setConfig 完全一致——不能让环境变量设出
 // 一个 UI 会拒绝的值，否则房主打开设置页保存一下就会被打回。
 
+import { createHmac } from 'node:crypto';
 import { DEFAULT_CONFIG } from './protocol.js';
 import { DEFAULT_GD_CONFIG } from './guandan/room.js';
 import { MAX_VOICE_MEMBERS } from './voice.js';
@@ -157,27 +158,136 @@ export function guandanConfigFromEnv(env = process.env, logger = console) {
 
 /** 默认 STUN。选在国内能连上的几家——Google 那台在墙内是打不通的，
  *  真要用它得自己在 POKER_STUN_URLS 里填。STUN 只用来问"我的公网地址是多少"，
- *  不经手任何音频，所以用谁家的都不涉及隐私。 */
+ *  不经手任何音频，所以用谁家的都不涉及隐私。
+ *
+ *  这三个都是发 STUN binding 请求实测过、能拿回映射地址的。
+ *  原本第一个是 stun.qq.com，实测已经不响应了（两个解析结果都超时），
+ *  排在最前面等于让每次 ICE 收集都先白等一个超时，已经换掉。 */
 const DEFAULT_STUN = [
-  'stun:stun.qq.com:3478',
   'stun:stun.miwifi.com:3478',
+  'stun:stun.chat.bilibili.com:3478',
   'stun:stun.cloudflare.com:3478',
 ];
 
 const ICE_SCHEME = /^(stun|stuns|turn|turns):[^\s]+$/i;
+
+/** TURN 临时凭据的有效期。凭据只在【开中转通道那一刻】被校验，通道建起来之后
+ *  就不受它影响了，所以这个值只要覆盖得住"打开页面到上麦"这段就够。
+ *  给 6 小时是留足断线重连和中途加人的余量，同时万一凭据被人抄走，
+ *  能白嫖的窗口也就这么长。 */
+const TURN_TTL_SEC = 6 * 3600;
+
+/**
+ * 按 coturn 的 REST API 约定，现签一组临时 TURN 凭据。
+ *
+ * 为什么不能用固定账号密码：ICE 配置是发给【每一个打开网页的人】的，
+ * 固定密码等于把中转服务器的账号公开挂在网上，谁都能抄走跑自己的流量，
+ * 而流量走的是你这台机器的带宽。
+ *
+ * 这套方案里用户名自带过期时间戳，密码是拿服务器密钥对用户名做的 HMAC，
+ * 密钥本身永远不出服务器：
+ *
+ *   username   = <过期时刻的 unix 秒>:<标签>
+ *   credential = base64(HMAC-SHA1(secret, username))
+ *
+ * coturn 那边开 `--use-auth-secret --static-auth-secret=<同一个密钥>` 就认这套，
+ * 不需要建任何账号，也不需要重启就能换密钥。
+ *
+ * @param {string} secret 与 coturn 共享的密钥
+ * @param {string} [tag] 只是为了在 coturn 日志里认人，不参与鉴权
+ * @param {number} [ttlSec]
+ * @param {number} [now] 便于测试注入时间
+ * @returns {{username:string, credential:string}}
+ */
+export function turnCredentials(secret, tag = 'poker', ttlSec = TURN_TTL_SEC, now = Date.now()) {
+  const expiry = Math.floor(now / 1000) + ttlSec;
+  // 冒号是用户名里的分隔符，标签里混进去会把过期时间切错，所以只留安全字符
+  const safeTag = String(tag || '').replace(/[^A-Za-z0-9_-]/g, '') || 'poker';
+  const username = `${expiry}:${safeTag}`;
+  const credential = createHmac('sha1', secret).update(username).digest('base64');
+  return { username, credential };
+}
+
+/**
+ * 解析 TURN 配置。两种模式，二选一：
+ *
+ *   1) POKER_TURN_SECRET —— 和自建 coturn 的 use-auth-secret 配套，
+ *      服务端按人现签短期凭据。【推荐】，理由见 turnCredentials。
+ *   2) POKER_TURN_USERNAME + POKER_TURN_CREDENTIAL —— 固定账号密码。
+ *      用别人家的 TURN 服务（自己改不了那台的配置）时才走这条。
+ *
+ * @returns {{urls:string[], secret?:string, ttlSec?:number, username?:string, credential?:string}|null}
+ */
+function turnFromEnv(env, logger) {
+  const turnUrl = str(env.POKER_TURN_URL);
+  if (!turnUrl) {
+    // 配了密钥却没配地址，八成是漏了一行。静默忽略的话，
+    // 表现就是"语音还是打不通"，排查起来毫无线索，所以这里必须喊出来。
+    if (str(env.POKER_TURN_SECRET)) {
+      logger.error('[config] 配了 POKER_TURN_SECRET 却没配 POKER_TURN_URL，TURN 已忽略');
+    }
+    return null;
+  }
+
+  const urls = turnUrl.split(',').map((x) => x.trim()).filter(Boolean);
+  const bad = urls.filter((u) => !ICE_SCHEME.test(u));
+  if (bad.length) {
+    logger.error(`[config] POKER_TURN_URL 里这些地址不合法，已丢弃：${bad.join('，')}`);
+  }
+  const good = urls.filter((u) => ICE_SCHEME.test(u));
+  if (!good.length) {
+    logger.error(`[config] POKER_TURN_URL="${turnUrl}" 里没有一个合法地址（要像 turn:1.2.3.4:3478），TURN 已忽略`);
+    return null;
+  }
+
+  const secret = str(env.POKER_TURN_SECRET);
+  if (secret) {
+    let ttlSec = TURN_TTL_SEC;
+    const ttlRaw = str(env.POKER_TURN_TTL);
+    if (ttlRaw !== null) {
+      const v = clampInt(ttlRaw, 60, 86400);
+      if (v === null) {
+        logger.error(`[config] POKER_TURN_TTL="${ttlRaw}" 不合法（需要 60~86400 的整数秒），已忽略`);
+      } else {
+        ttlSec = v;
+      }
+    }
+    if (str(env.POKER_TURN_USERNAME) || str(env.POKER_TURN_CREDENTIAL)) {
+      logger.error('[config] 同时配了 POKER_TURN_SECRET 和固定账号密码，以 SECRET 为准（临时凭据更安全）');
+    }
+    return { urls: good, secret, ttlSec };
+  }
+
+  const username = str(env.POKER_TURN_USERNAME);
+  const credential = str(env.POKER_TURN_CREDENTIAL);
+  if (!username || !credential) {
+    logger.error(
+      '[config] 配了 POKER_TURN_URL 却没有凭据。二选一：' +
+      'POKER_TURN_SECRET（推荐，配套自建 coturn），' +
+      '或者 POKER_TURN_USERNAME + POKER_TURN_CREDENTIAL。TURN 已忽略'
+    );
+    return null;
+  }
+  return { urls: good, username, credential };
+}
 
 /**
  * 语音连麦的配置。
  *
  * 音频是浏览器之间直连的，服务端只转发信令，所以这里唯一要操心的就是
  * 【打洞打不通怎么办】：
- *   - STUN 负责告诉双方各自的公网地址，绝大多数家宽都够用；
- *   - 对称型 NAT / 部分手机蜂窝网络打不通，那就只能过 TURN 中转。
- *     TURN 要自己搭（coturn），填 POKER_TURN_URL 那三个变量即可。
+ *   - STUN 负责告诉双方各自的公网地址，能直连的话音频完全不过服务器；
+ *   - 但两边都在运营商大内网（CGNAT）里的时候是打不通的——国内家宽这是常态，
+ *     不是偶发。那种情况音频必须过 TURN 中转，没有 TURN 就是"上麦成功、
+ *     名单里有人、但互相听不见"。
+ *
+ * 所以：**要给异地的朋友用，TURN 不是可选项**。自建 coturn 见
+ * docker-compose.yml 里的 coturn 服务，deploy/deploy.sh 会自动配好。
  *
  * @param {object} [env]
  * @param {object} [logger]
- * @returns {{enabled:boolean, maxMembers:number, iceServers:object[]}}
+ * @returns {{enabled:boolean, maxMembers:number, iceServers:object[],
+ *            turn:object|null, iceFor:(tag?:string)=>object[]}}
  */
 export function voiceConfigFromEnv(env = process.env, logger = console) {
   const enabledRaw = str(env.POKER_VOICE);
@@ -211,26 +321,31 @@ export function voiceConfigFromEnv(env = process.env, logger = console) {
     }
   }
 
+  /** 每个人都一样、可以直接缓存的那部分（STUN，以及固定凭据的 TURN） */
   const iceServers = [];
   if (stun.length) iceServers.push({ urls: stun });
 
-  const turnUrl = str(env.POKER_TURN_URL);
-  if (turnUrl) {
-    const urls = turnUrl.split(',').map((x) => x.trim()).filter((u) => ICE_SCHEME.test(u));
-    if (!urls.length) {
-      logger.error(`[config] POKER_TURN_URL="${turnUrl}" 不合法（要像 turn:host:3478），已忽略`);
-    } else {
-      const username = str(env.POKER_TURN_USERNAME);
-      const credential = str(env.POKER_TURN_CREDENTIAL);
-      if (!username || !credential) {
-        logger.error('[config] 配了 POKER_TURN_URL 却没配 POKER_TURN_USERNAME / POKER_TURN_CREDENTIAL，TURN 已忽略');
-      } else {
-        iceServers.push({ urls, username, credential });
-      }
-    }
+  const turn = turnFromEnv(env, logger);
+  if (turn && turn.credential) {
+    iceServers.push({ urls: turn.urls, username: turn.username, credential: turn.credential });
   }
 
-  return { enabled, maxMembers, iceServers };
+  /**
+   * 这次上麦该下发哪些 ICE 服务器。
+   * 临时凭据必须现签、不能缓存（缓存下来就等于把有效期变成了进程寿命），
+   * 所以对外给的是个函数而不是一个常量数组。
+   */
+  const iceFor = (tag) => {
+    if (!turn || !turn.secret) return iceServers;
+    const cred = turnCredentials(turn.secret, tag, turn.ttlSec);
+    return iceServers.concat([{
+      urls: turn.urls,
+      username: cred.username,
+      credential: cred.credential,
+    }]);
+  };
+
+  return { enabled, maxMembers, iceServers, turn, iceFor };
 }
 
 /** 空串视为没设置（compose 里未填的变量会透传成空串） */

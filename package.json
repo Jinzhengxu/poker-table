@@ -29,7 +29,8 @@
   "scripts": {
     "start": "node server/index.js",
     "test": "node --test test/*.test.js",
-    "check": "find server public test -name '*.js' -print0 | xargs -0 -n1 node --check"
+    "check": "find server public test -name '*.js' -print0 | xargs -0 -n1 node --check",
+    "turn-check": "node server/turn-check.js"
   },
   "dependencies": {
     "ws": "^8.18.0"

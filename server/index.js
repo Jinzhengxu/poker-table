@@ -72,16 +72,31 @@ console.log(
 // 所以在德州桌说的话，掼蛋桌那边永远听不到。
 const voiceConfig = voiceConfigFromEnv();
 if (voiceConfig.enabled) {
-  const turn = voiceConfig.iceServers.some((s) => /^turns?:/i.test([].concat(s.urls)[0] || ''));
+  const stunCount = voiceConfig.iceServers
+    .filter((s) => /^stuns?:/i.test([].concat(s.urls)[0] || ''))
+    .reduce((n, s) => n + [].concat(s.urls).length, 0);
   console.log(
     `[voice] 语音连麦已开启：每桌最多 ${voiceConfig.maxMembers} 人上麦，` +
-    `${voiceConfig.iceServers.length ? `ICE ${voiceConfig.iceServers.length} 组` : '没有配 STUN，只能局域网内直连'}` +
-    `${turn ? '（含 TURN 中转）' : '（没有 TURN，对称型 NAT 之间可能打不通）'}`
+    `${stunCount ? `STUN ${stunCount} 个` : '没有配 STUN，只能局域网内直连'}`
   );
+  if (voiceConfig.turn) {
+    const mode = voiceConfig.turn.secret
+      ? `临时凭据（每次上麦现签，有效期 ${voiceConfig.turn.ttlSec}s）`
+      : '固定账号密码';
+    console.log(`[voice] TURN 中转已配置：${voiceConfig.turn.urls.join('，')} —— ${mode}`);
+  } else {
+    // 这不是可有可无的提示：没有 TURN，异地的两个人多半就是"上麦成功却互相听不见"。
+    // 那种失败在页面上只表现成一句"连不通"，不在启动日志里说清楚就没人查得到。
+    console.warn(
+      '[voice] ⚠ 没有配 TURN 中转。两边都在运营商大内网（CGNAT）里就会打不通，' +
+      '表现是上麦成功、名单里有人、但互相听不见。自建 coturn 见 README「语音连麦」一节。'
+    );
+  }
 } else {
   console.log('[voice] 语音连麦已关闭（POKER_VOICE=off）');
 }
-const voiceOpts = { enabled: voiceConfig.enabled, max: voiceConfig.maxMembers, iceServers: voiceConfig.iceServers };
+// iceFor 是个函数：TURN 临时凭据必须每次上麦现签，不能算一次存下来
+const voiceOpts = { enabled: voiceConfig.enabled, max: voiceConfig.maxMembers, iceServers: voiceConfig.iceFor };
 
 const room = new Room({ botDriver, config: initialConfig, voice: voiceOpts });
 

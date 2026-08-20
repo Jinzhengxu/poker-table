@@ -52,6 +52,20 @@ services:
       POKER_NEXT_HAND_DELAY: "${POKER_NEXT_HAND_DELAY:-}"
       POKER_AUTO_NEXT_HAND: "${POKER_AUTO_NEXT_HAND:-}"
 
+      # 语音连麦。音频点对点直传，不过这台服务器，但【打洞的地址信息】要服务端下发。
+      # POKER_TURN_* 少一个，异地的两个人就会"上麦成功却互相听不见"——
+      # 这几行以前漏了，线上语音连不通就是因为 TURN 配置根本进不到容器里。
+      POKER_VOICE: "${POKER_VOICE:-}"
+      POKER_VOICE_MAX: "${POKER_VOICE_MAX:-}"
+      POKER_STUN_URLS: "${POKER_STUN_URLS:-}"
+      POKER_TURN_URL: "${POKER_TURN_URL:-}"
+      # 和下面 coturn 服务共享同一个密钥，服务端据此现签短期凭据
+      POKER_TURN_SECRET: "${POKER_TURN_SECRET:-}"
+      POKER_TURN_TTL: "${POKER_TURN_TTL:-}"
+      # 用别人家的 TURN 服务时才填这两个（自建的走上面的 SECRET）
+      POKER_TURN_USERNAME: "${POKER_TURN_USERNAME:-}"
+      POKER_TURN_CREDENTIAL: "${POKER_TURN_CREDENTIAL:-}"
+
     # 只在 docker 网络内部暴露，宿主上看不到这个端口。
     # 注意：这里【故意没有 ports:】，不要手贱加回来。
     expose:
@@ -71,6 +85,99 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # ---------------------------------------------------------------- TURN 中转
+  # 什么时候需要它：两个人各自在家宽后面，而运营商给的是大内网地址（CGNAT）。
+  # 这种情况下双方都没有能被对方直接打到的公网端口，纯 STUN 打洞必然失败，
+  # 音频只能找一台双方都连得上的机器接力——就是 TURN。国内家宽这是常态。
+  #
+  # 它不会抢直连的活：ICE 会同时试直连和中转，能直连就走直连，
+  # 中转只在直连失败时兜底，所以带宽只在真正需要的时候才花出去。
+  #
+  # 默认【不启动】，要带 profile 才起：
+  #     docker compose --profile turn up -d
+  # deploy/deploy.sh 探测到 POKER_TURN_SECRET 之后会自动带上。
+  coturn:
+    image: coturn/coturn:4.6-alpine
+    container_name: poker-turn
+    restart: unless-stopped
+    profiles: ["turn"]
+
+    # host 网络是 TURN 的标准做法，两个原因缺一不可：
+    #   1) 中转端口是一整段（49160-49200）。用 docker 端口映射的话，
+    #      每个端口会起一个 docker-proxy 进程，1GB 的机器直接被拖垮。
+    #   2) 隔一层 NAT 之后 coturn 看到的是容器内网地址，它告诉对端的
+    #      中转地址就是错的，通道根本建不起来。
+    # 占用的是宿主的 3478 和 49160-49200，和 Caddy 的 80/443 不冲突。
+    network_mode: host
+
+    environment:
+      POKER_TURN_SECRET: "${POKER_TURN_SECRET:-}"
+      POKER_TURN_IP: "${POKER_TURN_IP:-}"
+      POKER_TURN_REALM: "${POKER_TURN_REALM:-poker}"
+
+    # 用 shell 起是为了两件 compose 里表达不了的事：
+    #   1) external-ip 得"没配就不加"——coturn 不接受空值的参数；
+    #   2) 没有密钥时必须拒绝启动，绝不能退化成无鉴权的公开中转。
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        if [ -z "$${POKER_TURN_SECRET:-}" ]; then
+          echo "[coturn] 没有 POKER_TURN_SECRET，拒绝启动——没有密钥就是一台公开的开放中转，" >&2
+          echo "         谁都能拿去跑自己的流量。请执行 deploy/deploy.sh 自动生成。" >&2
+          exit 1
+        fi
+        set -- -n --log-file=stdout --no-cli --prod
+        set -- "$$@" --listening-port=3478 --listening-ip=0.0.0.0
+        # 中转端口段。8 个人满麦是 28 条连接，这 41 个口绰绰有余。
+        set -- "$$@" --min-port=49160 --max-port=49200
+        set -- "$$@" --realm="$$POKER_TURN_REALM"
+        # 与 poker 容器共享同一个密钥：它按人现签短期凭据，这边照着验
+        set -- "$$@" --use-auth-secret --static-auth-secret="$$POKER_TURN_SECRET"
+        set -- "$$@" --stale-nonce=600 --fingerprint
+        # 没有证书就别装作有：turns 需要真证书，这里只跑明文 TURN。
+        # 音频本身有 DTLS-SRTP 端到端加密，中转看到的是密文。
+        set -- "$$@" --no-tls --no-dtls
+        # 配额：把带宽被白嫖的上限钉死。音频单路约 4KB/s，64000 够用得很，
+        # 但拿去跑视频或下载就完全不够——这正是想要的效果。
+        set -- "$$@" --user-quota=16 --total-quota=200 --max-bps=64000
+        # 【安全关键】禁止把中转指向内网。不封的话，任何人都能拿这台 TURN
+        # 当跳板去打同一台机器上的 Matrix、docker 内网和宿主本地端口。
+        set -- "$$@" --no-multicast-peers
+        for r in 0.0.0.0-0.255.255.255 10.0.0.0-10.255.255.255 \
+                 100.64.0.0-100.127.255.255 127.0.0.0-127.255.255.255 \
+                 169.254.0.0-169.254.255.255 172.16.0.0-172.31.255.255 \
+                 192.0.0.0-192.0.0.255 192.168.0.0-192.168.255.255 \
+                 198.18.0.0-198.19.255.255 224.0.0.0-255.255.255.255 \
+                 ::1 fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff \
+                 fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff; do
+          set -- "$$@" --denied-peer-ip="$$r"
+        done
+        # 1:1 NAT 的机器（部分云厂商）网卡上是内网地址，得告诉 coturn 对外该报哪个。
+        # 这里写成 if 而不是 `[ ... ] && ...`：在 set -e 下，一个整体返回非零的
+        # AND 列表会不会终止脚本，各家 shell 的行为并不一致，不值得赌。
+        if [ -n "$${POKER_TURN_IP:-}" ]; then
+          set -- "$$@" --external-ip="$$POKER_TURN_IP"
+        fi
+        exec turnserver "$$@"
+
+    healthcheck:
+      test: ["CMD-SHELL", "pidof turnserver >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # coturn 只搬字节不解码，内存占用很低；给 64M 是留足连接表的余量。
+    mem_limit: 64m
+    mem_reservation: 16m
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
 networks:
   caddy:

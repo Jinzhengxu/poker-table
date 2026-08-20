@@ -248,9 +248,8 @@ There is a mic button in the top bar. Click it to join the table's voice channel
 and talk while you play. **Hold'em and guandan are two separate channels** — what
 you say at the poker table does not reach the guandan table.
 
-Audio uses WebRTC and travels **directly between browsers**; the server only
-relays a few kilobytes of handshake signalling. Voice adds no bandwidth cost to
-the server and needs no extra ports opened.
+Audio uses WebRTC and travels **directly between browsers whenever a direct path
+exists**; the server only relays a few kilobytes of handshake signalling.
 
 Things to know:
 
@@ -262,15 +261,52 @@ Things to know:
   connections.
 - Whoever is talking gets a green ring on their seat avatar. You can mute an
   individual person locally (handy when someone is typing next to their mic).
-- The default STUN servers are ones reachable from mainland China. **Symmetric
-  NATs and some mobile carrier networks cannot be traversed with STUN alone** —
-  those pairs need a TURN relay. Run your own coturn and set `POKER_TURN_URL`,
-  `POKER_TURN_USERNAME` and `POKER_TURN_CREDENTIAL`. When a pair fails to
-  connect, the roster says so and a toast explains why; it never fails silently.
 - **Everyone on the mic is listed**, spectators included. The trust boundary is
   the same as the table itself: anyone with the URL can join. If you do not want
   to be heard, do not join voice.
 - Turn the whole thing off with `POKER_VOICE=off`; the button disappears.
+
+### TURN relay: not optional if your friends are on other networks
+
+With STUN alone, **two people who are both behind carrier-grade NAT simply
+cannot connect**. This is the common case for residential broadband in China,
+not an edge case. The failure is deceptive: joining works, the roster shows
+everyone, the button says connected — and nobody hears anybody.
+
+A TURN server is the machine both sides *can* reach, relaying audio when hole
+punching fails. `deploy/deploy.sh` sets this up for you: it generates a secret,
+starts a coturn container, opens the ports, and then actually allocates a relay
+channel to prove it works. **Self-hosting requires no manual configuration.**
+
+To check whether it is working:
+
+```bash
+docker exec poker node server/turn-check.js
+```
+
+It reports each link in the chain separately — STUN reachability, whether the
+TURN credentials authenticate, whether a relay channel can be allocated —
+instead of a single unhelpful "cannot connect".
+
+Worth knowing:
+
+- **The relay address is the server's IP, not a hostname, and that is
+  deliberate.** TURN runs over UDP and Cloudflare's proxy only handles HTTP, so
+  the real IP has to be in the page's ICE configuration. Anyone who can reach
+  the table can see it; if that bothers you, turn voice off.
+- **Open `3478/udp` plus the `49160-49200/udp` relay range.** The script updates
+  ufw/firewalld on the host, but it cannot touch a cloud provider's security
+  group.
+- **Relaying only kicks in when a direct path fails.** Pairs that can connect
+  directly still do, costing the server nothing. A relayed call is roughly
+  8 KB/s through the server.
+- **Credentials are short-lived and signed per join** (HMAC, 6 hour expiry by
+  default); the shared secret never leaves the server. Do not use a fixed
+  username and password — the ICE configuration is handed to every visitor.
+- Using someone else's TURN service instead? Set `POKER_TURN_URL`,
+  `POKER_TURN_USERNAME` and `POKER_TURN_CREDENTIAL`.
+- When a pair fails to connect, the roster says so and a toast explains why; it
+  never fails silently.
 
 ## Deployment
 
@@ -323,6 +359,7 @@ server/
   deck.js       Deck and cryptographically seeded shuffle
   protocol.js   Shared constants
   voice.js      Voice chat: channel roster and signalling relay (one channel per table)
+  turn-check.js TURN/STUN self-check: allocates a real relay channel and names the broken link
   guandan/
     engine.js   Guandan: one deal (dealing, tribute, trick rotation, relay, placings)
     room.js     Guandan: seats, tokens, reconnection, timers, levels and passing A
@@ -376,7 +413,8 @@ server.
 - Disconnected players keep their seat for 15 minutes before being removed.
 - **Voice is a mesh.** It caps out at 8 people; beyond that you would want an
   SFU, which means running a media server — at odds with "the only dependency is
-  `ws`". Without a TURN server, symmetric NATs cannot be traversed.
+  `ws`". Relaying relies on a self-hosted coturn (`deploy/deploy.sh` configures
+  it); without one, people on different networks cannot connect.
 
 ## Contributing
 

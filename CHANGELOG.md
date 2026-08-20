@@ -30,10 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   being kicked, disconnecting, or reconnecting all drop you off the mic so peers
   tear down immediately instead of waiting for an ICE timeout.
 
-  Requires HTTPS (or localhost) for microphone access. STUN defaults to servers
-  reachable from mainland China; symmetric NATs need a TURN relay
-  (`POKER_TURN_URL` and friends), and a pair that cannot connect says so in the
-  roster rather than failing silently. `POKER_VOICE=off` disables it entirely.
+  Requires HTTPS (or localhost) for microphone access. Direct browser-to-browser
+  connections need a TURN relay to fall back on whenever both sides sit behind
+  carrier-grade NAT, which `deploy/deploy.sh` now provisions automatically; a
+  pair that cannot connect says so in the roster rather than failing silently.
+  `POKER_VOICE=off` disables it entirely.
+
+- `server/turn-check.js` (`npm run turn-check`, or
+  `docker exec poker node server/turn-check.js` on a server): walks the voice
+  path one link at a time — STUN reachability, whether TURN credentials
+  authenticate, whether a relay channel can actually be allocated — and names
+  the link that is broken. It reads configuration through `voiceConfigFromEnv`,
+  the same path that produces what browsers receive, so passing here means the
+  browser's configuration is genuinely usable. Implements the minimum of
+  RFC 5389/5766 needed to do that honestly.
 
 - **Guandan (掼蛋), a second table.** Served at `/guandan` on the same process,
   with its own WebSocket path (`/gd`), its own in-memory room, and its own seats
@@ -113,6 +123,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   steps aside.
 
 ### Fixed
+
+- **Voice chat could not connect between people on different networks.** Two
+  causes, both fixed. First, `docker-compose.yml` never passed any of the
+  `POKER_VOICE*` / `POKER_STUN_URLS` / `POKER_TURN_*` variables into the
+  container, so a TURN relay could not be configured on a deployed instance at
+  all no matter what `.env` said. Second, nothing shipped a TURN server, and
+  STUN alone cannot traverse two carrier-grade NATs — the common case for
+  residential broadband. The failure was deceptive rather than obvious: joining
+  succeeded, the roster listed everyone, and no audio ever arrived.
+
+  `deploy/deploy.sh` now provisions the whole relay path: it generates a shared
+  secret into `.env` (once — a fresh secret on every deploy would cut off
+  anyone mid-call), starts a hardened coturn container behind a `turn` compose
+  profile, opens the ports on ufw/firewalld, and verifies the result by actually
+  allocating a relay channel rather than just checking that the process is up.
+  coturn refuses to start without a secret, denies relaying to every private
+  address range so it cannot be used to reach other services on the box, and
+  caps per-session bandwidth and allocation quotas.
+
+- TURN credentials are now signed per join (HMAC-SHA1 over an expiring username,
+  the scheme coturn's `use-auth-secret` expects) instead of being a fixed
+  username and password. The ICE configuration is handed to every visitor, so a
+  static credential would be a publicly posted relay account; the shared secret
+  now never leaves the server. `POKER_TURN_USERNAME` / `POKER_TURN_CREDENTIAL`
+  still work for third-party TURN services.
+
+- `stun.qq.com`, the first entry in the default STUN list, no longer answers
+  binding requests (verified against both addresses it resolves to). Every ICE
+  gathering pass was starting with a guaranteed timeout. Replaced with
+  `stun.chat.bilibili.com`; the remaining defaults were re-verified.
 
 - `POKER_DOMAIN` had no effect on the generated Caddy site block. The domain was
   hard-coded in `deploy/caddy-site.txt`, so deploying to any other domain

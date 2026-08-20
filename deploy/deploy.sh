@@ -56,6 +56,13 @@ CADDY_NETWORK="${CADDY_NETWORK:-}"      # 留空 = 自动探测
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 APP_CONTAINER="poker"
 
+# TURN 中转（语音连麦用）。默认端口和 docker-compose.yml 里 coturn 的参数必须一致。
+TURN_CONTAINER="poker-turn"
+TURN_PORT="${POKER_TURN_PORT:-3478}"
+TURN_RELAY_MIN=49160
+TURN_RELAY_MAX=49200
+TURN_ON=0                # setup_turn 里决定：1 = 这次要自建 coturn
+
 # 服务器公网 IP —— 只用于最后打印「Cloudflare A 记录该填什么」。
 # 脚本就跑在这台机器上，所以默认自动探测；探测不到就留占位符，自己照着填。
 # 想手动指定：POKER_SERVER_IP=1.2.3.4 bash deploy/deploy.sh
@@ -101,12 +108,20 @@ usage() {
   bash deploy/deploy.sh --help       显示本帮助
 
 环境变量：CADDY_CONTAINER / CADDY_NETWORK / CADDYFILE_HOST / POKER_DOMAIN / HEALTH_TIMEOUT
+          POKER_SERVER_IP（TURN 中转要用真实公网 IP，探测不到时手工指定）
+
+语音连麦：脚本会自动生成 TURN 密钥、起一个 coturn 容器、放行端口并做连通性自检。
+          不想要中转就在 .env 里写 POKER_VOICE=off（整个语音功能关掉），
+          或者填上 POKER_TURN_USERNAME/POKER_TURN_CREDENTIAL 用别人家的 TURN。
+          事后单独排查：docker exec poker node server/turn-check.js
 EOF
 }
 
 # ------------------------------------------------------------------ 通用函数
 
-# docker compose 包装：优先用插件版 `docker compose`
+# docker compose 包装：优先用插件版 `docker compose`。
+# COMPOSE_PROFILES 由 setup_turn 决定要不要设成 turn —— coturn 服务挂在这个
+# profile 下，没配 TURN 的部署就完全不会碰它。
 dc() { docker compose "$@"; }
 
 # 写入/更新 .env 里的一个键，幂等
@@ -128,6 +143,22 @@ env_set() {
     cat "$WORK_DIR/env.new" > "$ENV_FILE"
   else
     printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  fi
+}
+
+# 读 .env 里某个键的值，读不到就返回空
+env_get() {
+  local key="$1"
+  [[ -f "$ENV_FILE" ]] || return 0
+  sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
+}
+
+# 生成一段随机十六进制。openssl 在最小化安装的 Debian 上不一定有，所以留了退路。
+rand_hex() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+  else
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
   fi
 }
 
@@ -311,6 +342,120 @@ EOF
   ok "已写入 $ENV_FILE（CADDY_NETWORK=$CADDY_NETWORK）"
 }
 
+# ------------------------------------------------------------------ TURN
+
+# 放行 TURN 需要的端口。没装防火墙的机器（Debian 12 默认就是）什么都不用做。
+open_turn_ports() {
+  local relay="${TURN_RELAY_MIN}:${TURN_RELAY_MAX}"
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi 'Status: active'; then
+    ufw allow "${TURN_PORT}/udp"  >/dev/null 2>&1 || true
+    ufw allow "${TURN_PORT}/tcp"  >/dev/null 2>&1 || true
+    ufw allow "${relay}/udp"      >/dev/null 2>&1 || true
+    ok "ufw 已放行 ${TURN_PORT}/udp、${TURN_PORT}/tcp、${relay}/udp"
+    return 0
+  fi
+  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --permanent --add-port="${TURN_PORT}/udp" >/dev/null 2>&1 || true
+    firewall-cmd --permanent --add-port="${TURN_PORT}/tcp" >/dev/null 2>&1 || true
+    firewall-cmd --permanent --add-port="${TURN_RELAY_MIN}-${TURN_RELAY_MAX}/udp" >/dev/null 2>&1 || true
+    firewall-cmd --reload >/dev/null 2>&1 || true
+    ok "firewalld 已放行 ${TURN_PORT}/udp、${TURN_PORT}/tcp、${TURN_RELAY_MIN}-${TURN_RELAY_MAX}/udp"
+    return 0
+  fi
+  dim "宿主没有启用 ufw / firewalld，不需要额外放行"
+  # 云厂商的安全组是在机器外面的，脚本看不见也改不了，只能提醒
+  dim "如果服务商控制台上还有一层安全组，记得放行 ${TURN_PORT}/udp 和 ${relay}/udp"
+  return 0
+}
+
+setup_turn() {
+  step "配置 TURN 中转（异地之间的语音全靠它）"
+
+  local voice_off=0
+  case "$(printf '%s' "${POKER_VOICE:-on}" | tr 'A-Z' 'a-z')" in
+    0|false|no|off) voice_off=1 ;;
+  esac
+  if [[ "$voice_off" -eq 1 ]]; then
+    warn "POKER_VOICE 是关的，跳过 TURN（语音功能本身就没开）"
+    return 0
+  fi
+
+  # 已经在用别人家的 TURN 服务：尊重现有配置，不自建、不覆盖
+  if [[ -n "${POKER_TURN_USERNAME:-}" && -n "${POKER_TURN_CREDENTIAL:-}" && -z "${POKER_TURN_SECRET:-}" ]]; then
+    ok "检测到已配置外部 TURN（固定账号密码），不自建 coturn"
+    dim "地址：${POKER_TURN_URL:-<没填 POKER_TURN_URL，TURN 不会生效>}"
+    return 0
+  fi
+
+  # 自建 coturn 需要一个能被外网直接打到的 IP。这里必须是【真实公网 IP】：
+  # TURN 走的是 UDP，Cloudflare 的橙云只代理 HTTP，代理不了它，
+  # 所以不能用域名混过去，得把 IP 明明白白告诉浏览器。
+  if [[ ! "$SERVER_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    warn "没能自动探测出这台机器的公网 IP，跳过 TURN 自建。"
+    warn "手工指定后重跑即可：POKER_SERVER_IP=1.2.3.4 bash deploy/deploy.sh"
+    return 0
+  fi
+
+  # 密钥只生成一次并存进 .env。每次部署换一个的话，正在通话的人会被踢下来，
+  # 而且 poker 和 coturn 两个容器重启有先后，中间会出现一段密钥对不上的窗口。
+  local secret
+  secret="$(env_get POKER_TURN_SECRET)"
+  secret="${POKER_TURN_SECRET:-$secret}"
+  if [[ -z "$secret" ]]; then
+    secret="$(rand_hex)"
+    if [[ -z "$secret" ]]; then
+      warn "生成随机密钥失败（既没有 openssl 也读不到 /dev/urandom），跳过 TURN"
+      return 0
+    fi
+    env_set POKER_TURN_SECRET "$secret"
+    ok "已生成 TURN 密钥并写入 $ENV_FILE（只在这台机器上，不会进 git）"
+  else
+    ok "复用 $ENV_FILE 里已有的 TURN 密钥"
+  fi
+
+  # UDP 是主路；再挂一条 TCP，给那些把 UDP 全封了的网络（部分公司网、酒店网）兜底。
+  env_set POKER_TURN_URL   "turn:${SERVER_IP}:${TURN_PORT},turn:${SERVER_IP}:${TURN_PORT}?transport=tcp"
+  env_set POKER_TURN_IP    "$SERVER_IP"
+  env_set POKER_TURN_REALM "${DOMAIN:-poker}"
+  ok "TURN 地址：turn:${SERVER_IP}:${TURN_PORT}（UDP + TCP）"
+
+  open_turn_ports
+
+  TURN_ON=1
+  export COMPOSE_PROFILES=turn
+  dim "本次会一并启动 coturn 容器（$TURN_CONTAINER）"
+}
+
+# 起来之后真的开一条中转通道试试。端口开着但密钥对不上，浏览器一样连不通，
+# 所以只看"容器在运行"是不够的。检查脚本在镜像里：server/turn-check.js
+check_turn() {
+  [[ "$TURN_ON" -eq 1 ]] || return 0
+  step "TURN 连通性自检（真的去开一条中转通道）"
+
+  if ! docker inspect "$TURN_CONTAINER" >/dev/null 2>&1; then
+    warn "找不到容器 $TURN_CONTAINER，coturn 可能没起来"
+    return 0
+  fi
+  local running
+  running="$(docker inspect -f '{{.State.Running}}' "$TURN_CONTAINER" 2>/dev/null || echo false)"
+  if [[ "$running" != "true" ]]; then
+    warn "容器 $TURN_CONTAINER 没在运行，最近 30 行日志："
+    docker logs --tail 30 "$TURN_CONTAINER" 2>&1 | sed 's/^/      /' || true
+    return 0
+  fi
+  ok "coturn 容器运行中"
+
+  # 在 poker 容器里跑，读到的就是它自己那份环境变量——
+  # 正好把"配置有没有真的传进容器"这一环也一起验了。
+  if docker exec "$APP_CONTAINER" node server/turn-check.js 2>&1 | sed 's/^/      /'; then
+    ok "TURN 自检通过：异地之间的语音有中转兜底了"
+  else
+    warn "TURN 自检没通过（上面有具体是哪一步断的）。"
+    warn "语音在同一个局域网里仍然能用，异地之间可能还是听不见。"
+    warn "常见原因：服务商控制台的安全组没放行 ${TURN_PORT}/udp 与 ${TURN_RELAY_MIN}-${TURN_RELAY_MAX}/udp"
+  fi
+}
+
 build_and_start() {
   step "构建镜像并启动 poker 容器（不映射任何宿主端口）"
 
@@ -326,6 +471,20 @@ build_and_start() {
     warn "容器在 ${HEALTH_TIMEOUT}s 内没有变成 healthy，最近 40 行日志："
     docker logs --tail 40 "$APP_CONTAINER" 2>&1 | sed 's/^/      /' || true
     die "poker 容器未就绪，已中止（Caddyfile 尚未做任何修改，matrix 服务不受影响）"
+  fi
+
+  if [[ "$TURN_ON" -eq 1 ]]; then
+    info "等待 coturn 就绪"
+    printf '    '
+    if wait_healthy "$TURN_CONTAINER" 30; then
+      ok "容器 $TURN_CONTAINER 健康"
+    else
+      # coturn 起不来不该拖垮整个部署：牌桌照常能玩，只是异地语音没有中转兜底
+      warn "coturn 没能就绪，最近 30 行日志："
+      docker logs --tail 30 "$TURN_CONTAINER" 2>&1 | sed 's/^/      /' || true
+      warn "牌桌本身不受影响，继续部署；语音在异地之间可能连不通"
+      TURN_ON=0
+    fi
   fi
 
   # 确认容器真的挂在 Caddy 的网络上，否则 reverse_proxy poker:8080 会 502
@@ -495,12 +654,32 @@ ${C_BOLD}接下来的手工步骤：Cloudflare DNS（顺序很重要，别跳步
      Caddy 拿不到正式证书就会退回内部自签证书，配上 Flexible 模式就会
      变成无限重定向或证书报错 —— 上次部署 chat 子域名踩过这个坑。${C_RESET}
 
+$( [[ "$TURN_ON" -eq 1 ]] && cat <<TURNEOF
+
+${C_BOLD}语音连麦的 TURN 中转已就绪${C_RESET}
+  地址 turn:${SERVER_IP}:${TURN_PORT}（UDP 为主，TCP 兜底），密钥存在 ${ENV_FILE}。
+
+  ${C_BOLD}这里用的是 IP 而不是域名，是故意的：${C_RESET}TURN 走 UDP，
+  Cloudflare 的橙云只代理 HTTP，代不了它。所以中转地址必须是真实公网 IP，
+  这也意味着${C_YELLOW}你的服务器 IP 会出现在网页的 ICE 配置里${C_RESET}——
+  能进这张牌桌的人本来就能看到，介意的话就把语音关掉（POKER_VOICE=off）。
+
+  ${C_BOLD}还要确认的一件事：${C_RESET}如果服务商控制台上有安全组，
+  放行 ${C_BOLD}${TURN_PORT}/udp${C_RESET} 和 ${C_BOLD}${TURN_RELAY_MIN}-${TURN_RELAY_MAX}/udp${C_RESET}。
+  脚本改得了机器里的 ufw，改不了机器外面那层。
+
+  ${C_DIM}带宽提示：只有打不通洞的那几对人才会走中转，能直连的仍然点对点。
+  真走中转时，一路语音双向约 8KB/s 过这台机器。${C_RESET}
+TURNEOF
+)
 ${C_BOLD}常用运维命令：${C_RESET}
   查看日志      docker logs -f ${APP_CONTAINER}
   重启          docker restart ${APP_CONTAINER}
   更新代码后重部署   cd ${PROJECT_DIR} && bash deploy/deploy.sh
   下线并清理    bash deploy/deploy.sh --rollback
   资源占用      docker stats --no-stream ${APP_CONTAINER}
+  ${C_BOLD}语音打不通时先跑这个${C_RESET}   docker exec ${APP_CONTAINER} node server/turn-check.js
+  TURN 日志     docker logs -f ${TURN_CONTAINER}
 
 ${C_BOLD}Caddyfile 备份：${C_RESET}${CADDYFILE_HOST}.bak.*  （本次$( [[ "$CADDY_MODIFIED" -eq 1 ]] && printf '已生成 %s' "$BACKUP_FILE" || printf '未修改，无新备份' )）
 
@@ -521,8 +700,10 @@ do_deploy() {
   printf '%s%s德州扑克在线桌 —— 开始部署（域名 %s）%s\n' "$C_BOLD" "$C_BLUE" "$DOMAIN" "$C_RESET"
   check_prereq
   detect_caddy
+  setup_turn
   build_and_start
   self_check_container
+  check_turn
   update_caddyfile add
   final_check
   print_next_steps
@@ -535,12 +716,14 @@ do_rollback() {
 
   step "停止并移除 poker 容器"
   cd "$PROJECT_DIR"
+  # down 不会启动任何东西，但要带上 profile 才认得 coturn 这个服务，否则它会被留下
+  export COMPOSE_PROFILES=turn
   if dc down --remove-orphans >/dev/null 2>&1; then
     ok "docker compose down 完成"
   else
     warn "docker compose down 失败（可能 .env 缺失），改用 docker rm -f"
-    docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
-    ok "容器 $APP_CONTAINER 已移除（若本来就不存在则忽略）"
+    docker rm -f "$APP_CONTAINER" "$TURN_CONTAINER" >/dev/null 2>&1 || true
+    ok "容器 $APP_CONTAINER / $TURN_CONTAINER 已移除（若本来就不存在则忽略）"
   fi
 
   update_caddyfile remove

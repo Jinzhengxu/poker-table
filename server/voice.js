@@ -72,10 +72,36 @@ export class VoiceChannel {
     this.label = opts.label || '语音';
     this.enabled = opts.enabled !== false;
     this.max = Number.isInteger(opts.max) && opts.max > 0 ? opts.max : MAX_VOICE_MEMBERS;
-    /** @type {object[]} 直接透给浏览器的 RTCConfiguration.iceServers */
-    this.iceServers = Array.isArray(opts.iceServers) ? opts.iceServers : [];
+    /**
+     * 直接透给浏览器的 RTCConfiguration.iceServers。
+     * 可以是一个静态数组，也可以是个 (tag) => 数组 的工厂——
+     * TURN 走的是有效期很短的临时凭据，必须每次上麦现签，不能在这里存下来。
+     * @type {object[]|((tag:string)=>object[])}
+     */
+    this.iceServers = (typeof opts.iceServers === 'function' || Array.isArray(opts.iceServers))
+      ? opts.iceServers
+      : [];
     /** @type {Map<string,{muted:boolean, since:number}>} playerId -> 麦上状态 */
     this.members = new Map();
+  }
+
+  /**
+   * 这次上麦要下发的 ICE 服务器列表（已经深拷过一层，调用方随便改）。
+   * 工厂抛异常也不能让上麦失败——没有 ICE 顶多是局域网内才连得上，
+   * 直接把人挡在麦外面就太狠了。
+   * @param {string} tag 只用来在 TURN 服务器日志里认人，不参与鉴权
+   */
+  iceFor(tag) {
+    let src = this.iceServers;
+    if (typeof src === 'function') {
+      try {
+        src = src(tag);
+      } catch (e) {
+        console.error('[voice] 生成 ICE 配置失败，这次按没有 ICE 处理', e);
+        src = [];
+      }
+    }
+    return Array.isArray(src) ? src.map((x) => ({ ...x })) : [];
   }
 
   has(playerId) {
@@ -108,7 +134,7 @@ export class VoiceChannel {
       t: 'voiceReady',
       self: id,
       max: this.max,
-      iceServers: this.iceServers.map((s) => ({ ...s })),
+      iceServers: this.iceFor(id),
     });
     this.room.broadcast();
     return { ok: true };
