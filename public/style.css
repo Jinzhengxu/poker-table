@@ -1445,6 +1445,9 @@ h3, h4 { margin: 0; font-weight: 600; }
 .cfg-actions { display: flex; gap: 8px; margin-top: 4px; }
 .cfg-actions .act { flex: 1 1 auto; min-height: 38px; font-size: 13px; }
 .cfg-hint { font-size: 11.5px; color: var(--txt-faint); margin: 0; }
+/* 音乐署名：CC BY 要求的，跟牌桌设置隔开一点 */
+.music-credit { margin-top: 4px; }
+.music-credit .cfg-hint { line-height: 1.7; }
 .cfg-form.locked { opacity: .5; pointer-events: none; }
 
 .seat-admin { display: flex; flex-direction: column; gap: 6px; }

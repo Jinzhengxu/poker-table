@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Background music is now a small shuffled playlist** of three Kevin MacLeod
+  blues/lounge tracks (CC BY 4.0) instead of one 8:50 ragtime loop. Same idea as
+  the music in Apple's Texas Hold'em — laid-back country-lounge — since that
+  soundtrack itself is Apple's and cannot be redistributed. `app.js` shuffles the
+  order each pass and never plays the same track twice in a row; adding a track is
+  one line in `TRACKS`. Attribution is required by CC BY and lives in the settings
+  panel as plain text (an outbound link would break the tab disguise and trip the
+  "no external resources" test).
+
+  All three are normalised to -18 LUFS **after** the mono downmix, not before —
+  measuring in stereo and then `-ac 1` costs a wide mix up to 3 dB and leaves the
+  tracks mismatched. `public/music/README.md` has the two-pass recipe.
+
 - **Voice chat, with a separate channel per table.** A mic button in the top bar
   puts you on the table's voice channel. Hold'em and guandan get their own
   channel each: every `Room` owns a `VoiceChannel`, rosters are stored

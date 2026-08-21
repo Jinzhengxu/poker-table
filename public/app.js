@@ -692,21 +692,71 @@
 
   // ============================ 背景音乐 ============================
   //
-  // 一段公有领域的老钢琴曲（Scott Joplin《Solace》1909），文件在 public/music/，
-  // 授权与转码参数见 music/README.md。之前这里是实时合成的和弦垫，
-  // 听着像电子琴演示音而不是酒馆，换成真录音了。
+  // 三首慢速布鲁斯 / lounge（Kevin MacLeod，CC BY 4.0），文件在 public/music/，
+  // 署名与转码参数见 music/README.md。之前是一首 8 分半的拉格泰姆钢琴单曲循环，
+  // 打一晚上牌同一段要听十几遍，换成随机顺序的小歌单。
   //
   // 走 WebAudio 而不是直接用 <audio>.volume：接进跟音效同一个限幅器，
   // 音效响的时候音乐会被压一下（侧链闪避），加起来也不会削顶。
 
   /**
-   * 播放音量。按文件已归一到 -18 LUFS 调的，换曲子请照 README 一起归一化。
+   * 播放音量。三首都归一到 -18 LUFS，所以这一个值管全部，切歌不用另调。
    * 实测这个值下音乐单独播放约 -13 dBFS 峰值 / -30 dBFS RMS ——
    * 听得见但压得住，音效盖上去时不会挤成一团。
    */
   var MUSIC_LEVEL = 0.2;
 
-  var music = { bus: null, src: null, fadeTimer: null };
+  /**
+   * 歌单。title 是 CC BY 要求的署名用的曲名，设置面板里会一起显示；
+   * 加曲子只要往这儿加一行，播放逻辑不用动。
+   */
+  var TRACKS = [
+    { file: 'matts-blues.mp3',    title: "Matt's Blues" },
+    { file: 'octoblues.mp3',      title: 'OctoBlues' },
+    { file: 'backbay-lounge.mp3', title: 'Backbay Lounge' }
+  ];
+
+  // order 是洗过的播放顺序（存的是 TRACKS 下标），at 是当前放到第几个
+  var music = { bus: null, src: null, fadeTimer: null, order: [], at: 0 };
+
+  /**
+   * 洗一遍播放顺序。avoid 是上一轮最后放的那首的下标 ——
+   * 洗完第一首要是又是它，接上去就是同一首连着放两遍，挪一下。
+   */
+  function musicShuffle(avoid) {
+    var order = TRACKS.map(function (_, i) { return i; });
+    for (var i = order.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = order[i]; order[i] = order[j]; order[j] = t;
+    }
+    if (order.length > 1 && order[0] === avoid) {
+      var k = 1 + Math.floor(Math.random() * (order.length - 1));
+      order[0] = order[k]; order[k] = avoid;
+    }
+    return order;
+  }
+
+  /** 把第 at 首挂到 <audio> 上。preload=none，挂上不会真去下载，等 play() */
+  function musicLoad() {
+    var t = TRACKS[music.order[music.at]];
+    if (t && D.bgm) D.bgm.src = '/music/' + t.file;
+  }
+
+  /** 一首放完接下一首；整轮放完重新洗牌 */
+  function musicNext() {
+    if (!D.bgm || !music.order.length) return;
+    var prev = music.order[music.at];
+    music.at += 1;
+    if (music.at >= music.order.length) {
+      music.order = musicShuffle(prev);
+      music.at = 0;
+    }
+    musicLoad();
+    // 关掉音乐时 pause 不会触发 ended，这里只可能是自然放完，直接续上
+    if (!S.musicOn) return;
+    var pending = D.bgm.play();
+    if (pending && pending.catch) pending.catch(function () { /* 等手势 */ });
+  }
 
   /** 把 <audio> 接进音频图。只能接一次，重复调用会抛错。 */
   function musicWire() {
@@ -741,6 +791,7 @@
   function musicStart() {
     if (!D.bgm) return;
     if (!musicWire()) return;
+    if (!music.order.length) { music.order = musicShuffle(-1); music.at = 0; musicLoad(); }
     if (music.fadeTimer) { clearTimeout(music.fadeTimer); music.fadeTimer = null; }
     // 淡入 4 秒：背景音乐要"慢慢有了"，不是"啪一下开了"
     musicFade(MUSIC_LEVEL, 4);
@@ -2441,6 +2492,9 @@
       syncMusic();
     });
     D.btnMusic.setAttribute('aria-pressed', S.musicOn ? 'true' : 'false');
+
+    // 一首放完自动接下一首。<audio> 上没有 loop 了，全靠这个把歌单串起来
+    if (D.bgm) D.bgm.addEventListener('ended', musicNext);
 
     // 结算大屏：点一下立刻让开，不用等那 2.4 秒
     if (D.resultOverlay) {

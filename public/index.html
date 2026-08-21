@@ -202,6 +202,19 @@
           <p class="cfg-hint">设置只能在两手牌之间修改。</p>
         </form>
 
+        <!-- CC BY 4.0 要求署名可见，别删。
+             写成纯文本不做链接：这页伪装成邮箱，而且 e2e 里有一条
+             "index.html 不引用任何外部资源"，外链会踩到。 -->
+        <section class="cfg-form music-credit">
+          <h4>背景音乐</h4>
+          <p class="cfg-hint">
+            Matt's Blues / OctoBlues / Backbay Lounge<br>
+            Kevin MacLeod（incompetech.com）<br>
+            授权：Creative Commons By Attribution 4.0<br>
+            creativecommons.org/licenses/by/4.0/
+          </p>
+        </section>
+
         <form id="botForm" class="cfg-form" hidden>
           <h4>人机后端</h4>
           <div id="botStatus" class="bot-status">未配置，人机将按内置规则打牌。</div>
@@ -291,9 +304,11 @@
 
 <div id="toasts" class="toasts" role="alert" aria-live="assertive"></div>
 
-<!-- 背景音乐：Scott Joplin《Solace》，公有领域，自己托管（授权与转码见 music/README.md）。
-     preload=none —— 3MB 的东西不该抢开局时的带宽，等用户第一次交互再拉。 -->
-<audio id="bgm" src="/music/lounge.mp3" loop preload="none"></audio>
+<!-- 背景音乐：Kevin MacLeod 的三首布鲁斯/lounge，CC BY 4.0，自己托管
+     （署名在设置面板里，授权与转码见 music/README.md）。
+     src 由 app.js 的歌单挑，没有 loop —— 一首放完接下一首。
+     preload=none —— 音乐文件不该抢开局时的带宽，等用户第一次交互再拉。 -->
+<audio id="bgm" preload="none"></audio>
 
 <script src="/voice.js"></script>
 <script src="/app.js"></script>
