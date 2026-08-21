@@ -175,14 +175,16 @@ h3, h4 { margin: 0; font-weight: 600; }
 }
 .icon-btn:hover { color: var(--txt); background: rgba(255, 255, 255, .09); }
 /* 顶栏上那个跳到另一张桌子的链接，也用 .icon-btn 的壳 */
-.table-link, .gd-link { text-decoration: none; font-size: 12px; white-space: nowrap; }
+.table-link, .gd-link, .hw-link { text-decoration: none; font-size: 12px; white-space: nowrap; }
 /* 花色占位和图标一样宽，手机上标签收起来之后按钮不会突然变窄一截 */
-.table-link .suit, .gd-link .suit {
+.table-link .suit, .gd-link .suit, .hw-link .suit {
   width: 15px; text-align: center; flex: 0 0 auto; font-size: 14px; line-height: 1;
 }
 /* 红花色染成红的，手机上只剩一个符号时也一眼看出这是「另一张桌子」，
    而不是旁边那几个开关 */
 .table-link .suit { color: #e2707a; }
+/* 热词那条用的是彩色 emoji，字面尺寸比♠♥大一圈，压小一档才跟花色一样高 */
+.hw-link .suit { font-size: 12px; }
 .icon-btn[aria-pressed="false"] { color: var(--txt-faint); }
 
 /* 图标本体：一个被 SVG 遮罩裁出形状的色块，颜色跟着 currentColor 走 */
@@ -1574,14 +1576,23 @@ h3, h4 { margin: 0; font-weight: 600; }
 }
 
 @media (max-width: 620px) {
-  /* 顶栏在手机上要塞进五个按钮，纯装饰的品牌花色让位给手数和盲注 */
+  /* 顶栏在手机上要塞进六个按钮（两个换桌链接 + 四个开关），
+     纯装饰的品牌花色让位给手数和盲注。间距和内边距也各收一档——
+     390px 的屏上不收的话「盲注 50/100」会被截成「盲…」。 */
   .brand { display: none; }
-  #topbar { gap: 7px; padding-left: 8px; padding-right: 8px; }
+  #topbar { gap: 6px; padding-left: 8px; padding-right: 8px; }
   .icon-btn .lbl { display: none; }
-  .icon-btn { padding: 7px 9px; }
+  .icon-btn { padding: 7px 8px; }
   /* 标签藏起来之后，图标是唯一的信息，放大一档 */
   .ico-snd, .ico-mus, .ico-mic, .ico-menu { width: 17px; height: 17px; }
-  .table-link .suit, .gd-link .suit { width: 17px; font-size: 16px; }
+  .table-link .suit, .gd-link .suit, .hw-link .suit { width: 16px; font-size: 16px; }
+  .hw-link .suit { font-size: 14px; }
+  /* 换桌的链接在手机上脱掉药丸外壳，只留一个符号：既省下三十来像素给盲注，
+     也让「去别的桌」和旁边那几个开关一眼分得开——它们是两类东西。 */
+  .table-link, .gd-link, .hw-link {
+    background: none; border-color: transparent; padding: 7px 4px;
+  }
+  .table-link:hover, .gd-link:hover, .hw-link:hover { background: none; }
   .meta { font-size: 11.5px; }
   /* 连上之后那颗绿点已经说明一切，「已连接」三个字让位给手数和盲注；
      连接中／掉线仍然把字留着，那两种状态光靠一颗点说不清楚。 */

@@ -167,6 +167,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Hotword had no way in from the other two tables.** `/hotword` linked out to
+  both poker pages, but neither linked back, so the only way to reach the new
+  game was to type the URL. Both tables now carry a 🔥 热词 link in the top bar.
+
+  Six controls do not fit a 390px top bar next to the hand number and blinds, so
+  on phones the two cross-table links drop their pill shell and render as bare
+  glyphs. That buys back the ~30px the blinds need, and it makes navigation read
+  as a different kind of thing than the sound/music/mic toggles beside it.
+
 - **Voice chat could not connect between people on different networks.** Two
   causes, both fixed. First, `docker-compose.yml` never passed any of the
   `POKER_VOICE*` / `POKER_STUN_URLS` / `POKER_TURN_*` variables into the
