@@ -1,0 +1,429 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* =========================================================================
+   热词 · 前端样式
+   只写热词特有的部分：色板、按钮、对话框、侧栏抽屉全部继承 style.css。
+   手机竖屏是第一优先级——朋友局多半是几个人围着手机猜。
+   ========================================================================= */
+
+.hw-body {
+  background:
+    radial-gradient(1100px 660px at 50% -12%, #241d19 0%, transparent 60%),
+    radial-gradient(900px 600px at 100% 110%, #1a1917 0%, transparent 55%),
+    var(--bg-0);
+}
+
+/* 温度色阶。从冷到烫，这一套色在两条温度条、猜测列表、结算页面里通用 */
+:root {
+  --heat-cold: #4a6fa5;
+  --heat-cool: #4a93a5;
+  --heat-mild: #57a86b;
+  --heat-warm: #c9a44d;
+  --heat-hot: #e0803a;
+  --heat-burning: #e05a3a;
+  --heat-hit: #ffd166;
+}
+
+.heat-cold { --heat: var(--heat-cold); }
+.heat-cool { --heat: var(--heat-cool); }
+.heat-mild { --heat: var(--heat-mild); }
+.heat-warm { --heat: var(--heat-warm); }
+.heat-hot { --heat: var(--heat-hot); }
+.heat-burning { --heat: var(--heat-burning); }
+.heat-hit { --heat: var(--heat-hit); }
+.heat-none { --heat: var(--line-soft); }
+
+#hwCol {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px 16px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* =========================== 擂台 =========================== */
+
+.arena {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.versus {
+  align-self: center;
+  font: 700 12px/1 var(--font-num);
+  color: var(--txt-faint);
+  letter-spacing: .08em;
+}
+
+.fighter {
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fighter.is-me {
+  border-color: var(--gold-dim);
+  box-shadow: inset 0 0 0 1px rgba(233, 196, 106, .12);
+}
+
+.fighter.is-empty {
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-style: dashed;
+  color: var(--txt-faint);
+}
+
+.f-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.f-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  color: #fff;
+  flex: none;
+}
+
+.f-name-wrap { min-width: 0; flex: 1; }
+
+.f-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.f-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+
+.f-tag {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, .06);
+  color: var(--txt-faint);
+}
+.f-tag.off { color: var(--red); }
+.f-tag.peek { color: var(--heat-warm); }
+
+.f-count {
+  font: 600 15px/1 var(--font-num);
+  color: var(--txt-dim);
+  flex: none;
+}
+
+/* 温度条。对手那条是他唯一泄露给你的东西，所以做得显眼一点 */
+.therm {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .06);
+  overflow: hidden;
+}
+
+.therm-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--heat, var(--line-soft));
+  transition: width .5s ease, background-color .3s ease;
+  box-shadow: 0 0 12px -2px var(--heat, transparent);
+}
+
+.f-foot {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--txt-dim);
+}
+.f-rank { color: var(--txt-faint); }
+.f-frozen { color: var(--heat-cool); }
+
+/* =========================== 大厅 =========================== */
+
+.lobby {
+  text-align: center;
+  padding: 10px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
+
+.lobby-text { margin: 0; color: var(--txt-dim); font-size: 13px; }
+.lobby-actions { display: flex; gap: 8px; }
+
+/* =========================== 猜词 =========================== */
+
+.guess-form {
+  display: flex;
+  gap: 8px;
+}
+
+.guess-form input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--txt);
+  font-size: 16px;              /* 16px 以下 iOS 会自动放大页面 */
+  padding: 10px 12px;
+}
+
+.guess-form input:focus {
+  outline: none;
+  border-color: var(--gold-dim);
+}
+
+/* 输入框吃掉所有剩余宽度，按钮只占自己那点。style.css 里的 .act 在别处是
+   撑满的，这儿必须按住，不然"猜"会跟输入框各占一半 */
+.guess-form .act { flex: 0 0 auto; width: 84px; font-variant-numeric: tabular-nums; }
+.guess-form.cooling input { opacity: .6; }
+
+/* 刚猜完的那个词，大字反馈 */
+.last-guess {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--heat, var(--line));
+  background: color-mix(in srgb, var(--heat, transparent) 12%, transparent);
+  animation: lg-pop .25s ease;
+}
+
+@keyframes lg-pop {
+  from { transform: translateY(-4px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.lg-word { font-size: 20px; font-weight: 700; }
+.lg-rank { font: 600 14px/1 var(--font-num); color: var(--txt-dim); }
+.lg-heat { margin-left: auto; color: var(--heat); font-weight: 700; }
+
+/* =========================== 提示 / 偷看 =========================== */
+
+.tool-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.hint-list { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+
+.hint-chip {
+  display: inline-flex;
+  gap: 5px;
+  align-items: baseline;
+  font-size: 11.5px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.hint-chip b { color: var(--gold); font-weight: 600; }
+.hint-chip.locked { opacity: .45; }
+.hint-chip.locked b { color: var(--txt-faint); }
+.hint-off { font-size: 11.5px; color: var(--txt-faint); }
+
+.btn-peek, .btn-resign { flex: none; }
+.btn-resign { color: var(--txt-faint); }
+
+.peek-box {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px dashed var(--heat-warm);
+  background: rgba(201, 164, 77, .07);
+  font-size: 13px;
+}
+.pk-label { font-size: 11px; color: var(--heat-warm); }
+.pk-word { font-weight: 700; font-size: 15px; }
+.pk-rank { margin-left: auto; color: var(--heat); font: 600 13px/1 var(--font-num); }
+
+/* =========================== 我的猜测记录 =========================== */
+
+.my-guesses {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+.mg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--txt-dim);
+}
+
+.mg-sort { display: flex; gap: 4px; }
+
+.sort-btn {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--txt-faint);
+  cursor: pointer;
+}
+.sort-btn.is-on { color: var(--gold); border-color: var(--gold-dim); }
+
+.guess-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.g-row {
+  display: grid;
+  grid-template-columns: minmax(56px, auto) 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--bg-1);
+  border: 1px solid transparent;
+}
+.g-row:first-child { border-color: var(--line-soft); }
+
+.g-word { font-size: 14px; font-weight: 600; }
+
+.g-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .05);
+  overflow: hidden;
+}
+
+.g-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--heat);
+}
+
+.g-rank {
+  font: 600 12px/1 var(--font-num);
+  color: var(--heat);
+  min-width: 52px;
+  text-align: right;
+}
+
+/* =========================== 结算大屏 =========================== */
+
+.result-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(4, 7, 6, .82);
+  backdrop-filter: blur(3px);
+}
+
+.result-box {
+  width: min(560px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 18px;
+  text-align: center;
+  box-shadow: var(--shadow-2);
+}
+
+.result-box h3 { margin: 0 0 4px; font-size: 22px; }
+.ro-sub { margin: 0 0 14px; color: var(--txt-dim); font-size: 13px; }
+
+.ro-answer {
+  display: inline-flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 10px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--gold-dim);
+  background: rgba(233, 196, 106, .08);
+  margin-bottom: 14px;
+}
+.ro-label { font-size: 11px; color: var(--txt-faint); }
+.ro-word { font-size: 26px; font-weight: 800; color: var(--gold); letter-spacing: .06em; }
+.ro-cat { font-size: 11px; color: var(--txt-dim); }
+
+.ro-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+  text-align: left;
+}
+
+.ro-col-name {
+  font-size: 12px;
+  color: var(--txt-dim);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ro-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+
+.ro-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: var(--bg-0);
+}
+.ro-item-rank { color: var(--heat); font-family: var(--font-num); }
+
+/* =========================== 宽屏 =========================== */
+
+@media (min-width: 901px) {
+  #hwCol { padding: 14px 18px 20px; gap: 12px; }
+  .fighter { padding: 12px 14px; }
+  .f-avatar { width: 34px; height: 34px; }
+  .f-name { font-size: 14px; }
+  .lg-word { font-size: 24px; }
+}
+
+/* 手机竖屏：两栏对照挤不下，改成上下排 */
+@media (max-width: 560px) {
+  .ro-compare { grid-template-columns: 1fr; }
+  .ro-list { max-height: 180px; overflow-y: auto; }
+}
+
+/* 特别窄的屏：擂台也改成上下两行，中间的 VS 居中 */
+@media (max-width: 360px) {
+  .arena { grid-template-columns: 1fr; }
+  .versus { justify-self: center; }
+}

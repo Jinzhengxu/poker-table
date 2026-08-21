@@ -17,6 +17,7 @@
 import { createHmac } from 'node:crypto';
 import { DEFAULT_CONFIG } from './protocol.js';
 import { DEFAULT_GD_CONFIG } from './guandan/room.js';
+import { DEFAULT_HW_CONFIG } from './hotword/room.js';
 import { MAX_VOICE_MEMBERS } from './voice.js';
 
 /** 每个字段的解析方式与取值范围。范围必须和 room.js setConfig 保持一致。 */
@@ -152,6 +153,56 @@ export function guandanConfigFromEnv(env = process.env, logger = console) {
 
   if (applied.length) {
     logger.log?.(`[config] 环境变量覆盖了掼蛋桌初始设置：${applied.join('，')}`);
+  }
+  return cfg;
+}
+
+/** 热词桌的字段。范围必须和 hotword/room.js 的 setConfig 保持一致。 */
+const HW_FIELDS = [
+  { key: 'guessCooldownMs', env: 'HOTWORD_GUESS_COOLDOWN', kind: 'sec',  min: 0, max: 30000 },
+  { key: 'peekFreezeMs',    env: 'HOTWORD_PEEK_FREEZE',    kind: 'sec',  min: 0, max: 120000 },
+  { key: 'peekEnabled',     env: 'HOTWORD_PEEK',           kind: 'bool' },
+  { key: 'hintsEnabled',    env: 'HOTWORD_HINTS',          kind: 'bool' },
+];
+
+/**
+ * 热词的【初始】配置。同样是启动时生效，房主之后可以在设置里改。
+ * @param {object} [env]
+ * @param {object} [logger]
+ * @returns {typeof DEFAULT_HW_CONFIG}
+ */
+export function hotwordConfigFromEnv(env = process.env, logger = console) {
+  const cfg = { ...DEFAULT_HW_CONFIG };
+  const applied = [];
+
+  for (const f of HW_FIELDS) {
+    const raw = str(env[f.env]);
+    if (raw === null) continue;
+
+    if (f.kind === 'bool') {
+      const v = parseBool(raw);
+      if (v === null) {
+        logger.error(`[config] ${f.env}="${raw}" 不是布尔值（用 true/false 或 1/0），已忽略`);
+        continue;
+      }
+      cfg[f.key] = v;
+      applied.push(`${f.env}=${v}`);
+      continue;
+    }
+
+    const v = clampInt(Number(raw) * 1000, f.min, f.max);
+    if (v === null) {
+      logger.error(
+        `[config] ${f.env}="${raw}" 不合法（需要 ${f.min / 1000}~${f.max / 1000} 的整数秒），已忽略`
+      );
+      continue;
+    }
+    cfg[f.key] = v;
+    applied.push(`${f.env}=${raw}`);
+  }
+
+  if (applied.length) {
+    logger.log?.(`[config] 环境变量覆盖了热词初始设置：${applied.join('，')}`);
   }
   return cfg;
 }

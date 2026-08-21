@@ -24,13 +24,13 @@ from a URL.
 
 ## Features
 
-- **Two games.** Texas Hold'em (8 seats) and Guandan (4 seats, two teams,
-  level-climbing).
+- **Three games.** Texas Hold'em (8 seats), Guandan (4 seats, two teams,
+  level-climbing), and Hotword (1v1 semantic word race with an audience).
 - **No signup.** A nickname is your identity. Avatars are derived from it, and
   both tables share the same avatar rules.
 - **Voice chat at the table.** Audio goes browser-to-browser, never through the
-  server. **Hold'em and guandan have separate voice channels** — the two tables
-  never bleed into each other.
+  server. **Each table has its own voice channel** — they never bleed into each
+  other.
 - **All state lives in memory.** No database to run.
 - **Reconnect-safe.** A seat token in `localStorage` puts you back in the same
   seat with the same stack after a refresh or a dropped connection.
@@ -38,7 +38,8 @@ from a URL.
   action buttons are sized for thumbs.
 - **Zero external dependencies in the browser.** No CDN, no webfonts, no images —
   the cards are drawn entirely in CSS. The server depends only on `ws`.
-- **Small.** The container idles at roughly 18 MB of RAM.
+- **Small.** The container idles at roughly 18 MB of RAM, plus about 20 MB more
+  when hotword is enabled — its vocabulary is held in memory.
 
 ## Quick start
 
@@ -115,6 +116,80 @@ form and whether it beats the current play. The **Hint** button cycles through
 every legal play and selects it for you. Keyboard: `Space` to play, `P` to pass,
 `H` for a hint. The host can add rule-based bots to fill empty seats — no API key
 needed.
+
+## Hotword
+
+At `/hotword`. Two players race to guess the **same** hidden Chinese word; whoever
+gets it first wins, and everyone else watches. Inspired by Semantle and Reddit's
+Hot and Cold, except those are single-player daily puzzles and this is a live duel.
+
+Every guess comes back with its **closeness rank** — where it sits among all 52,728
+words relative to the answer. Rank 1 is the answer itself; rank 10 is very close;
+rank 3000 is nowhere near. It scores **meaning**, not spelling: guessing 护士 (nurse)
+lands close to 医生 (doctor), while 西瓜 (watermelon) does not.
+
+**No similarity percentage is shown**, because the scale differs per target word:
+the nearest neighbour of 咖啡 sits at 0.80 while the nearest neighbour of 台风 is
+only 0.63. Showing 0.63 would tell a player they are far off when they are in fact
+as close as anyone can get. Rank is scale-free.
+
+### What each side can see
+
+|  | You | Opponent / audience |
+|---|---|---|
+| The words you guessed | ✅ | ❌ |
+| Exact ranks | ✅ | ❌ (revealed when the round ends) |
+| Guess count | ✅ | ✅ |
+| Temperature bar | ✅ | ✅ |
+
+This asymmetry is the whole game. Fully public and the second player just
+free-rides; fully hidden and it is two people playing solitaire side by side. The
+opponent's temperature bar is the one thing they leak to you — "they're at 87° and
+I'm at 40°" is what makes people shout. The audience sees exactly what the opponent
+sees, so nobody can spoil the round over voice chat.
+
+### Peeking and hints
+
+- **Peek** shows the opponent's **most recent** guess and its rank. It costs you 15
+  seconds of not being able to guess, and the opponent sees in the log that you did it.
+- **Hints** unlock on **your own** guess count: word length at 10, category at 20,
+  first character at 30. Your opponent's progress is irrelevant.
+
+### House rules
+
+- A 3-second cooldown after each guess. It stops the fastest typist from winning
+  by typing speed.
+- "Word not recognised" means it is not in the vocabulary. It costs **neither a
+  guess nor cooldown** — penalising players for gaps in the word list is unfair.
+- Words that **contain the answer or are contained by it** are removed from the
+  round's vocabulary and reported as unrecognised. Chinese needs this: with 咖啡
+  (coffee) as the answer, 8 of the top 50 neighbours are 咖啡厅/咖啡豆/咖啡馆/…, and
+  one lucky guess would give the whole thing away. English Semantle has no such problem.
+- Leaving mid-round voids it (no score) but the answer is revealed.
+
+### Where the words come from
+
+Tencent AI Lab's Chinese word vectors, light edition (Apache-2.0, 143,613 words at
+200 dimensions). Filtered to pure-Han 2-4 character words in the top 60k by
+frequency, quantised to int8: a single 10.8MB file, ~11MB resident. Answers are
+drawn from a hand-picked list of 400 everyday words
+(`server/hotword/data/answers.txt`), tagged with the categories used by the hint.
+
+The word data is committed, so it works out of the box. To swap the vocabulary or
+add answers:
+
+```bash
+# Download the vectors (116MB)
+curl -L -o /tmp/tencent.bin \
+  https://huggingface.co/shibing624/text2vec-word2vec-tencent-chinese/resolve/main/light_Tencent_AILab_ChineseEmbedding.bin
+# Edit server/hotword/data/answers.txt, then regenerate
+node scripts/build-hotword-data.mjs /tmp/tencent.bin
+```
+
+The script reports any answer missing from the vocabulary — **an answer that is not
+in the vocabulary makes that round unwinnable**, so those must be removed.
+`HOTWORD_DATA_DIR` points the server at a different data directory if you would
+rather not touch the one in the repo.
 
 ## Bots
 
@@ -232,6 +307,8 @@ to the defaults. To pin them down, put them in `.env`:
 POKER_BLINDS=100/200
 POKER_STARTING_STACK=20000
 POKER_ACTION_TIMEOUT=45        # seconds
+HOTWORD_GUESS_COOLDOWN=3       # hotword: cooldown after each guess
+HOTWORD_PEEK_FREEZE=15         # hotword: how long a peek freezes you
 ```
 
 Validation ranges match the settings panel exactly; an invalid value is reported in
@@ -352,7 +429,7 @@ configuration.
 
 ```
 server/
-  index.js      Static files, both WebSocket entries (/ws hold'em, /gd guandan), validation, rate limiting, heartbeat
+  index.js      Static files, three WebSocket entries (/ws hold'em, /gd guandan, /hw hotword), validation, rate limiting, heartbeat
   room.js       Hold'em: seats, tokens, reconnection, timers, per-viewer redacted snapshots
   engine.js     Hold'em: single-hand state machine (blinds, betting, side pots, showdown)
   evaluator.js  Best five of seven card evaluation
@@ -363,10 +440,17 @@ server/
   guandan/
     engine.js   Guandan: one deal (dealing, tribute, trick rotation, relay, placings)
     room.js     Guandan: seats, tokens, reconnection, timers, levels and passing A
+  hotword/
+    vectors.js  Hotword: int8 word vectors, loading and whole-vocabulary ranking
+    engine.js   Hotword: one round (guesses, cooldown, peek, hint unlocks, win)
+    room.js     Hotword: two arena seats plus audience, score, redacted snapshots
+    data/       Vocabulary and answer pool (generated, see scripts/build-hotword-data.mjs)
 public/         Zero-build frontend (HTML + CSS + vanilla JS)
-  voice.js      Voice chat frontend: WebRTC mesh, speaking detection, roster (shared by both pages)
+  voice.js      Voice chat frontend: WebRTC mesh, speaking detection, roster (shared by all pages)
   gd-combos.js  Guandan combination library — imported by both browser and server
   gd-hints.js   Guandan candidate enumeration — shared by the bots and the Hint button
+  hw.js         Hotword frontend: no game logic, it only draws the server's snapshot
+scripts/        Offline data pipeline (word vectors -> int8 vocabulary)
 test/           node:test suites
 deploy/         Deployment script and Caddy site snippet
 SPEC.md         Wire protocol and module contracts

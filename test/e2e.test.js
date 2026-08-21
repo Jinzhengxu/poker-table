@@ -92,14 +92,19 @@ test('HTTP: healthz 与静态资源可访问，且防目录穿越', async () => 
   const health = await fetch(`${BASE}/healthz`);
   assert.equal(health.status, 200);
 
-  const page = await fetch(`${BASE}/`);
-  assert.equal(page.status, 200);
-  const html = await page.text();
-  assert.match(html, /<html/i);
-  // 只检查真正会发起网络请求的属性（src/href），内联 data: URI 里的 SVG xmlns 不算外部资源
-  const externalRef = /(?:src|href)\s*=\s*["']\s*(?:https?:)?\/\//i.exec(html);
-  assert.equal(externalRef, null,
-    `index.html 不应引用任何外部资源，发现：${externalRef?.[0]}`);
+  // 三个页面都要守住这条：不引用任何外部资源。
+  // 这既是隐私要求，也是"标签页伪装"的前提——页面一旦去拉 CDN，
+  // 网络面板里就写着它到底是什么了。
+  for (const [path, name] of [['/', 'index.html'], ['/guandan', 'guandan.html'], ['/hotword', 'hotword.html']]) {
+    const page = await fetch(BASE + path);
+    assert.equal(page.status, 200, `${path} 应可访问`);
+    const html = await page.text();
+    assert.match(html, /<html/i);
+    // 只检查真正会发起网络请求的属性（src/href），内联 data: URI 里的 SVG xmlns 不算外部资源
+    const externalRef = /(?:src|href)\s*=\s*["']\s*(?:https?:)?\/\//i.exec(html);
+    assert.equal(externalRef, null,
+      `${name} 不应引用任何外部资源，发现：${externalRef?.[0]}`);
+  }
 
   for (const p of ['/style.css', '/app.js']) {
     const r = await fetch(BASE + p);

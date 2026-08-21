@@ -829,3 +829,149 @@ engine 负责：抗贡判定（进贡方合计两张 `jr`）、强制交出最�
   这条信息一个字节都不走服务器。
 - 名单面板宽屏停在侧栏顶部（跟着排版走，不挡日志），窄屏浮在顶栏底下并默认收起成一排头像。
 - 座位上必须能一眼看出谁在开口：头像绿圈 + 麦克风小灯（静音时变灰）。
+
+## 14. 热词（`server/hotword/` + `public/hotword.*` + `public/hw.js`）
+
+同一个进程上的第三张桌子，和前两张**完全独立**：另一个 WebSocket 路径（`/hw`）、
+另一份内存状态、另一套座位与令牌。页面在 `/hotword`。
+
+玩法：两个人猜**同一个**隐藏词，服务端按语义相似度给出「在全词表里排第几」，
+谁先猜中谁赢。其余人是观众。
+
+### 14.1 两条设计红线
+
+这两条决定了整个游戏成不成立，改任何一处之前先读懂为什么：
+
+1. **对外只给排名，不给相似度百分比。** 不同目标词的余弦相似度尺度差很多
+   （「咖啡」最近的邻居 0.80，「台风」最近的只有 0.63），把 0.63 摆给玩家看
+   他会以为自己差得远。排名是尺度无关的。温度（0-100）只是排名的对数映射，
+   给温度条用。
+
+2. **进行中的快照里不能出现答案、对手猜过的词、对手的精确排名。**
+   观众拿到的那一份和对手完全一样——八个人开着语音，观众要是看得见答案，
+   一句话就能把整局毁掉。只有本局结束后 `result` 里才带完整记录。
+   `test/hotword.test.js` 里有一条把快照 `JSON.stringify` 之后搜答案字符串的测试守着。
+
+还有一条中文特有的坑：**与答案互为子串的词必须整个从本局词表里摘掉**。
+目标词「咖啡」时，前 50 名邻居里有 8 个是 咖啡厅/咖啡豆/咖啡馆/…，
+随手一猜就漏底。摘掉之后它们的表现必须和生僻词**完全一致**（「不认识这个词」）——
+不能提示「太接近了」，那句话本身就在说答案里有这两个字。
+
+### 14.2 数据（`server/hotword/data/`）
+
+| 文件 | 内容 | 谁生成 |
+|---|---|---|
+| `vocab.bin` | 头部 8 字节（词数 uint32、维数 uint32）＋ 每词 float32 缩放系数 ＋ int8 向量 | `scripts/build-hotword-data.mjs` |
+| `vocab.txt` | 词表，一行一个，顺序＝词频从高到低 | 同上 |
+| `answers.txt` | 答案池，`<词>\t<类别>`，`#` 是注释 | 手写 |
+
+来源是腾讯 AI Lab 中文词向量的精简版（Apache-2.0，143,613 词 / 200 维），
+取词频前 6 万里纯汉字 2-4 字的词，L2 归一化后按每向量的最大绝对值量化到 int8。
+产物 52,728 词 / 10.8MB，常驻内存约 11MB。
+
+int8 够用是实测过的：跟 float32 比，前 1000 名的重合度 99.6%、前 2000 名的
+平均排名偏移 7 位。float32 要 42MB，省下的四分之三比那 7 位值钱。
+
+`HOTWORD_DATA_DIR` 可以指到另一份词库（换词表、换答案池、测试用小词包）。
+数据文件缺失时 `WordVectors.load()` 返回 `null`，房间照样能连、页面照样能开，
+只是 `start` 返回 `NOT_READY`——**不能让一个数据文件缺失把德州和掼蛋一起拖下水**。
+
+### 14.3 `server/hotword/vectors.js`
+
+```js
+WordVectors.load(dir?) -> WordVectors|null
+  .size, .dim, .words: string[], .index: Map<string,number>
+  .answers: {word, category}[]
+  .has(word) -> boolean
+  .rankTable(target) -> Uint16Array   // rank[i] 是词表第 i 个词的排名，0 是目标词自己
+  .relatedForms(target) -> Set<number> // 与目标互为子串的词表下标
+```
+
+**性能约定**：`rankTable` 是 52728 × 200 次乘加再排序，约 60-70ms。
+必须**每局开一次**、把结果存在 round 上，之后每次猜词都是 O(1) 查表。
+绝不能每次猜词现算——那样几个人一起猜就能把事件循环压死。
+
+词表上限 65536：排名存在 `Uint16Array` 里。要扩词表得先改成 `Uint32Array`，
+`vectors.js` 里有一道断言挡着，不会静默截断。
+
+### 14.4 `server/hotword/engine.js` — 一局的状态机
+
+```js
+export const HW_SEATS = 2
+export const HW_PHASE = { WAITING, PLAYING, OVER }
+export function tempOf(rank, vocabSize): number   // 0-100，对数映射
+export function heatOf(rank): 'hit'|'burning'|'hot'|'warm'|'mild'|'cool'|'cold'
+
+new HotwordRound({ vectors, answer, no?, now?, cooldownMs?, peekFreezeMs? })
+  .guess(seat, raw, now?) -> { ok:true, entry, win } | { ok:false, code, msg, waitMs?, entry? }
+  .peek(seat, now?)       -> { ok:true, peeked, freezeMs } | { ok:false, code, msg }
+  .hints(seat)            -> { key, label, at, locked, value }[]
+  .resign(seat, now?)     -> { ok }
+  .publicSeat(seat)       -> 对手与观众看到的那一份
+```
+
+所有时间都从参数传进来，engine 不认识 `Date.now()` 之外的任何计时器——
+所以测试里不用 sleep 就能把冷却、偷看冻结、提示解锁全部跑一遍。
+
+错误码：`COOLING`（冷却中，带 `waitMs`）、`NOT_IN_VOCAB`（生僻词**或**子串词）、
+`ALREADY_GUESSED`（带上次的 `entry`）、`WORD_EMPTY`、`WORD_TOO_LONG`、`ROUND_OVER`、
+`NOTHING_TO_PEEK`。
+
+三条计费规则，别改错方向：
+- **生僻词不计次数、不进冷却**——词表覆盖不到就罚玩家，是拿自己的数据缺陷罚人。
+- **重复猜不计次数、不进冷却**，把上次的 `entry` 再返回一次让页面闪一下。
+- **偷看是取 `max` 不是累加**：连着偷看＝一直冻着，不会攒出一个几分钟的惩罚。
+
+提示按**自己**猜的次数解锁（10 字数 / 20 类别 / 30 首字），不看对手进度。
+公共日志里**不能**出现字数——那正好是第一档提示。
+
+### 14.5 `server/hotword/room.js` — 房间
+
+两个擂台位 + 不限人数的观众席。接口与掼蛋房间同构：
+`attach / detach / hello / sit / stand / start / guess / peek / resign / reset / setConfig / sendChat / broadcast / buildStateFor / shutdown`。
+
+- 局中途有人 `stand`，本局作废（`result.winner = null`，`reason = 'abandoned'`），
+  **不计分**，但答案要公布。
+- 断线保留擂台位 15 分钟，跟另外两张桌子一致。
+- `#tick()` 每秒一次，**只在有人被冷却冻着的时候**才广播，闲着一条都不发。
+
+配置（房主可改，只能在两局之间）：
+`guessCooldownMs`（0-30s）、`peekFreezeMs`（0-120s）、`peekEnabled`、`hintsEnabled`。
+环境变量对应 `HOTWORD_GUESS_COOLDOWN` / `HOTWORD_PEEK_FREEZE` / `HOTWORD_PEEK` / `HOTWORD_HINTS`。
+
+### 14.6 WebSocket 协议（`/hw`）
+
+客户端 -> 服务端：
+`hello{token}` `ping` `sit{seat,name}` `stand` `start` `guess{word}` `peek` `resign`
+`reset` `config{patch}` `chat{text}`，外加 §13 的语音信令。
+
+服务端 -> 客户端：`welcome` `state` `error` `pong` `guessed{repeat,entry}`。
+`guessed` 只用在「这个词你已经猜过了」这一种情况上——它不进快照，
+因为重复猜不改变任何状态。
+
+`state` 快照：
+
+```js
+{
+  t: 'state', ready, phase,
+  round: { no, startedAt, vocabSize } | null,
+  seats: [{ seat, name, avatar, connected, isHost,
+            guessCount, bestTemp, bestHeat, peekCount, frozenMs,
+            bestRank }],          // bestRank 只在本局结束后才有值
+  score: [number, number],
+  spectators: number,
+  you: { playerId, seat, isHost, name },
+  my: { guesses, cooldownMs, hints, peeked } | null,   // 只有自己这一份带词和精确排名
+  result: { winner, reason, answer, category, guesses:{0:[],1:[]}, no } | null,
+  config, log, chat, voice
+}
+```
+
+`cooldownMs` / `frozenMs` 是**相对毫秒**不是绝对时间戳——客户端时钟和服务端差几秒
+是常态，发绝对时间会让倒计时看起来乱跳。前端拿到之后本地倒着数。
+
+### 14.7 前端（`public/hotword.html` / `hotword.css` / `hw.js`）
+
+零构建、无外链，样式继承 `style.css`。页面本身**没有任何游戏逻辑**：
+排名、冷却、提示解锁、能不能偷看全部由服务端在快照里算好，前端只画。
+唯一的本地计算是冷却秒数的插值（服务端一秒推一次，光靠推按钮上的数字会一跳一跳）。

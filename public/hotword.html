@@ -1,0 +1,257 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0f0d">
+<meta name="color-scheme" content="dark">
+<title>收件箱 (3) - 邮件</title>
+<!-- 标签页伪装：内联 data URI，不引用任何外部资源 -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ffffff'/%3E%3Crect x='4' y='8' width='24' height='16' rx='2.5' fill='%230f6cbd'/%3E%3Cpath d='M5 10.4L16 18.2 27 10.4' fill='none' stroke='%23ffffff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<!-- 先加载德州那份样式：色板、按钮、对话框、侧栏抽屉全部复用 -->
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/hotword.css">
+</head>
+<body class="hw-body">
+<div id="app">
+
+  <!-- ============ 顶部状态条 ============ -->
+  <header id="topbar">
+    <div class="brand" aria-hidden="true"><span class="brand-pip">🔥</span><span class="brand-txt">热词</span></div>
+
+    <div id="connBadge" class="badge" data-conn="connecting" role="status" aria-live="polite">
+      <i class="dot"></i><span id="connText">连接中…</span>
+    </div>
+
+    <div id="handMeta" class="meta">
+      <span id="metaRound">还没开局</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span id="metaScore">0 : 0</span>
+      <span id="metaHost" class="host-tag" hidden>房主</span>
+    </div>
+
+    <div class="grow"></div>
+
+    <a class="icon-btn gd-link" href="/" title="回到德州扑克桌" aria-label="回到德州扑克桌"><span class="suit" aria-hidden="true">♠</span><span class="lbl">德州</span></a>
+    <a class="icon-btn gd-link" href="/guandan" title="去掼蛋桌" aria-label="去掼蛋桌"><span class="suit" aria-hidden="true">♥</span><span class="lbl">掼蛋</span></a>
+    <button id="btnSound" class="icon-btn" type="button" aria-label="提示音开关" aria-pressed="true">
+      <span class="ico-snd" aria-hidden="true"></span><span class="lbl">音效</span>
+    </button>
+    <button id="btnVoice" class="icon-btn" type="button" aria-label="语音连麦" aria-pressed="false" hidden>
+      <span class="ico-mic" aria-hidden="true"></span><span class="lbl">连麦</span>
+      <i id="voiceBadge" class="voice-badge" hidden></i>
+    </button>
+    <button id="btnSide" class="icon-btn only-narrow" type="button" aria-label="打开日志与聊天面板">
+      <span class="ico-menu" aria-hidden="true"></span><span class="lbl">面板</span>
+      <i id="sideBadge" class="side-badge" hidden></i>
+    </button>
+  </header>
+
+  <!-- 语音连麦名单：不占布局，浮在顶栏正下方 -->
+  <div id="voiceMount" class="voice-mount"></div>
+
+  <!-- ============ 主体 ============ -->
+  <div id="main">
+    <section id="hwCol">
+
+      <!-- 擂台：两条温度条。对手那条只有温度和次数，没有词 -->
+      <div id="arena" class="arena">
+        <div class="fighter" id="fighter0" data-seat="0"></div>
+        <div class="versus" aria-hidden="true">VS</div>
+        <div class="fighter" id="fighter1" data-seat="1"></div>
+      </div>
+
+      <!-- 开局前 / 结束后的那块空地 -->
+      <div id="lobby" class="lobby">
+        <p id="lobbyText" class="lobby-text">两个人上擂台就能开打。</p>
+        <div class="lobby-actions">
+          <button id="btnStart" class="act act-start" type="button" hidden>开始这一局</button>
+          <button id="btnStand" class="act act-ghost" type="button" hidden>下擂台</button>
+        </div>
+      </div>
+
+      <!-- 猜词区 -->
+      <form id="guessForm" class="guess-form" autocomplete="off" hidden>
+        <input id="guessInput" type="text" maxlength="8" placeholder="随便猜一个词…"
+               aria-label="猜一个词" enterkeyhint="send" autocapitalize="off" spellcheck="false">
+        <button id="btnGuess" type="submit" class="act act-start">猜</button>
+      </form>
+
+      <!-- 刚猜完那个词的即时反馈，大字，看一眼就知道冷热 -->
+      <div id="lastGuess" class="last-guess" hidden aria-live="polite"></div>
+
+      <!-- 提示 + 偷看 -->
+      <div id="toolRow" class="tool-row" hidden>
+        <div id="hintList" class="hint-list"></div>
+        <button id="btnPeek" class="act act-ghost btn-peek" type="button">偷看</button>
+        <button id="btnResign" class="act act-ghost btn-resign" type="button">认输</button>
+      </div>
+
+      <!-- 偷到的对手最近一手 -->
+      <div id="peekBox" class="peek-box" hidden></div>
+
+      <!-- 我自己的猜测记录 -->
+      <div id="myGuesses" class="my-guesses" hidden>
+        <div class="mg-head">
+          <span id="mgCount">还没猜过</span>
+          <div class="mg-sort">
+            <button class="sort-btn is-on" type="button" data-sort="rank">按接近</button>
+            <button class="sort-btn" type="button" data-sort="time">按时间</button>
+          </div>
+        </div>
+        <ol id="guessList" class="guess-list"></ol>
+      </div>
+
+    </section>
+
+    <!-- ============ 侧栏 / 抽屉 ============ -->
+    <aside id="side" aria-label="日志、聊天与规则">
+      <div id="voiceDock" class="voice-dock"></div>
+      <div class="side-head">
+        <div class="tabs" role="tablist">
+          <button class="tab is-on" type="button" role="tab" data-tab="log"  aria-selected="true">战况</button>
+          <button class="tab"       type="button" role="tab" data-tab="chat" aria-selected="false">聊天</button>
+          <button class="tab"       type="button" role="tab" data-tab="rule" aria-selected="false">规则</button>
+          <button class="tab"       type="button" role="tab" data-tab="cfg"  aria-selected="false">设置</button>
+        </div>
+        <button id="btnSideClose" class="icon-btn only-narrow" type="button" aria-label="关闭面板">关闭</button>
+      </div>
+
+      <div class="pane is-on" id="paneLog" role="tabpanel">
+        <ol id="logList" class="log-list"></ol>
+      </div>
+
+      <div class="pane" id="paneChat" role="tabpanel">
+        <ol id="chatList" class="chat-list"></ol>
+        <form id="chatForm" class="chat-form" autocomplete="off">
+          <input id="chatInput" type="text" maxlength="200" placeholder="说点什么…" aria-label="聊天输入框">
+          <button type="submit" class="act act-ghost" aria-label="发送聊天">发送</button>
+        </form>
+      </div>
+
+      <div class="pane" id="paneRule" role="tabpanel">
+        <div class="rule-doc">
+          <h4>怎么玩</h4>
+          <p>两个人猜<b>同一个</b>隐藏词，谁先猜中谁赢。其余人是观众。</p>
+
+          <h5>排名，不是像不像</h5>
+          <ul>
+            <li>每猜一个词，告诉你它跟答案的<b>接近排名</b>——在全部
+              <span id="ruleVocab">五万多</span>个词里排第几。</li>
+            <li>第 1 名就是答案本身。第 10 名很近，第 3000 名就差得远了。</li>
+            <li>看的是<b>意思</b>不是字形：猜「护士」离「医生」很近，
+              猜「西瓜」离「医生」很远。</li>
+            <li>不给相似度百分比，因为每个词的百分比尺度都不一样，看着会误导。</li>
+          </ul>
+
+          <h5>你能看见什么</h5>
+          <ul>
+            <li>自己这边：每个词的精确排名。</li>
+            <li>对手那边：只有<b>猜了几次</b>和一条<b>温度条</b>，看不到他猜的词。</li>
+            <li>观众看到的和对手视角一样——所以开着语音也剧透不了。</li>
+          </ul>
+
+          <h5>偷看</h5>
+          <ul>
+            <li>点「偷看」能看到对手<b>最近一次</b>猜的词和排名。</li>
+            <li>代价是自己一段时间不能猜，而且对手会在战况里看到你偷看了。</li>
+          </ul>
+
+          <h5>提示</h5>
+          <ul>
+            <li>按<b>你自己</b>猜的次数解锁：10 次给字数，20 次给类别，30 次给首字。</li>
+            <li>对手解锁到哪一步跟你无关，各算各的。</li>
+          </ul>
+
+          <h5>几条细则</h5>
+          <ul>
+            <li>每次猜完有几秒冷却——这是防打字快的人赢，不是防你。</li>
+            <li>「不认识这个词」＝这个词不在词表里，不计次数也不进冷却。</li>
+            <li>跟答案<b>互为子串</b>的词（比如答案是「咖啡」时的「咖啡厅」）会被
+              当成生僻词挡掉，不然一猜就漏底。</li>
+            <li>猜不动了可以「认输」，这一局算对手赢；中途下擂台则是作废、不计分。</li>
+          </ul>
+
+          <h5>词是哪来的</h5>
+          <p>腾讯 AI Lab 的中文词向量，取词频最高的那批二到四字词，
+            压成 int8 存在服务端内存里。答案是从一份手挑的常用词表里随机抽的。</p>
+        </div>
+      </div>
+
+      <div class="pane" id="paneCfg" role="tabpanel">
+        <div id="cfgHostOnly" class="cfg-note" hidden>只有房主可以修改设置。</div>
+        <form id="cfgForm" class="cfg-form">
+          <h4>玩法设置</h4>
+          <label>猜词冷却（秒）<input id="cfgCooldown" type="number" min="0" max="30" step="1" inputmode="numeric"></label>
+          <label>偷看冻结（秒）<input id="cfgPeekFreeze" type="number" min="0" max="120" step="1" inputmode="numeric"></label>
+          <label class="chk"><input id="cfgPeek" type="checkbox"><span>允许偷看</span></label>
+          <label class="chk"><input id="cfgHints" type="checkbox"><span>允许提示</span></label>
+          <div class="cfg-actions">
+            <button type="submit" class="act act-start">保存设置</button>
+            <button id="btnReset" type="button" class="act act-danger">比分清零</button>
+          </div>
+          <p class="cfg-hint">设置只能在两局之间改。</p>
+        </form>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 抽屉遮罩 -->
+  <div id="drawerMask" class="drawer-mask" hidden></div>
+</div>
+
+<!-- 结算大屏 -->
+<div id="resultOverlay" class="result-overlay" hidden>
+  <div class="result-box">
+    <h3 id="roTitle">—</h3>
+    <p id="roSub" class="ro-sub"></p>
+    <div id="roAnswer" class="ro-answer"></div>
+    <div id="roCompare" class="ro-compare"></div>
+    <button id="btnAgain" class="act act-start" type="button">再来一局</button>
+  </div>
+</div>
+
+<!-- 上擂台 -->
+<dialog id="sitDlg" class="dlg" aria-label="上擂台">
+  <form method="dialog">
+    <h3 id="sitTitle">上擂台</h3>
+    <label class="dlg-field">
+      <span>昵称（1–12 个字符）</span>
+      <input id="sitName" type="text" maxlength="12" required autocomplete="nickname" placeholder="例如：小明">
+    </label>
+    <div id="sitErr" class="dlg-err" hidden></div>
+    <menu class="dlg-actions">
+      <button value="cancel" class="act act-ghost" type="submit" formnovalidate>取消</button>
+      <button value="ok" class="act act-start" type="submit">上</button>
+    </menu>
+  </form>
+</dialog>
+
+<!-- 通用确认框 -->
+<dialog id="confirmDlg" class="dlg" aria-label="确认">
+  <form method="dialog">
+    <h3 id="confirmTitle">确认</h3>
+    <p id="confirmText" class="dlg-text"></p>
+    <menu class="dlg-actions">
+      <button value="cancel" class="act act-ghost" type="submit" formnovalidate>取消</button>
+      <button value="ok" class="act act-danger" type="submit">确定</button>
+    </menu>
+  </form>
+</dialog>
+
+<!-- 断线兜底提示 -->
+<div id="fatalMask" class="fatal-mask" hidden>
+  <div class="fatal-box">
+    <h3 id="fatalTitle">连接已断开</h3>
+    <p id="fatalText"></p>
+    <button id="fatalRetry" class="act act-start" type="button">重新连接</button>
+  </div>
+</div>
+
+<div id="toasts" class="toasts" role="alert" aria-live="assertive"></div>
+
+<script src="/voice.js"></script>
+<script type="module" src="/hw.js"></script>
+</body>
+</html>

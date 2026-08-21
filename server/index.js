@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // HTTP 静态服务 + WebSocket 入口（SPEC §9 与 §8）
 //
-// 两张桌子，都是进程内内存状态：/ws 是德州扑克，/gd 是掼蛋。
+// 三张桌子，都是进程内内存状态：/ws 是德州扑克，/gd 是掼蛋，/hw 是热词。
 // 这里负责：静态文件、/healthz、WebSocket 握手、协议层输入校验、限流、心跳、优雅退出。
-// 具体的牌桌逻辑在 room.js 与 guandan/room.js。
+// 具体的牌桌逻辑在 room.js、guandan/room.js 与 hotword/room.js。
 
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -15,7 +15,10 @@ import { MAX_SEATS } from './protocol.js';
 import { BotDriver } from './bot/index.js';
 import { GuandanRoom } from './guandan/room.js';
 import { GD_SEATS } from './guandan/engine.js';
-import { configFromEnv, guandanConfigFromEnv, voiceConfigFromEnv } from './config.js';
+import { HotwordRoom } from './hotword/room.js';
+import { HW_SEATS } from './hotword/engine.js';
+import { WordVectors } from './hotword/vectors.js';
+import { configFromEnv, guandanConfigFromEnv, hotwordConfigFromEnv, voiceConfigFromEnv } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
@@ -109,6 +112,31 @@ console.log(
   `下一局间隔 ${guandanConfig.autoNextDealMs / 1000}s`
 );
 
+// 热词：第三张桌子。词向量 11MB，同步读进内存要几百毫秒，只在启动时读一次。
+// 数据文件没装好的时候 vectors 是 null——页面照样打得开，只是开不了局。
+// 不能因为一个数据文件缺失就让德州和掼蛋一起起不来。
+const hotwordConfig = hotwordConfigFromEnv();
+const hwStart = Date.now();
+let hotwordVectors = null;
+try {
+  // HOTWORD_DATA_DIR 可以指到另一份词库（换词表、换答案池、或者测试用一个小词包）
+  hotwordVectors = WordVectors.load(process.env.HOTWORD_DATA_DIR || undefined);
+} catch (err) {
+  console.error('[hotword] 词库加载失败', err);
+}
+if (hotwordVectors) {
+  console.log(
+    `[hotword] 热词已就绪：词表 ${hotwordVectors.size} 词 / ${hotwordVectors.dim} 维，` +
+    `答案池 ${hotwordVectors.answers.length} 个，加载用时 ${Date.now() - hwStart}ms`
+  );
+} else {
+  console.warn(
+    '[hotword] ⚠ 没找到词库（server/hotword/data/），热词开不了局。' +
+    '生成方式见 README「热词」一节的 build-hotword-data.mjs'
+  );
+}
+const hotwordRoom = new HotwordRoom({ vectors: hotwordVectors, config: hotwordConfig, voice: voiceOpts });
+
 // ==================== HTTP ====================
 
 function sendText(res, status, body, type = 'text/plain; charset=utf-8') {
@@ -160,7 +188,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     // 掼蛋页面给一个好记的短地址
-    if (pathname === '/guandan' || pathname === '/gd') pathname = '/guandan.html';
+      if (pathname === '/guandan' || pathname === '/gd') pathname = '/guandan.html';
+  if (pathname === '/hotword' || pathname === '/rc') pathname = '/hotword.html';
 
     const filePath = resolveStatic(pathname === '/' ? '/index.html' : pathname);
     if (!filePath) {
@@ -277,15 +306,17 @@ function handleVoiceMessage(channel, client, msg, fail) {
 
 // ==================== WebSocket ====================
 
-// 两张桌子各有一个 WebSocketServer：/ws 是德州，/gd 是掼蛋。
+// 三张桌子各有一个 WebSocketServer：/ws 是德州，/gd 是掼蛋，/hw 是热词。
 // 连接管理、限流、心跳、消息解析这一层是共用的，只有 dispatch 不同。
 const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
 const gdWss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
+const hwWss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
 
 /** 路径 -> 该路径对应的 WebSocketServer */
 const WS_ROUTES = new Map([
   ['/ws', wss],
   ['/gd', gdWss],
+  ['/hw', hwWss],
 ]);
 
 server.on('upgrade', (req, socket, head) => {
@@ -417,6 +448,7 @@ function attachConnection(ws, targetRoom, dispatch, tag) {
 
 wss.on('connection', (ws) => attachConnection(ws, room, handleMessage, '[ws]'));
 gdWss.on('connection', (ws) => attachConnection(ws, guandanRoom, handleGuandanMessage, '[gd]'));
+hwWss.on('connection', (ws) => attachConnection(ws, hotwordRoom, handleHotwordMessage, '[hw]'));
 
 /** 把 room 方法的返回值转成 error 消息 */
 function reply(client, res) {
@@ -613,10 +645,61 @@ function handleGuandanMessage(client, msg, fail) {
   }
 }
 
+/** 热词。协议层只做类型和长度检查，规则一律交给 HotwordRoom。 */
+function handleHotwordMessage(client, msg, fail) {
+  if (handleVoiceMessage(hotwordRoom.voice, client, msg, fail)) return;
+  switch (msg.t) {
+    case 'hello': {
+      const token = typeof msg.token === 'string' ? msg.token : null;
+      hotwordRoom.hello(client, token);
+      return;
+    }
+    case 'ping': {
+      client.send({ t: 'pong' });
+      return;
+    }
+    case 'sit': {
+      if (!Number.isInteger(msg.seat) || msg.seat < 0 || msg.seat >= HW_SEATS) {
+        return fail('ILLEGAL_ACTION', '位子号不合法');
+      }
+      const name = typeof msg.name === 'string' ? msg.name : '';
+      return reply(client, hotwordRoom.sit(client, msg.seat, name));
+    }
+    case 'stand':
+      return reply(client, hotwordRoom.stand(client));
+    case 'start':
+      return reply(client, hotwordRoom.start(client));
+    case 'guess': {
+      // 长度在这儿先挡一道：引擎那边也会挡，但没必要让一个 16KB 的字符串
+      // 走到 Map.get 才被拒
+      if (typeof msg.word !== 'string') return fail('ILLEGAL_ACTION', '猜的词不合法');
+      if ([...msg.word].length > 32) return fail('ILLEGAL_ACTION', '词太长了');
+      return reply(client, hotwordRoom.guess(client, msg.word));
+    }
+    case 'peek':
+      return reply(client, hotwordRoom.peek(client));
+    case 'resign':
+      return reply(client, hotwordRoom.resign(client));
+    case 'reset':
+      return reply(client, hotwordRoom.reset(client));
+    case 'config': {
+      if (!msg.patch || typeof msg.patch !== 'object') return fail('ILLEGAL_ACTION', '设置格式不对');
+      return reply(client, hotwordRoom.setConfig(client, msg.patch));
+    }
+    case 'chat': {
+      if (typeof msg.text !== 'string') return fail('ILLEGAL_ACTION', '聊天内容不合法');
+      if ([...msg.text].length > 200) return fail('ILLEGAL_ACTION', '消息最长 200 字');
+      return reply(client, hotwordRoom.sendChat(client, msg.text));
+    }
+    default:
+      return fail('ILLEGAL_ACTION', '未知的消息类型');
+  }
+}
+
 // 心跳：每 30s 给所有连接发一次 ping；超过 60s 没有任何响应（pong 或业务消息）就断开
 const heartbeat = setInterval(() => {
   const now = Date.now();
-  for (const r of [room, guandanRoom]) {
+  for (const r of [room, guandanRoom, hotwordRoom]) {
     for (const c of [...r.clients]) {
       if (now - c.lastSeen > HEARTBEAT_TIMEOUT_MS) {
         try {
@@ -677,7 +760,8 @@ function shutdown(signal) {
     clearInterval(heartbeat);
     room.shutdown();
     guandanRoom.shutdown();
-    for (const server of [wss, gdWss]) {
+    hotwordRoom.shutdown();
+    for (const server of [wss, gdWss, hwWss]) {
       for (const ws of server.clients) {
         try {
           ws.close(1001, 'server shutdown');
@@ -705,6 +789,7 @@ server.on('error', (err) => {
 server.listen(PORT, HOST, () => {
   log(`[server] 德州扑克牌桌已启动： http://${HOST}:${PORT}`);
   log(`[server] 掼蛋牌桌：           http://${HOST}:${PORT}/guandan`);
+  log(`[server] 热词：               http://${HOST}:${PORT}/hotword`);
 });
 
-export { server, wss, gdWss, room, guandanRoom };
+export { server, wss, gdWss, hwWss, room, guandanRoom, hotwordRoom };

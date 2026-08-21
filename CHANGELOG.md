@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hotword (`/hotword`), a third game.** Two players race to guess the same
+  hidden Chinese word; whoever gets it first wins, and everyone else watches.
+  Every guess comes back with its closeness rank among all 52,728 vocabulary
+  words — meaning, not spelling, so 护士 lands next to 医生 while 西瓜 does not.
+
+  Ranks, not similarity percentages: the cosine scale differs per target word
+  (the nearest neighbour of 咖啡 is 0.80, of 台风 only 0.63), so a percentage
+  would tell a player they are far off when they are as close as anyone can get.
+
+  The asymmetry is the game. You see your own words and exact ranks; your
+  opponent and the audience see only your guess count and a temperature bar.
+  Fully public and the second player free-rides; fully hidden and it is two
+  people playing solitaire. `Peek` buys the opponent's most recent word at the
+  cost of 15 frozen seconds, and it is announced in the log. Hints (length,
+  category, first character) unlock on your own guess count at 10/20/30.
+
+  Chinese needed one rule English Semantle does not: words that contain the
+  answer or are contained by it are dropped from the round's vocabulary and
+  reported as unrecognised. With 咖啡 as the answer, 8 of the top 50 neighbours
+  are 咖啡厅/咖啡豆/咖啡馆/…, and one lucky guess would end the round.
+
+  Words come from Tencent AI Lab's Chinese vectors (Apache-2.0), filtered to
+  pure-Han 2-4 character words in the top 60k by frequency and quantised to
+  int8: 10.8MB on disk, ~11MB resident, 99.6% top-1000 rank agreement with
+  float32. A rank table is built once per round (~65ms) so each guess is an O(1)
+  lookup. Answers are drawn from a hand-picked list of 400 everyday words.
+  `scripts/build-hotword-data.mjs` regenerates the data; `HOTWORD_DATA_DIR`
+  points at a different word pack. Missing data files leave the page usable and
+  the game unstartable rather than taking hold'em and guandan down with them.
+
 - **Background music is now a small shuffled playlist** of three Kevin MacLeod
   blues/lounge tracks (CC BY 4.0) instead of one 8:50 ragtime loop. Same idea as
   the music in Apple's Texas Hold'em — laid-back country-lounge — since that
