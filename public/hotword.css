@@ -243,8 +243,8 @@
 .hint-chip.locked b { color: var(--txt-faint); }
 .hint-off { font-size: 11.5px; color: var(--txt-faint); }
 
-.btn-peek, .btn-resign { flex: none; }
-.btn-resign { color: var(--txt-faint); }
+.btn-peek, .btn-resign, .btn-stand { flex: none; }
+.btn-resign, .btn-stand { color: var(--txt-faint); }
 
 .peek-box {
   display: flex;
@@ -341,6 +341,9 @@
   inset: 0;
   z-index: 60;
   display: grid;
+  /* 列宽写死成一整栏，不然 .result-box 的 min(560px, 100%) 会拿内容宽度当
+     100%——手机上那一框只有半个屏宽，两个按钮挤成一团 */
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   padding: 16px;
   background: rgba(4, 7, 6, .82);
@@ -348,6 +351,7 @@
 }
 
 .result-box {
+  position: relative;
   width: min(560px, 100%);
   max-height: 90vh;
   overflow-y: auto;
@@ -359,7 +363,40 @@
   box-shadow: var(--shadow-2);
 }
 
-.result-box h3 { margin: 0 0 4px; font-size: 22px; }
+/* 关掉结算就能摸到底下的「下擂台」。放在角上，滚动时跟着框走 */
+.ro-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--txt-dim);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ro-close:hover { color: var(--txt); background: rgba(255, 255, 255, .06); }
+
+/* 按钮永远贴在结算框底部，记录再长也不用滚到底去找 */
+.ro-actions {
+  position: sticky;
+  bottom: -18px;
+  z-index: 1;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin: 0 -18px -18px;
+  padding: 12px 18px 18px;
+  background: var(--bg-1);
+}
+.ro-actions .act { flex: 0 1 auto; }
+
+.result-box h3 { margin: 0 0 4px; padding: 0 36px; font-size: 22px; }
 .ro-sub { margin: 0 0 14px; color: var(--txt-dim); font-size: 13px; }
 
 .ro-answer {

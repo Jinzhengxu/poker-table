@@ -86,6 +86,7 @@
         <div id="hintList" class="hint-list"></div>
         <button id="btnPeek" class="act act-ghost btn-peek" type="button">偷看</button>
         <button id="btnResign" class="act act-ghost btn-resign" type="button">认输</button>
+        <button id="btnStandPlay" class="act act-ghost btn-stand" type="button">下擂台</button>
       </div>
 
       <!-- 偷到的对手最近一手 -->
@@ -170,7 +171,7 @@
             <li>「不认识这个词」＝这个词不在词表里，不计次数也不进冷却。</li>
             <li>跟答案<b>互为子串</b>的词（比如答案是「咖啡」时的「咖啡厅」）会被
               当成生僻词挡掉，不然一猜就漏底。</li>
-            <li>猜不动了可以「认输」，这一局算对手赢；中途下擂台则是作废、不计分。</li>
+            <li>猜不动了可以「认输」，这一局算对手赢；「下擂台」随时能按，打到一半下去这局作废、不计分。</li>
           </ul>
 
           <h5>词是哪来的</h5>
@@ -204,11 +205,15 @@
 <!-- 结算大屏 -->
 <div id="resultOverlay" class="result-overlay" hidden>
   <div class="result-box">
+    <button id="roClose" class="ro-close" type="button" aria-label="关闭结算">×</button>
     <h3 id="roTitle">—</h3>
     <p id="roSub" class="ro-sub"></p>
     <div id="roAnswer" class="ro-answer"></div>
     <div id="roCompare" class="ro-compare"></div>
-    <button id="btnAgain" class="act act-start" type="button">再来一局</button>
+    <div id="roActions" class="ro-actions">
+      <button id="btnAgain" class="act act-start" type="button">再来一局</button>
+      <button id="btnStandOver" class="act act-ghost" type="button">下擂台</button>
+    </div>
   </div>
 </div>
 

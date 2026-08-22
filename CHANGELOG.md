@@ -167,6 +167,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Hotword's `下擂台` button was unreachable on a phone.** It only rendered in
+  the lobby block, which is hidden while a round is playing, and the moment a
+  round ended the result screen — a full-screen fixed layer whose only control
+  was `再来一局` — covered it. So the button existed for exactly the frames
+  between one round ending and the next starting: visible, and impossible to
+  hit. A player who wanted their seat back had to close the tab.
+
+  Three changes. `下擂台` now sits in the tool row next to `偷看` and `认输`, so
+  it is reachable mid-round (the server already voided the round for anyone who
+  left mid-game; only the client hid the button). The result screen gained a
+  close button, and a dismissed result stays dismissed until the next round
+  starts — so the arena and its seat controls underneath are reachable, which
+  also unblocks a spectator trying to sit down after a round ends. And the
+  result screen itself carries `下擂台` beside `再来一局`, since that is where a
+  player who has just lost is actually looking.
+
+  The result box was also half a screen wide on phones: `.result-overlay` is a
+  grid with `place-items: center`, so its implicit column was sized to content
+  and the box's `width: min(560px, 100%)` resolved `100%` against that instead
+  of the viewport. Pinning the column to `minmax(0, 1fr)` gives the box its full
+  width back, and the action row is `position: sticky` so a long word-by-word
+  comparison cannot push the buttons below the fold.
+
 - **Hotword had no way in from the other two tables.** `/hotword` linked out to
   both poker pages, but neither linked back, so the only way to reach the new
   game was to type the URL. Both tables now carry a 🔥 热词 link in the top bar.

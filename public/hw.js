@@ -27,9 +27,10 @@ for (const id of [
   'connBadge', 'connText', 'metaRound', 'metaScore', 'metaHost',
   'arena', 'fighter0', 'fighter1', 'lobby', 'lobbyText', 'btnStart', 'btnStand',
   'guessForm', 'guessInput', 'btnGuess', 'lastGuess',
-  'toolRow', 'hintList', 'btnPeek', 'btnResign', 'peekBox',
+  'toolRow', 'hintList', 'btnPeek', 'btnResign', 'btnStandPlay', 'peekBox',
   'myGuesses', 'mgCount', 'guessList',
   'resultOverlay', 'roTitle', 'roSub', 'roAnswer', 'roCompare', 'btnAgain',
+  'roClose', 'roActions', 'btnStandOver',
   'side', 'btnSide', 'btnSideClose', 'drawerMask', 'sideBadge',
   'logList', 'chatList', 'chatForm', 'chatInput', 'ruleVocab',
   'cfgForm', 'cfgCooldown', 'cfgPeekFreeze', 'cfgPeek', 'cfgHints', 'cfgHostOnly', 'btnReset',
@@ -62,6 +63,7 @@ const S = {
   cooldownEndsAt: 0,
   sitSeat: null,
   lastResultNo: null,
+  closedResultNo: null,
   lastLogLen: 0,
   lastChatLen: 0,
 };
@@ -292,6 +294,7 @@ function render(st) {
   const canGuess = playing && S.seat !== null;
   D.guessForm.hidden = !canGuess;
   D.toolRow.hidden = !canGuess;
+  D.btnStandPlay.hidden = !canGuess;
   D.myGuesses.hidden = !mine || !mine.guesses.length;
   if (!canGuess) {
     D.lastGuess.hidden = true;
@@ -457,11 +460,14 @@ function renderResult(st) {
   if (!r) {
     D.resultOverlay.hidden = true;
     S.lastResultNo = null;
+    S.closedResultNo = null;
     return;
   }
   const fresh = S.lastResultNo !== r.no;
   S.lastResultNo = r.no;
-  D.resultOverlay.hidden = false;
+  // 关掉之后不再自己弹回来——底下的「下擂台」得留得住手指
+  if (fresh) S.closedResultNo = null;
+  D.resultOverlay.hidden = S.closedResultNo === r.no;
 
   const mySeat = st.you.seat;
   if (r.reason === 'abandoned') {
@@ -503,7 +509,10 @@ function renderResult(st) {
     D.roCompare.appendChild(col);
   }
 
+  // 观众没什么可按的，那一行整条收起来，只留右上角的关闭
   D.btnAgain.hidden = st.you.seat === null;
+  D.btnStandOver.hidden = st.you.seat === null;
+  D.roActions.hidden = st.you.seat === null;
 }
 
 function renderLog(log) {
@@ -590,16 +599,36 @@ D.guessForm.addEventListener('submit', (e) => {
 
 D.btnStart.addEventListener('click', () => send({ t: 'start' }));
 D.btnAgain.addEventListener('click', () => {
-  D.resultOverlay.hidden = true;
+  closeResult();
   send({ t: 'start' });
 });
+D.roClose.addEventListener('click', closeResult);
 D.btnPeek.addEventListener('click', () => send({ t: 'peek' }));
 D.btnResign.addEventListener('click', () => {
   confirmDlg('认输', '这一局算对手赢，确定？', () => send({ t: 'resign' }));
 });
 
-D.btnStand.addEventListener('click', () => {
-  confirmDlg('下擂台', '下去之后这一局就作废了，确定？', () => send({ t: 'stand' }));
+/** 结算大屏是浮在最上面的一层，不关掉就摸不到底下的按钮 */
+function closeResult() {
+  S.closedResultNo = S.state?.result?.no ?? S.lastResultNo;
+  D.resultOverlay.hidden = true;
+}
+
+/** 下擂台。局中途走人算作废，局间走人就是空出位子 */
+function askStand() {
+  const playing = S.state?.phase === 'playing';
+  confirmDlg(
+    '下擂台',
+    playing ? '下去之后这一局就作废了，确定？' : '把位子让出来，确定？',
+    () => { closeResult(); send({ t: 'stand' }); },
+  );
+}
+D.btnStand.addEventListener('click', askStand);
+D.btnStandPlay.addEventListener('click', askStand);
+D.btnStandOver.addEventListener('click', askStand);
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !D.resultOverlay.hidden) closeResult();
 });
 
 D.chatForm.addEventListener('submit', (e) => {
