@@ -161,6 +161,8 @@ export function guandanConfigFromEnv(env = process.env, logger = console) {
 const HW_FIELDS = [
   { key: 'guessCooldownMs', env: 'HOTWORD_GUESS_COOLDOWN', kind: 'sec',  min: 0, max: 30000 },
   { key: 'peekFreezeMs',    env: 'HOTWORD_PEEK_FREEZE',    kind: 'sec',  min: 0, max: 120000 },
+  { key: 'peekLimit',       env: 'HOTWORD_PEEK_LIMIT',     kind: 'int',  min: 0, max: 9 },
+  { key: 'roundLimitMs',    env: 'HOTWORD_ROUND_LIMIT',    kind: 'sec',  min: 30000, max: 600000 },
   { key: 'peekEnabled',     env: 'HOTWORD_PEEK',           kind: 'bool' },
   { key: 'hintsEnabled',    env: 'HOTWORD_HINTS',          kind: 'bool' },
 ];

@@ -123,6 +123,9 @@ At `/hotword`. Two players race to guess the **same** hidden Chinese word; whoev
 gets it first wins, and everyone else watches. Inspired by Semantle and Reddit's
 Hot and Cold, except those are single-player daily puzzles and this is a live duel.
 
+**A round lasts 90 seconds**, counted down in the top bar (it turns red for the last
+ten). If neither player gets it in time the round is a draw and the answer is revealed.
+
 Every guess comes back with its **closeness rank** — where it sits among all 52,728
 words relative to the answer. Rank 1 is the answer itself; rank 10 is very close;
 rank 3000 is nowhere near. It scores **meaning**, not spelling: guessing 护士 (nurse)
@@ -150,14 +153,41 @@ sees, so nobody can spoil the round over voice chat.
 
 ### Peeking and hints
 
-- **Peek** shows the opponent's **most recent** guess and its rank. It costs you 15
-  seconds of not being able to guess, and the opponent sees in the log that you did it.
-- **Hints** unlock on **your own** guess count: word length at 10, category at 20,
-  first character at 30. Your opponent's progress is irrelevant.
+- **Peek** shows the opponent's **best guess so far** and its rank — not their most
+  recent one, which is usually just a probe in a new direction. It costs you 8 seconds
+  of not being able to guess, you only get **two peeks per round**, and the opponent
+  sees in the log that you did it.
+- **Hints unlock on the clock**, with nothing to do with how much anyone has guessed,
+  and both players always hold the identical set: word length at the start, category
+  at 23 seconds, first character at 54 seconds. Padding your guess count neither
+  unlocks a hint sooner nor holds one back — guessing only ever feeds you private
+  information and leaks nothing to your opponent.
+
+  The tiers are ordered by how much they give away, measured over all 403 answers:
+
+  | Tier | When | Candidates | Uniquely determined | Role |
+  |---|---|---|---|---|
+  | Length | start | 403 → 311 | 0.2% | 350 of 403 answers are two characters, so it is nearly free — no reason to withhold it |
+  | Category | 23s | 403 → 25 | 0.0% | The accelerator: knowing it, the best same-category word lands at median rank 5 and inside the top 100 every time |
+  | First char | 54s | 403 → 1.6 | 65.5% | The anti-stalemate valve — on its own it is very nearly the answer |
+
+  This has been reworked twice. **Version one** unlocked on *your own* guess count
+  (10/20/30) and had a dominant strategy: a guess costs only its cooldown and any
+  vocabulary word counts, so 87 seconds of mashing unlocked all three tiers — and the
+  three together uniquely determine **92%** of the answer pool. **Version two** made
+  hints shared and froze whoever pushed a tier for 8 extra seconds. That killed the
+  mashing exploit but taxed *playing well*: someone working down the candidates after
+  the category hint would trip the first-character tier on their 11th try and hand it
+  over. The engine counts guesses; it cannot tell grinding from thinking. The
+  equilibrium became both players parking at 19 guesses, with the anti-stalemate valve
+  the one thing nobody would ever volunteer to open. **Timing fixes it structurally**:
+  nobody can rush the clock and nobody can stall it, so the valve opens on its own.
 
 ### House rules
 
-- A 3-second cooldown after each guess. It stops the fastest typist from winning
+- Running out of time is a **draw** — neither side scores. That is different from a
+  round being *voided*, which is what happens when someone leaves mid-round.
+- A 1.5-second cooldown after each guess. It stops the fastest typist from winning
   by typing speed.
 - "Word not recognised" means it is not in the vocabulary. It costs **neither a
   guess nor cooldown** — penalising players for gaps in the word list is unfair.
@@ -307,8 +337,10 @@ to the defaults. To pin them down, put them in `.env`:
 POKER_BLINDS=100/200
 POKER_STARTING_STACK=20000
 POKER_ACTION_TIMEOUT=45        # seconds
-HOTWORD_GUESS_COOLDOWN=3       # hotword: cooldown after each guess
-HOTWORD_PEEK_FREEZE=15         # hotword: how long a peek freezes you
+HOTWORD_GUESS_COOLDOWN=1.5     # hotword: cooldown after each guess
+HOTWORD_PEEK_FREEZE=8          # hotword: how long a peek freezes you
+HOTWORD_PEEK_LIMIT=2           # hotword: peeks allowed per round
+HOTWORD_ROUND_LIMIT=90         # hotword: seconds per round; hint tiers scale with it
 ```
 
 Validation ranges match the settings panel exactly; an invalid value is reported in
@@ -442,7 +474,7 @@ server/
     room.js     Guandan: seats, tokens, reconnection, timers, levels and passing A
   hotword/
     vectors.js  Hotword: int8 word vectors, loading and whole-vocabulary ranking
-    engine.js   Hotword: one round (guesses, cooldown, peek, hint unlocks, win)
+    engine.js   Hotword: one round (guesses, cooldown, peek, round clock, hint unlocks, win)
     room.js     Hotword: two arena seats plus audience, score, redacted snapshots
     data/       Vocabulary and answer pool (generated, see scripts/build-hotword-data.mjs)
 public/         Zero-build frontend (HTML + CSS + vanilla JS)

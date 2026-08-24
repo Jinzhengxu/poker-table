@@ -902,10 +902,14 @@ export const HW_PHASE = { WAITING, PLAYING, OVER }
 export function tempOf(rank, vocabSize): number   // 0-100，对数映射
 export function heatOf(rank): 'hit'|'burning'|'hot'|'warm'|'mild'|'cool'|'cold'
 
-new HotwordRound({ vectors, answer, no?, now?, cooldownMs?, peekFreezeMs? })
+new HotwordRound({ vectors, answer, no?, now?, cooldownMs?, peekFreezeMs?,
+                   peekLimit?, roundLimitMs?, hintsEnabled? })
   .guess(seat, raw, now?) -> { ok:true, entry, win } | { ok:false, code, msg, waitMs?, entry? }
-  .peek(seat, now?)       -> { ok:true, peeked, freezeMs } | { ok:false, code, msg }
-  .hints(seat)            -> { key, label, at, locked, value }[]
+  .peek(seat, now?)       -> { ok:true, peeked, freezeMs, left } | { ok:false, code, msg }
+  .hints(now?)            -> { key, label, atMs, inMs, locked, value }[]   // 不分位子
+  .hintAtMs(tier)         -> 某一档在本局第几毫秒开，对齐到整秒
+  .msLeft(now?)           -> 本局还剩多少毫秒
+  .timeUp(now?)           -> 到点就判平局，返回"这一次是不是刚判死"
   .resign(seat, now?)     -> { ok }
   .publicSeat(seat)       -> 对手与观众看到的那一份
 ```
@@ -915,15 +919,50 @@ new HotwordRound({ vectors, answer, no?, now?, cooldownMs?, peekFreezeMs? })
 
 错误码：`COOLING`（冷却中，带 `waitMs`）、`NOT_IN_VOCAB`（生僻词**或**子串词）、
 `ALREADY_GUESSED`（带上次的 `entry`）、`WORD_EMPTY`、`WORD_TOO_LONG`、`ROUND_OVER`、
-`NOTHING_TO_PEEK`。
+`NOTHING_TO_PEEK`、`PEEK_USED_UP`。
 
 三条计费规则，别改错方向：
 - **生僻词不计次数、不进冷却**——词表覆盖不到就罚玩家，是拿自己的数据缺陷罚人。
 - **重复猜不计次数、不进冷却**，把上次的 `entry` 再返回一次让页面闪一下。
 - **偷看是取 `max` 不是累加**：连着偷看＝一直冻着，不会攒出一个几分钟的惩罚。
+- **偷看给的是对手【目前最好的】那一手，不是最近的**，而且一局限 `peekLimit` 次
+  （默认 2）。最近一次多半只是往新方向探的一枪，最好的一次才是他真正的位置；
+  冻结从 15 秒降到 8 秒是因为提示共享之后终局是"提示一落地就抢答"，
+  15 秒＝5 次猜测，在那个节奏里花得起的人不存在。次数封顶防止降价之后被当饭吃。
 
-提示按**自己**猜的次数解锁（10 字数 / 20 类别 / 30 首字），不看对手进度。
-公共日志里**不能**出现字数——那正好是第一档提示。
+一局有**硬时限** `roundLimitMs`（默认 90 秒，可调 30-600 秒）。到点没人猜中就
+`finish(null, 'timeout')` —— 这是**平局**，两边都不加分，跟 `'abandoned'`（作废）
+是两回事，页面上的文案也不一样。`timeUp()` 由 room 的 `#tick` 每秒调一次，
+**每个动作之前也要调一次**：定时器慢半拍的那零点几秒里不能还让人落一手。
+
+提示按**时间**解锁，跟谁猜了多少次无关，`hints(now)` 不收座位参数——
+"两边拿到的是同一份"是签名层面保证的，不是靠调用方自觉。
+`HINT_TIERS` 里的 `at` 是**占本局时长的比例**（0 / 0.25 / 0.6），不是绝对秒数：
+房主把一局拉到 5 分钟时三档得跟着拉开，否则按 90 秒定的档位配 5 分钟的局
+等于开局全给。`hintAtMs()` 会把结果对齐到整秒，免得倒计时卡在半秒上。
+
+这里改过两次，想动之前把两次都读完：
+
+1. **第一版按自己的猜测次数解锁**（10/20/30），有必胜解：一次猜测的唯一成本是
+   冷却，猜什么词都算数，29×3＝87 秒就能无脑刷满三档；而三档几乎就是答案——
+   答案池里 **92%** 的词能被 (类别 + 字数 + 首字) 唯一确定。
+2. **第二版改成"按双方取 max 解锁 + 共享 + 推开的人多冻 8 秒"**。刷次数确实不赚了，
+   代价却是**认真打也挨罚**：拿到类别之后顺着候选往下试的人，试到第 11 个就撞开
+   首字白送对手。引擎数的是次数，分不清刷和想。均衡于是变成两边贴着阈值停手——
+   都停在 19 次，第三档（防僵局的阀门）永远没人愿意推开，僵局反而锁死了。
+3. **现在按时间**：谁也拦不住、谁也加速不了。刷不出提示也拖不掉提示，阀门到点自己开。
+   猜词回到纯赚（只给自己涨信息，不泄露给对手），那套额外冻结机械随之删除。
+
+三档的顺序是按含金量排的，在 403 个答案上实测：
+
+| 档 | 时点（90 秒局） | 候选数 | 唯一确定 | 作用 |
+|---|---|---|---|---|
+| 字数 | 开局 | 403 → 311 | 0.2% | 350/403 是 2 字词，几乎白给，所以不藏 |
+| 类别 | 23 秒 | 403 → 25 | 0.0% | 节奏的油门：知道类别后同类别最佳词中位数排第 5、100% 进前 100 |
+| 首字 | 54 秒 | 403 → 1.6 | 65.5% | 收尾的阀门，它自己就几乎是答案 |
+
+公共日志里**不能**出现任何一档提示的**值**。提示到点自动开，战况里只写档位的
+名字（「类别」），绝不写它的值（"食物"）；也不写是谁推开的——没有"谁推开"这回事了。
 
 ### 14.5 `server/hotword/room.js` — 房间
 
@@ -933,11 +972,17 @@ new HotwordRound({ vectors, answer, no?, now?, cooldownMs?, peekFreezeMs? })
 - 局中途有人 `stand`，本局作废（`result.winner = null`，`reason = 'abandoned'`），
   **不计分**，但答案要公布。
 - 断线保留擂台位 15 分钟，跟另外两张桌子一致。
-- `#tick()` 每秒一次，**只在有人被冷却冻着的时候**才广播，闲着一条都不发。
+- 到点没人猜中 → `reason = 'timeout'`，**平局不计分**，答案公布。
+- `#tick()` 每秒一次，局中**每秒都广播**。原来只在有人被冷却冻着时才推，现在
+  倒计时和提示解锁都是时间驱动的，不推页面就停在上一秒。一局才 90 秒，量无所谓。
+- `#sweepTime()` 负责判时间到 + 把新开的档写进战况（只写档名），
+  `#tick` 和每个动作（guess/peek/resign）之前都要调。
 
-配置（房主可改，只能在两局之间）：
-`guessCooldownMs`（0-30s）、`peekFreezeMs`（0-120s）、`peekEnabled`、`hintsEnabled`。
-环境变量对应 `HOTWORD_GUESS_COOLDOWN` / `HOTWORD_PEEK_FREEZE` / `HOTWORD_PEEK` / `HOTWORD_HINTS`。
+配置（房主可改，只能在两局之间）：`roundLimitMs`（30-600s，默认 90）、
+`guessCooldownMs`（0-30s，默认 1.5）、`peekFreezeMs`（0-120s，默认 8）、
+`peekLimit`（0-9，默认 2，填 0 等于关掉偷看）、`peekEnabled`、`hintsEnabled`。
+环境变量对应 `HOTWORD_ROUND_LIMIT` / `HOTWORD_GUESS_COOLDOWN` / `HOTWORD_PEEK_FREEZE` /
+`HOTWORD_PEEK_LIMIT` / `HOTWORD_PEEK` / `HOTWORD_HINTS`。
 
 ### 14.6 WebSocket 协议（`/hw`）
 

@@ -21,9 +21,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The asymmetry is the game. You see your own words and exact ranks; your
   opponent and the audience see only your guess count and a temperature bar.
   Fully public and the second player free-rides; fully hidden and it is two
-  people playing solitaire. `Peek` buys the opponent's most recent word at the
-  cost of 15 frozen seconds, and it is announced in the log. Hints (length,
-  category, first character) unlock on your own guess count at 10/20/30.
+  people playing solitaire. `Peek` buys the opponent's best guess so far — not
+  their most recent, which is usually just a probe in a new direction — for 8
+  frozen seconds, twice per round, and it is announced in the log. Guesses carry a
+  1.5-second cooldown, which is what keeps the winner the player who thought
+  correctly rather than the one who types fastest.
+
+  A round is capped at **90 seconds**, counted down in the top bar; if neither
+  player gets it, the round is a draw and the answer is revealed. Nothing bounded
+  a round before, so two players who both stopped guessing could sit there forever.
+
+  Hints (length, category, first character) unlock **on the clock** — at the start,
+  at 23 seconds, and at 54 seconds of a 90-second round — identically for both
+  players, with no relationship to how much anyone has guessed. The tier times are
+  stored as fractions of the round length, so a host who stretches a round to five
+  minutes stretches the tiers with it instead of having all three fire at once.
+
+  This took three attempts, and the two dead ends are the reason for the design.
+  Unlocking on **your own** guess count (10/20/30) had a dominant strategy: a guess
+  costs only its cooldown and any vocabulary word counts, so 87 seconds of typing
+  nonsense bought all three tiers — and the three together are not a hint but the
+  answer, uniquely identifying 92% of the answer pool. **Sharing** the hints and
+  freezing whoever pushed a tier for 8 extra seconds inverted that exploit, but
+  taxed playing well: someone working down the candidate list after the category
+  hint trips the first-character tier on their 11th try and hands it over. The
+  engine counts guesses; it cannot tell grinding from thinking. Both players end up
+  parked at 19 guesses, and the anti-stalemate valve becomes the one thing nobody
+  will ever volunteer to open — the stalemate locks itself in. Unlocking on time
+  removes the choice from both players: the clock cannot be rushed or stalled, so
+  guessing goes back to being pure private upside and the valve opens by itself.
+
+  The tiers are ordered by measured give-away over all 403 answers: length narrows
+  403 → 311 candidates and pins down 0.2% (350 answers are two characters, so it is
+  nearly free and there is no reason to withhold it), category narrows to 25, and
+  the first character alone narrows to 1.6 and uniquely identifies 65.5%. Category
+  is the pacing lever: knowing it, the best same-category word lands at median rank
+  5 and inside the top 100 for every answer tested.
 
   Chinese needed one rule English Semantle does not: words that contain the
   answer or are contained by it are dropped from the round's vocabulary and

@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { WordVectors } from '../server/hotword/vectors.js';
 import {
   HotwordRound, HW_PHASE, HW_SEATS, GUESS_COOLDOWN_MS, PEEK_FREEZE_MS,
+  PEEK_LIMIT, ROUND_LIMIT_MS, ROUND_LIMIT_MIN_MS, ROUND_LIMIT_MAX_MS, HINT_TIERS,
   tempOf, heatOf, normalizeWord,
 } from '../server/hotword/engine.js';
 import { HotwordRoom } from '../server/hotword/room.js';
@@ -162,25 +163,126 @@ test('重复猜：返回上次结果，不占次数也不罚冷却', { skip: noD
   assert.equal(r.guesses[0].length, 1);
 });
 
-test('提示：按自己的次数解锁，跟对手无关', { skip: noData }, () => {
+test('提示：按时间解锁，跟谁猜了多少次无关', { skip: noData }, () => {
   const r = new HotwordRound({ vectors: V, answer: { word: '咖啡', category: '食物' }, now: 0 });
-  assert.ok(r.hints(0).every((h) => h.locked), '一开始全锁着');
+  const at = (t) => r.hints(t);
 
-  // 手动灌 10 条记录，省得跑十次冷却
-  for (let i = 0; i < 10; i++) r.guesses[0].push({ word: `x${i}`, rank: 999, temp: 1, heat: 'cold', at: i });
-  const h = r.hints(0);
-  assert.equal(h[0].locked, false);
-  assert.equal(h[0].value, '2 个字');
-  assert.equal(h[1].locked, true, '20 次那一档还锁着');
-  assert.ok(r.hints(1).every((x) => x.locked), '对手那边不该跟着解锁');
+  // 第一档在 0 秒——字数几乎白给（403 个答案里 350 个是 2 字词），藏着没意义
+  assert.equal(at(0)[0].locked, false);
+  assert.equal(at(0)[0].value, '2 个字');
+  assert.equal(at(0)[1].locked, true, '类别还没到');
+  assert.equal(at(0)[2].locked, true, '首字还没到');
 
-  for (let i = 0; i < 20; i++) r.guesses[0].push({ word: `y${i}`, rank: 999, temp: 1, heat: 'cold', at: i });
-  const h2 = r.hints(0);
-  assert.equal(h2[1].value, '食物');
-  assert.equal(h2[2].value, '咖');
+  const catAt = r.hintAtMs(HINT_TIERS[1]);
+  const firstAt = r.hintAtMs(HINT_TIERS[2]);
+  assert.equal(catAt, 23000, '类别在四分之一处，对齐到整秒');
+  assert.equal(firstAt, 54000, '首字在五分之三处');
+  assert.equal(catAt % 1000, 0, '档位必须落在整秒上，否则倒计时会卡半秒');
+  assert.equal(firstAt % 1000, 0);
+
+  assert.equal(at(catAt - 1)[1].locked, true, '差一毫秒都不给');
+  assert.equal(at(catAt)[1].value, '食物');
+  assert.equal(at(firstAt)[2].value, '咖');
+
+  // 这是修掉"刷次数必胜"的那一刀：猜多少次都推不动提示
+  for (let i = 0; i < 50; i++) r.guesses[0].push({ word: `x${i}`, rank: 999, temp: 1, heat: 'cold', at: i });
+  assert.equal(at(0)[1].locked, true, '刷 50 次也提前不了一毫秒');
+  assert.equal(at(0)[2].locked, true);
 });
 
-test('偷看：拿到对手最近一手，代价是冻住自己', { skip: noData }, () => {
+test('提示：两边看到的永远是同一份，跟谁猜的无关', { skip: noData }, () => {
+  const mk = (fill) => {
+    const r = new HotwordRound({ vectors: V, answer: { word: '咖啡', category: '食物' }, now: 0 });
+    for (let i = 0; i < 30; i++) {
+      r.guesses[fill].push({ word: `x${i}`, rank: 999, temp: 1, heat: 'cold', at: i });
+    }
+    return r;
+  };
+  const t = Math.round(0.5 * ROUND_LIMIT_MS);
+  const idle = new HotwordRound({ vectors: V, answer: { word: '咖啡', category: '食物' }, now: 0 });
+
+  // 一个人猛猜、另一个人猛猜、两个人都不猜——同一时刻的提示必须一模一样。
+  // hints() 不收座位参数，这三份相等就是"没有任何一侧能私藏或独得"的证明。
+  assert.deepEqual(mk(0).hints(t), idle.hints(t));
+  assert.deepEqual(mk(1).hints(t), idle.hints(t));
+});
+
+test('提示：锁着的档会告诉你还有多久', { skip: noData }, () => {
+  const r = new HotwordRound({ vectors: V, answer: { word: '咖啡', category: '食物' }, now: 0 });
+  const catAt = r.hintAtMs(HINT_TIERS[1]);
+  const h = r.hints(catAt - 4000)[1];
+  assert.equal(h.locked, true);
+  assert.equal(h.inMs, 4000, 'inMs 是相对时长，客户端拿它跑本地倒计时');
+  assert.equal(r.hints(catAt)[1].inMs, 0, '开了之后就是 0');
+});
+
+test('提示：档位跟着回合时长一起拉开', { skip: noData }, () => {
+  const long = new HotwordRound({
+    vectors: V, answer: { word: '咖啡', category: '食物' }, now: 0, roundLimitMs: 300000,
+  });
+  // at 存的是比例不是秒数：局拉长到 5 分钟，三档得跟着走，否则等于开局全给
+  assert.equal(long.hintAtMs(HINT_TIERS[1]), 75000);
+  assert.equal(long.hints(60000)[1].locked, true, '90 秒局的档位不能套到 5 分钟局上');
+  assert.equal(long.hints(75000)[1].value, '食物');
+});
+
+test('提示：这桌关掉提示就一条都不给', { skip: noData }, () => {
+  const r = new HotwordRound({
+    vectors: V, answer: { word: '咖啡', category: '食物' }, now: 0, hintsEnabled: false,
+  });
+  assert.deepEqual(r.hints(ROUND_LIMIT_MS), []);
+});
+
+test('猜词：不再有任何共享后果，冷却就是冷却', { skip: noData }, () => {
+  const r = new HotwordRound({ vectors: V, answer: { word: '咖啡', category: '食物' }, now: 0 });
+  for (let i = 0; i < 9; i++) r.guesses[0].push({ word: `x${i}`, rank: 999, temp: 1, heat: 'cold', at: i });
+
+  const res = r.guess(0, '牛奶', 10000);
+  assert.equal(res.ok, true);
+  assert.equal(res.unlocked, undefined, '猜测不再推开任何东西');
+  assert.equal(r.nextGuessAt[0], 10000 + GUESS_COOLDOWN_MS, '只吃普通冷却，没有额外惩罚');
+  assert.equal(r.nextGuessAt[1], 0, '更不该动到对手');
+});
+
+test('回合计时：到点没人猜中就流局，公布答案', { skip: noData }, () => {
+  const r = new HotwordRound({ vectors: V, answer: { word: '咖啡', category: '食物' }, now: 0 });
+  assert.equal(r.roundLimitMs, ROUND_LIMIT_MS);
+  assert.equal(r.msLeft(0), ROUND_LIMIT_MS);
+  assert.equal(r.msLeft(30000), ROUND_LIMIT_MS - 30000);
+
+  assert.equal(r.timeUp(ROUND_LIMIT_MS - 1), false, '还差一毫秒不能判死');
+  assert.equal(r.isOver, false);
+
+  assert.equal(r.timeUp(ROUND_LIMIT_MS), true);
+  assert.equal(r.isOver, true);
+  assert.equal(r.result.winner, null, '时间到是平局，没有赢家');
+  assert.equal(r.result.reason, 'timeout');
+  assert.equal(r.msLeft(ROUND_LIMIT_MS), 0);
+  assert.equal(r.timeUp(ROUND_LIMIT_MS + 9999), false, '只判一次，不重复覆盖 result');
+});
+
+test('回合计时：到点之后落不下任何一手', { skip: noData }, () => {
+  const r = new HotwordRound({ vectors: V, answer: { word: '咖啡', category: '食物' }, now: 0 });
+  // 定时器慢半拍的时候动作可能先到，每个动作自己要先扫一遍时间
+  const late = r.guess(0, '咖啡', ROUND_LIMIT_MS + 500);
+  assert.equal(late.ok, false);
+  assert.equal(late.code, 'ROUND_OVER', '过点了就算猜中也不算');
+  assert.equal(r.result.reason, 'timeout');
+  assert.equal(r.result.winner, null);
+});
+
+test('回合计时：时长夹在合法区间里', { skip: noData }, () => {
+  const mk = (ms) => new HotwordRound({
+    vectors: V, answer: { word: '咖啡', category: '食物' }, now: 0, roundLimitMs: ms,
+  }).roundLimitMs;
+  assert.equal(mk(1000), ROUND_LIMIT_MIN_MS, '太短的夹到下限');
+  assert.equal(mk(99999999), ROUND_LIMIT_MAX_MS, '太长的夹到上限');
+  assert.equal(mk(undefined), ROUND_LIMIT_MS, '没给就用默认');
+  assert.equal(mk(NaN), ROUND_LIMIT_MS, '脏值也用默认，不能让 deadline 变成 NaN');
+  assert.equal(mk(120000), 120000);
+});
+
+test('偷看：拿到对手最好的一手，代价是冻住自己', { skip: noData }, () => {
   const r = new HotwordRound({ vectors: V, answer: { word: '咖啡', category: '食物' }, now: 0 });
 
   const empty = r.peek(0, 100);
@@ -190,9 +292,11 @@ test('偷看：拿到对手最近一手，代价是冻住自己', { skip: noData
 
   r.guess(1, '牛奶', 1000);
   r.guess(1, '红茶', 1000 + GUESS_COOLDOWN_MS);
+  const better = r.guesses[1][0].rank < r.guesses[1][1].rank ? '牛奶' : '红茶';
   const res = r.peek(0, 5000);
   assert.equal(res.ok, true);
-  assert.equal(res.peeked.word, '红茶', '偷到的应该是最近那一手');
+  assert.equal(res.peeked.word, better, '偷到的应该是排名最好的那一手，不是最近的');
+  assert.equal(res.left, PEEK_LIMIT - 1);
   assert.equal(r.nextGuessAt[0], 5000 + PEEK_FREEZE_MS);
 
   const blocked = r.guess(0, '牛奶', 6000);
@@ -201,6 +305,23 @@ test('偷看：拿到对手最近一手，代价是冻住自己', { skip: noData
   // 连着偷看是重新计时，不是叠加
   r.peek(0, 6000);
   assert.equal(r.nextGuessAt[0], 6000 + PEEK_FREEZE_MS);
+});
+
+test('偷看：一局有次数上限，用完就不给了', { skip: noData }, () => {
+  const r = new HotwordRound({ vectors: V, answer: { word: '咖啡', category: '食物' }, now: 0 });
+  r.guess(1, '牛奶', 1000);
+  assert.equal(r.peeksLeft(0), PEEK_LIMIT);
+
+  for (let i = 0; i < PEEK_LIMIT; i++) {
+    assert.equal(r.peek(0, 5000 + i).ok, true, `第 ${i + 1} 次该给`);
+  }
+  assert.equal(r.peeksLeft(0), 0);
+
+  const over = r.peek(0, 9000);
+  assert.equal(over.ok, false);
+  assert.equal(over.code, 'PEEK_USED_UP');
+  assert.equal(r.peekCount[0], PEEK_LIMIT, '被挡下来的这次不该计数');
+  assert.equal(r.peeksLeft(1), PEEK_LIMIT, '次数是各算各的');
 });
 
 test('认输：对手赢', { skip: noData }, () => {

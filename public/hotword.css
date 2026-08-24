@@ -228,6 +228,32 @@
 
 .hint-list { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
 
+/* 回合倒计时。等宽数字，不然秒数一变整条 meta 都在抖 */
+.round-clock {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--txt);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+}
+/* 最后十秒。这是整局最该被看见的十秒——录成片子的话高潮就在这儿 */
+.round-clock.urgent {
+  color: #fff;
+  background: var(--red);
+  border-color: transparent;
+  animation: clock-pulse .9s ease-in-out infinite;
+}
+@keyframes clock-pulse {
+  0%, 100% { transform: scale(1);    opacity: 1; }
+  50%      { transform: scale(1.09); opacity: .85; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .round-clock.urgent { animation: none; }
+}
+
 .hint-chip {
   display: inline-flex;
   gap: 5px;
@@ -240,6 +266,16 @@
 }
 .hint-chip b { color: var(--gold); font-weight: 600; }
 .hint-chip.locked { opacity: .45; }
+/* 刚开的那一档得让人看见，否则它是无声无息冒出来的。
+   只给 .just（这一帧才解锁的那档）——快照一秒一推，给所有解锁的档会一直闪 */
+.hint-chip.just { animation: hint-pop .6s ease-out; }
+@keyframes hint-pop {
+  from { transform: scale(.86); box-shadow: 0 0 0 5px var(--gold-glow); }
+  to   { transform: scale(1);   box-shadow: 0 0 0 0   rgba(233, 196, 106, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hint-chip.just { animation: none; }
+}
 .hint-chip.locked b { color: var(--txt-faint); }
 .hint-off { font-size: 11.5px; color: var(--txt-faint); }
 

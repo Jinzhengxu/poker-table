@@ -28,6 +28,8 @@
       <span id="metaRound">还没开局</span>
       <span class="sep" aria-hidden="true">·</span>
       <span id="metaScore">0 : 0</span>
+      <!-- 倒计时：一局 90 秒，这个数字是整局的紧张感来源，放在顶栏最显眼处 -->
+      <span id="metaClock" class="round-clock" hidden aria-live="off"></span>
       <span id="metaHost" class="host-tag" hidden>房主</span>
     </div>
 
@@ -89,7 +91,7 @@
         <button id="btnStandPlay" class="act act-ghost btn-stand" type="button">下擂台</button>
       </div>
 
-      <!-- 偷到的对手最近一手 -->
+      <!-- 偷到的对手最好的一手 -->
       <div id="peekBox" class="peek-box" hidden></div>
 
       <!-- 我自己的猜测记录 -->
@@ -135,6 +137,7 @@
         <div class="rule-doc">
           <h4>怎么玩</h4>
           <p>两个人猜<b>同一个</b>隐藏词，谁先猜中谁赢。其余人是观众。</p>
+          <p>一局 <b>90 秒</b>，顶栏有倒计时。到点两边都没猜中就算平局，公布答案。</p>
 
           <h5>排名，不是像不像</h5>
           <ul>
@@ -155,23 +158,29 @@
 
           <h5>偷看</h5>
           <ul>
-            <li>点「偷看」能看到对手<b>最近一次</b>猜的词和排名。</li>
-            <li>代价是自己一段时间不能猜，而且对手会在战况里看到你偷看了。</li>
+            <li>点「偷看」能看到对手<b>目前最好的那一次</b>猜的词和排名——不是最近一次。
+              最近一次可能只是往新方向探的一枪，最好的一次才是他真正站的位置。</li>
+            <li>代价是自己一段时间不能猜，<b>一局只有两次</b>，而且对手会在战况里看到你偷看了。</li>
           </ul>
 
           <h5>提示</h5>
           <ul>
-            <li>按<b>你自己</b>猜的次数解锁：10 次给字数，20 次给类别，30 次给首字。</li>
-            <li>对手解锁到哪一步跟你无关，各算各的。</li>
+            <li>提示按<b>时间</b>开，跟谁猜了多少次<b>没有关系</b>，两个人永远拿到同一份：
+              <b>开局</b>给字数、<b>23 秒</b>给类别、<b>54 秒</b>给首字。</li>
+            <li>所以猛猜既刷不出提示、也拖不掉提示。猜词只给你自己涨信息，
+              不会泄露任何东西给对手——想猜多少猜多少，冷却之外没有别的代价。</li>
+            <li>类别是节奏的转折点：知道类别之后，同类别里最好的那个词
+              一般能直接排进前十，从那儿到答案通常就差一两手。</li>
           </ul>
 
           <h5>几条细则</h5>
           <ul>
-            <li>每次猜完有几秒冷却——这是防打字快的人赢，不是防你。</li>
+            <li>每次猜完有 1.5 秒冷却——这是防打字快的人赢，不是防你。</li>
             <li>「不认识这个词」＝这个词不在词表里，不计次数也不进冷却。</li>
             <li>跟答案<b>互为子串</b>的词（比如答案是「咖啡」时的「咖啡厅」）会被
               当成生僻词挡掉，不然一猜就漏底。</li>
             <li>猜不动了可以「认输」，这一局算对手赢；「下擂台」随时能按，打到一半下去这局作废、不计分。</li>
+            <li>时间到是<b>平局</b>，两边都不加分——跟「作废」不一样。</li>
           </ul>
 
           <h5>词是哪来的</h5>
@@ -184,8 +193,10 @@
         <div id="cfgHostOnly" class="cfg-note" hidden>只有房主可以修改设置。</div>
         <form id="cfgForm" class="cfg-form">
           <h4>玩法设置</h4>
-          <label>猜词冷却（秒）<input id="cfgCooldown" type="number" min="0" max="30" step="1" inputmode="numeric"></label>
+          <label>一局时长（秒）<input id="cfgRoundLimit" type="number" min="30" max="600" step="5" inputmode="numeric"></label>
+          <label>猜词冷却（秒）<input id="cfgCooldown" type="number" min="0" max="30" step="0.5" inputmode="decimal"></label>
           <label>偷看冻结（秒）<input id="cfgPeekFreeze" type="number" min="0" max="120" step="1" inputmode="numeric"></label>
+          <label>每局偷看次数<input id="cfgPeekLimit" type="number" min="0" max="9" step="1" inputmode="numeric"></label>
           <label class="chk"><input id="cfgPeek" type="checkbox"><span>允许偷看</span></label>
           <label class="chk"><input id="cfgHints" type="checkbox"><span>允许提示</span></label>
           <div class="cfg-actions">

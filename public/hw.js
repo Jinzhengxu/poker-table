@@ -24,7 +24,7 @@ function lsSet(k, v) { try { window.localStorage.setItem(k, v); } catch { /* 隐
 
 const D = {};
 for (const id of [
-  'connBadge', 'connText', 'metaRound', 'metaScore', 'metaHost',
+  'connBadge', 'connText', 'metaRound', 'metaScore', 'metaHost', 'metaClock',
   'arena', 'fighter0', 'fighter1', 'lobby', 'lobbyText', 'btnStart', 'btnStand',
   'guessForm', 'guessInput', 'btnGuess', 'lastGuess',
   'toolRow', 'hintList', 'btnPeek', 'btnResign', 'btnStandPlay', 'peekBox',
@@ -33,7 +33,8 @@ for (const id of [
   'roClose', 'roActions', 'btnStandOver',
   'side', 'btnSide', 'btnSideClose', 'drawerMask', 'sideBadge',
   'logList', 'chatList', 'chatForm', 'chatInput', 'ruleVocab',
-  'cfgForm', 'cfgCooldown', 'cfgPeekFreeze', 'cfgPeek', 'cfgHints', 'cfgHostOnly', 'btnReset',
+  'cfgForm', 'cfgCooldown', 'cfgPeekFreeze', 'cfgPeekLimit', 'cfgRoundLimit',
+  'cfgPeek', 'cfgHints', 'cfgHostOnly', 'btnReset',
   'sitDlg', 'sitTitle', 'sitName', 'sitErr',
   'confirmDlg', 'confirmTitle', 'confirmText',
   'fatalMask', 'fatalTitle', 'fatalText', 'fatalRetry',
@@ -61,6 +62,13 @@ const S = {
   sound: lsGet(LS_SOUND) !== '0',
   sort: lsGet(LS_SORT) === 'time' ? 'time' : 'rank',
   cooldownEndsAt: 0,
+  /** 本局什么时候到点（本地钟）。0 表示没有进行中的局 */
+  roundEndsAt: 0,
+  /** 还没解锁的提示各自什么时候到（本地钟），用来在本地跑倒计时 */
+  hintDueAt: new Map(),
+  /** 上一帧已经解锁的档。用来认出"这一帧才开的那一档"，只给它加动画 */
+  hintSeen: new Set(),
+  hintRoundNo: null,
   sitSeat: null,
   lastResultNo: null,
   closedResultNo: null,
@@ -301,6 +309,13 @@ function render(st) {
     D.peekBox.hidden = true;
   }
 
+  // 服务端每秒推一次，中间这一秒由本地补帧，倒计时才不会一跳一跳的
+  S.roundEndsAt = (playing && st.round) ? Date.now() + st.round.msLeft : 0;
+  if (st.round && st.round.no !== S.hintRoundNo) {
+    S.hintRoundNo = st.round.no;
+    S.hintSeen.clear();
+  }
+
   if (mine) {
     S.cooldownEndsAt = mine.cooldownMs > 0 ? Date.now() + mine.cooldownMs : 0;
     tickCooldown();
@@ -316,6 +331,10 @@ function render(st) {
     }
   }
   D.btnPeek.hidden = !st.config.peekEnabled;
+  // 偷看一局只有几次，把还剩几次写在按钮上——用完了才发现就太晚了
+  const left = mine ? (mine.peeksLeft ?? 0) : 0;
+  D.btnPeek.textContent = left > 0 ? `偷看 ${left}` : '偷看';
+  D.btnPeek.disabled = !mine || left <= 0;
 
   // ---- 结算 ----
   renderResult(st);
@@ -403,25 +422,41 @@ function renderLobby(st, playing) {
   }
 }
 
+// 提示是【共享】的：按双方里猜得多的那一边解锁，解锁之后两个人同时拿到。
+// 所以锁着的时候写"还差几次"而不是"你还要猜几次"——推开它的可能是对手。
+/**
+ * 提示是按时间开的，跟猜了多少次无关，所以锁着的那几档显示的是"还有几秒"。
+ * 秒数由 tickClock 在本地每 120ms 重画一次——只等服务端推的话会一秒一跳。
+ */
 function renderHints(hints, config) {
   D.hintList.innerHTML = '';
+  S.hintDueAt.clear();
   if (!config.hintsEnabled) {
     D.hintList.appendChild(elt('span', 'hint-off', '这桌关掉了提示'));
     return;
   }
+  const now = Date.now();
   for (const h of hints) {
-    const chip = elt('span', `hint-chip${h.locked ? ' locked' : ''}`);
+    const just = !h.locked && !S.hintSeen.has(h.key);
+    if (!h.locked) S.hintSeen.add(h.key);
+    const chip = elt('span', `hint-chip${h.locked ? ' locked' : ''}${just ? ' just' : ''}`);
     chip.appendChild(elt('b', null, h.label));
-    chip.appendChild(elt('span', null, h.locked ? `猜满 ${h.at} 次` : h.value));
+    const val = elt('span', null, h.locked ? '' : h.value);
+    if (h.locked) {
+      val.dataset.hintKey = h.key;
+      S.hintDueAt.set(h.key, now + h.inMs);
+    }
+    chip.appendChild(val);
     D.hintList.appendChild(chip);
   }
+  tickClock();
 }
 
 function renderPeek(peeked) {
   if (!peeked) { D.peekBox.hidden = true; return; }
   D.peekBox.hidden = false;
   D.peekBox.innerHTML = '';
-  D.peekBox.appendChild(elt('span', 'pk-label', '偷到的'));
+  D.peekBox.appendChild(elt('span', 'pk-label', '对手最好的'));
   D.peekBox.appendChild(elt('span', 'pk-word', peeked.word));
   D.peekBox.appendChild(elt('span', `pk-rank heat-${peeked.heat}`, rankText(peeked.rank)));
 }
@@ -473,6 +508,10 @@ function renderResult(st) {
   if (r.reason === 'abandoned') {
     D.roTitle.textContent = '这局作废';
     D.roSub.textContent = '有人中途下了擂台';
+  } else if (r.reason === 'timeout') {
+    // 时间到是平局，不是"作废"——两边都尽力了，这个区别玩家在意
+    D.roTitle.textContent = '时间到';
+    D.roSub.textContent = '两边都没猜中，这局平了';
   } else if (r.winner === null) {
     D.roTitle.textContent = '这局作废';
     D.roSub.textContent = '';
@@ -554,8 +593,10 @@ function renderCfg(st) {
   D.cfgHostOnly.hidden = host;
   D.cfgForm.classList.toggle('locked', !host);
   if (document.activeElement && D.cfgForm.contains(document.activeElement)) return;
-  D.cfgCooldown.value = Math.round(st.config.guessCooldownMs / 1000);
+  D.cfgCooldown.value = st.config.guessCooldownMs / 1000;
   D.cfgPeekFreeze.value = Math.round(st.config.peekFreezeMs / 1000);
+  D.cfgPeekLimit.value = st.config.peekLimit;
+  D.cfgRoundLimit.value = Math.round(st.config.roundLimitMs / 1000);
   D.cfgPeek.checked = !!st.config.peekEnabled;
   D.cfgHints.checked = !!st.config.hintsEnabled;
 }
@@ -568,7 +609,28 @@ function tickCooldown() {
   D.btnGuess.textContent = cooling ? `${Math.ceil(left / 1000)}s` : '猜';
   D.guessForm.classList.toggle('cooling', cooling);
 }
-setInterval(tickCooldown, 120);
+/** 回合倒计时和提示倒计时。最后 10 秒换个样子——那是整局最该被看见的十秒 */
+function tickClock() {
+  const left = S.roundEndsAt - Date.now();
+  const live = S.roundEndsAt > 0 && left > 0;
+  D.metaClock.hidden = !live;
+  if (live) {
+    D.metaClock.textContent = `${Math.ceil(left / 1000)}s`;
+    D.metaClock.classList.toggle('urgent', left <= 10000);
+  } else {
+    D.metaClock.classList.remove('urgent');
+  }
+
+  if (!S.hintDueAt.size) return;
+  for (const val of D.hintList.querySelectorAll('[data-hint-key]')) {
+    const due = S.hintDueAt.get(val.dataset.hintKey);
+    if (due === undefined) continue;
+    const ms = due - Date.now();
+    val.textContent = ms > 1000 ? `还有 ${Math.ceil(ms / 1000)} 秒` : '马上';
+  }
+}
+
+setInterval(() => { tickCooldown(); tickClock(); }, 120);
 
 // ============================ 交互 ============================
 
@@ -645,6 +707,8 @@ D.cfgForm.addEventListener('submit', (e) => {
     patch: {
       guessCooldownMs: Number(D.cfgCooldown.value) * 1000,
       peekFreezeMs: Number(D.cfgPeekFreeze.value) * 1000,
+      peekLimit: Number(D.cfgPeekLimit.value),
+      roundLimitMs: Number(D.cfgRoundLimit.value) * 1000,
       peekEnabled: D.cfgPeek.checked,
       hintsEnabled: D.cfgHints.checked,
     },

@@ -12,7 +12,8 @@
 import { randomBytes, randomInt } from 'node:crypto';
 import {
   HotwordRound, HW_PHASE, HW_SEATS,
-  GUESS_COOLDOWN_MS, PEEK_FREEZE_MS,
+  GUESS_COOLDOWN_MS, PEEK_FREEZE_MS, PEEK_LIMIT,
+  ROUND_LIMIT_MS, ROUND_LIMIT_MIN_MS, ROUND_LIMIT_MAX_MS,
 } from './engine.js';
 import { makeAvatar } from '../room.js';
 import { VoiceChannel } from '../voice.js';
@@ -27,6 +28,8 @@ const RECENT_MEMORY = 20;
 export const DEFAULT_HW_CONFIG = Object.freeze({
   guessCooldownMs: GUESS_COOLDOWN_MS,
   peekFreezeMs: PEEK_FREEZE_MS,
+  peekLimit: PEEK_LIMIT,
+  roundLimitMs: ROUND_LIMIT_MS,
   peekEnabled: true,
   hintsEnabled: true,
 });
@@ -65,6 +68,9 @@ export class HotwordRoom {
     this.score = [0, 0];
     /** 最近出过的答案。一晚上打十几局，随机重样是真会发生的 */
     this.recent = [];
+
+    /** 本局已经播报过的提示档，防止每秒重复写一条 */
+    this.announced = new Set();
 
     this.log = [];
     this.chat = [];
@@ -266,10 +272,14 @@ export class HotwordRoom {
       no: this.roundNo,
       cooldownMs: this.config.guessCooldownMs,
       peekFreezeMs: this.config.peekFreezeMs,
+      peekLimit: this.config.peekLimit,
+      roundLimitMs: this.config.roundLimitMs,
+      hintsEnabled: this.config.hintsEnabled,
     });
-    // 日志里【不能】写字数——那正好是猜满 10 次才给的第一档提示，
-    // 写进公共日志等于开局白送
-    this.#pushLog(`第 ${this.roundNo} 局开始`);
+    // 日志里【不能】写答案的字数、类别、首字——它们都是提示的内容，
+    // 到点了自然会给两边，提前写进公共战况等于白送
+    this.announced = new Set();
+    this.#pushLog(`第 ${this.roundNo} 局开始，${Math.round(this.config.roundLimitMs / 1000)} 秒`);
     this.broadcast();
     return { ok: true };
   }
@@ -300,6 +310,7 @@ export class HotwordRoom {
   guess(client, word) {
     const seat = this.#actorSeat(client);
     if (seat === null) return { ok: false, code: 'ILLEGAL_ACTION', msg: '观众不能猜，先上擂台' };
+    this.#sweepTime();
     if (!this.round || this.round.isOver) return { ok: false, code: 'ILLEGAL_ACTION', msg: '现在没有进行中的局' };
 
     const res = this.round.guess(seat, word);
@@ -325,12 +336,16 @@ export class HotwordRoom {
     const seat = this.#actorSeat(client);
     if (seat === null) return { ok: false, code: 'ILLEGAL_ACTION', msg: '观众不能偷看' };
     if (!this.config.peekEnabled) return { ok: false, code: 'PEEK_OFF', msg: '这桌关掉了偷看' };
+    this.#sweepTime();
     if (!this.round || this.round.isOver) return { ok: false, code: 'ILLEGAL_ACTION', msg: '现在没有进行中的局' };
     const res = this.round.peek(seat);
     if (!res.ok) return res;
     // 偷看要让对手知道——被盯着的压力是这个机制一半的乐趣
     const me = this.#seatPlayer(seat);
-    this.#pushLog(`${me?.name || `${seat + 1} 号`} 偷看了一眼，接下来 ${Math.round(this.config.peekFreezeMs / 1000)} 秒不能猜`);
+    this.#pushLog(
+      `${me?.name || `${seat + 1} 号`} 偷看了一眼（还剩 ${res.left} 次），`
+      + `接下来 ${Math.round(this.config.peekFreezeMs / 1000)} 秒不能猜`,
+    );
     this.broadcast();
     return { ok: true };
   }
@@ -338,6 +353,7 @@ export class HotwordRoom {
   resign(client) {
     const seat = this.#actorSeat(client);
     if (seat === null) return { ok: false, code: 'ILLEGAL_ACTION', msg: '你不在擂台上' };
+    this.#sweepTime();
     if (!this.round || this.round.isOver) return { ok: false, code: 'ILLEGAL_ACTION', msg: '现在没有进行中的局' };
     const res = this.round.resign(seat);
     if (!res.ok) return res;
@@ -381,6 +397,22 @@ export class HotwordRoom {
       if (v === null) return { ok: false, code: 'ILLEGAL_ACTION', msg: '偷看冻结要在 0-120 秒之间' };
       next.peekFreezeMs = v;
     }
+    if (patch.peekLimit !== undefined) {
+      const v = clampInt(patch.peekLimit, 0, 9);
+      if (v === null) return { ok: false, code: 'ILLEGAL_ACTION', msg: '偷看次数要在 0-9 之间' };
+      next.peekLimit = v;
+    }
+    if (patch.roundLimitMs !== undefined) {
+      const v = clampInt(patch.roundLimitMs, ROUND_LIMIT_MIN_MS, ROUND_LIMIT_MAX_MS);
+      if (v === null) {
+        return {
+          ok: false,
+          code: 'ILLEGAL_ACTION',
+          msg: `一局时长要在 ${ROUND_LIMIT_MIN_MS / 1000}-${ROUND_LIMIT_MAX_MS / 1000} 秒之间`,
+        };
+      }
+      next.roundLimitMs = v;
+    }
     if (patch.peekEnabled !== undefined) next.peekEnabled = !!patch.peekEnabled;
     if (patch.hintsEnabled !== undefined) next.hintsEnabled = !!patch.hintsEnabled;
 
@@ -407,11 +439,40 @@ export class HotwordRoom {
     if (this.log.length > MAX_LOG) this.log.splice(0, this.log.length - MAX_LOG);
   }
 
-  /** 只在有人正被冷却冻着的时候推，闲着的时候一条都不发 */
+  /**
+   * 时间到就判流局，顺便把这一下解锁的提示写进战况。
+   * 动作之前和每秒的 tick 都会调——定时器慢半拍的那零点几秒里不能还让人落一手。
+   * @returns {boolean} 这一次是不是刚好把局判死了
+   */
+  #sweepTime(now = Date.now()) {
+    const r = this.round;
+    if (!r || r.isOver) return false;
+
+    // 提示到点自己开，没有"谁推开的"这回事，所以播报里不带人名。
+    // 只写档位的名字，绝不写它的值——「类别」能进战况，"食物"不行。
+    for (const h of r.hints(now)) {
+      if (h.locked || this.announced.has(h.key)) continue;
+      this.announced.add(h.key);
+      // 开局就给的那档（atMs 为 0）不单独播报，「第 N 局开始」已经带过了
+      if (h.atMs > 0) this.#pushLog(`${Math.round(h.atMs / 1000)} 秒到，双方都拿到「${h.label}」提示`);
+    }
+
+    if (!r.timeUp(now)) return false;
+    this.#pushLog(`时间到，两边都没猜中，答案是「${r.answer}」`);
+    return true;
+  }
+
+  /**
+   * 局中每秒推一次。
+   *
+   * 原来只在有人被冷却冻着的时候推，闲着一条不发。现在不行了：倒计时、
+   * 提示解锁都是时间驱动的，不推的话页面会停在上一秒。一局才 90 秒，
+   * 一个房间十来个人，这点量无所谓。
+   */
   #tick() {
     if (!this.round || this.round.isOver) return;
-    const now = Date.now();
-    if (this.round.nextGuessAt.some((t) => t > now)) this.broadcast();
+    this.#sweepTime();
+    this.broadcast();
   }
 
   // ==================== 快照 ====================
@@ -476,8 +537,10 @@ export class HotwordRoom {
       ? {
         guesses: r.guesses[mySeat],
         cooldownMs: Math.max(0, r.nextGuessAt[mySeat] - now),
-        hints: this.config.hintsEnabled ? r.hints(mySeat) : [],
+        // 提示按时间解锁，两边拿到的永远是同一份，跟猜了多少次无关
+        hints: r.hints(now),
         peeked: r.peeked[mySeat],
+        peeksLeft: r.peeksLeft(mySeat),
       }
       : null;
 
@@ -496,7 +559,16 @@ export class HotwordRoom {
       t: 'state',
       ready: this.ready,
       phase: r ? r.phase : HW_PHASE.WAITING,
-      round: r ? { no: r.no, startedAt: r.startedAt, vocabSize: this.vectors.size } : null,
+      round: r
+        ? {
+          no: r.no,
+          startedAt: r.startedAt,
+          vocabSize: this.vectors.size,
+          // 倒计时给相对毫秒而不是截止时间戳：客户端的钟跟服务端不一定对得上
+          msLeft: r.msLeft(now),
+          limitMs: r.roundLimitMs,
+        }
+        : null,
       seats,
       score: this.score.slice(),
       spectators,
