@@ -7,7 +7,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { PHASES, SEAT_STATE, DEFAULT_CONFIG, MAX_SEATS } from './protocol.js';
-import { Hand } from './engine.js';
+import { Hand, actionHistory } from './engine.js';
 import { randomPersona } from './bot/index.js';
 import { VoiceChannel } from './voice.js';
 
@@ -332,6 +332,17 @@ export class Room {
     const wasHost = p.isHost;
     p.isHost = false;
     if (wasHost) this.#ensureHost();
+    // 人机离座就把它的对手画像一并删掉。名字池只有 20 个（persona.js），
+    // 而画像按昵称索引：不删的话，下一个抽到「老陈」的人机会继承上一个老陈的
+    // VPIP、弃牌率和摊牌记录，可它俩的随机特质根本不是一回事。
+    // 单轮版的 BotDriver 没有 forget，这里是空操作。
+    if (p.bot && typeof this.botDriver?.forget === 'function') {
+      try {
+        this.botDriver.forget(p.name);
+      } catch (e) {
+        console.error('[room] 清理人机画像失败', e);
+      }
+    }
     // 人机没有 token 也不会重连，离座之后没有任何东西再引用它
     if (!p.connected || p.bot) this.#deletePlayer(p);
     // 刚走的可能是最后一个真人，那就把剩下的人机也一起清掉
@@ -1014,24 +1025,7 @@ export class Room {
    * 所以给谁看都安全。人机靠它推理对手这一手打得凶不凶。
    */
   #actionHistory() {
-    if (!this.hand || !Array.isArray(this.hand.events)) return [];
-    const streets = [{ street: PHASES.PREFLOP, acts: [] }];
-    const marker = { flop: PHASES.FLOP, turn: PHASES.TURN, river: PHASES.RIVER };
-    for (const e of this.hand.events) {
-      if (!e) continue;
-      if (marker[e.kind]) {
-        streets.push({ street: marker[e.kind], acts: [] });
-        continue;
-      }
-      if (e.kind !== 'action' || typeof e.type !== 'string') continue;
-      streets[streets.length - 1].acts.push({
-        seat: e.seat,
-        type: e.type,
-        amount: Number.isFinite(e.amount) ? e.amount : 0,
-      });
-    }
-    // 丢掉还没发生任何动作的街道（比如刚翻牌还没人行动）
-    return streets.filter((s) => s.acts.length > 0);
+    return actionHistory(this.hand?.events);
   }
 
   /** 结算：回写筹码、进入 handOver、安排下一手 */
@@ -1056,6 +1050,19 @@ export class Room {
         if (p && Number.isFinite(chips)) p.chips = Math.max(0, Math.floor(chips));
       }
     }
+
+    // agent 版人机的对手记忆：**只有在这里**才看得到摊牌亮出来的牌
+    // （轮到它决策的时候，别人的底牌还是 "??"）。传 null 是旁观者视角——
+    // 公开揭示的牌照样可见，没揭示的一张也不会多给，所以这不是作弊通道。
+    // 单轮版的 BotDriver 没有 observe，这里就是个空操作。
+    if (typeof this.botDriver?.observe === 'function') {
+      try {
+        this.botDriver.observe(this.buildStateFor(null));
+      } catch (e) {
+        console.error('[room] 人机记忆更新失败', e);
+      }
+    }
+
     this.#scheduleNextHand();
   }
 

@@ -41,6 +41,18 @@ services:
       POKER_BOT_EQUITY_MS: "${POKER_BOT_EQUITY_MS:-1500}"
       POKER_BOT_EQUITY_CHUNK_MS: "${POKER_BOT_EQUITY_CHUNK_MS:-8}"
 
+      # agent 版人机（多轮工具调用）。默认关闭；POKER_AGENT=on 才启用。
+      # 这几行必须在这里显式透传——compose 不会把宿主 .env 里的变量自动
+      # 塞进容器，漏一行的后果就是 .env 改了却毫无效果（语音那次就是这么坏的）。
+      POKER_AGENT: "${POKER_AGENT:-}"
+      POKER_AGENT_MODEL: "${POKER_AGENT_MODEL:-}"
+      # 下面三个必须给出具体默认值，不能像上面两行那样留空：代码里读的是
+      # `Number(env.X ?? 默认值)`，而空字符串不是 nullish，Number('') === 0——
+      # 留空会把「4 步」悄悄变成 2 步、「20 秒」变成 1 秒。
+      POKER_AGENT_MAX_STEPS: "${POKER_AGENT_MAX_STEPS:-4}"
+      POKER_AGENT_MAX_MS: "${POKER_AGENT_MAX_MS:-20000}"
+      POKER_AGENT_EQUITY_MS: "${POKER_AGENT_EQUITY_MS:-1200}"
+
       # 牌桌初始设置。不填就用代码默认值（盲注 5/10、起始筹码 1000）。
       # 填了以后每次重启都是这个配置，不用再手工点一遍设置页。见 .env.example。
       POKER_BLINDS: "${POKER_BLINDS:-}"

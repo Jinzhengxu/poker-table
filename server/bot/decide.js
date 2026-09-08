@@ -146,10 +146,22 @@ export function buildUser(state, opts = {}) {
       `你的胜率：约 ${equity.pct}%（±${equity.margin}，对 ${equity.opponents} 个对手，` +
       `${equity.sims} 次模拟）`
     );
-    lines.push(
-      '  注意：该胜率按对手持【随机两张牌】估算。真实对手是有范围的，' +
-      '跟到后面街的人通常不拿垃圾牌，所以这个数偏乐观——对手越紧、越是后面的街，高估越多。'
-    );
+    // 建模假设必须跟着实际用的那个走。写死成「随机两张牌」的话，一旦
+    // 上游改用了推断范围，提示词就在骗模型 —— 它会以为这个数偏乐观，
+    // 于是又自己往下打一次折，等于修正了两遍。
+    if (equity.range === null || equity.range === undefined) {
+      lines.push(
+        '  注意：该胜率按对手持【随机两张牌】估算。真实对手是有范围的，' +
+        '跟到后面街的人通常不拿垃圾牌，所以这个数偏乐观——对手越紧、越是后面的街，高估越多。'
+      );
+    } else {
+      lines.push(
+        `  注意：该胜率已经按【对手只玩最强的前 ${Math.round(equity.range * 100)}% 起手牌】估算过了，` +
+        '这个假设是从本手的行动序列推出来的（对手加注越多、街数越靠后，范围越紧）。' +
+        '不要再自己往下打折——那等于修正了两遍。' +
+        '如果你觉得这个对手比这更松或更紧，按你的判断调整结论。'
+      );
+    }
   }
   lines.push('');
 
@@ -234,8 +246,12 @@ export function buildUser(state, opts = {}) {
  * @param {object} state  同一次决策用的快照
  * @param {object} [traits] 人格特质，退回规则策略时用
  * @param {object} [equity] 胜率估算，退回规则策略时用
- * @returns {{action:{type:string,amount?:number}, say:string|null, adjusted:string|null}}
- *          adjusted 非空表示做了修正，用于日志
+ * @returns {{action:{type:string,amount?:number}, say:string|null, adjusted:string|null,
+ *            usedFallback?:boolean}}
+ *          adjusted    非空表示做了修正，用于日志
+ *          usedFallback 为真表示模型的输出完全没法用、动作是规则策略给的。
+ *                       调用方可以据此决定要不要走一条能拿到更好胜率的兜底路径
+ *                       （agent/index.js 就是这么用的）
  */
 export function coerceAction(raw, state, traits, equity) {
   const legal = state.you.legal;
@@ -253,6 +269,7 @@ export function coerceAction(raw, state, traits, equity) {
       action: fallbackAction(state, traits, equity),
       say,
       adjusted: `动作 "${type || '(空)'}" 不认识，改用规则策略`,
+      usedFallback: true,
     };
   }
 
@@ -275,9 +292,15 @@ export function coerceAction(raw, state, traits, equity) {
       type = 'raise';
     } else if (type === 'check' && legal.canCall) {
       // 想过牌但面对下注，说明模型看错了局面——按规则策略重来
-      return { action: fallbackAction(state, traits, equity), say, adjusted: 'check 不合法（面对下注），改用规则策略' };
+      return {
+        action: fallbackAction(state, traits, equity), say,
+        adjusted: 'check 不合法（面对下注），改用规则策略', usedFallback: true,
+      };
     } else {
-      return { action: fallbackAction(state, traits, equity), say, adjusted: `${type} 在当前局面不合法，改用规则策略` };
+      return {
+        action: fallbackAction(state, traits, equity), say,
+        adjusted: `${type} 在当前局面不合法，改用规则策略`, usedFallback: true,
+      };
     }
   }
 

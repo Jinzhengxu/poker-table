@@ -37,7 +37,8 @@ from a URL.
 - **Phone-friendly.** Portrait layout, the table scales proportionally, and
   action buttons are sized for thumbs.
 - **Zero external dependencies in the browser.** No CDN, no webfonts, no images —
-  the cards are drawn entirely in CSS. The server depends only on `ws`.
+  the cards are drawn entirely in CSS. The server depends only on `ws`; agent mode
+  adds three optional packages it loads dynamically, and runs without them.
 - **Small.** The container idles at roughly 18 MB of RAM, plus about 20 MB more
   when hotword is enabled — its vocabulary is held in memory.
 
@@ -295,6 +296,7 @@ Three deliberate choices:
 - **The modelling assumption ships with the number.** Opponents are dealt random
   cards, so the estimate is **optimistic** — real opponents have ranges, and players
   who reach later streets aren't holding junk. Left unsaid, the model over-trusts it.
+  (With agent mode below, picking that assumption becomes the model's job.)
 
 `bot/fastscore.js` exists for this: `evaluator.js` enumerates 21 combinations and
 builds three objects per call, which is wasted work when Monte Carlo needs thousands
@@ -304,9 +306,314 @@ the **identical scoring formula**, with a test asserting bit-for-bit agreement a
 
 > **This is not a solver.** GTO means approximating a Nash equilibrium over the whole
 > game tree; postflop solutions run to terabytes and are conditional on the ranges
-> that reached the node — they neither fit nor compute in a 200 MB container. Preflop
-> ranges genuinely do tabulate, but that is a different thing and this project
-> doesn't ship them.
+> that reached the node — they neither fit nor compute in a 200 MB container. Agent
+> mode below makes a range assumption (top X% of a playability-tier ordering), which is
+> still a long way from a solver: it cuts a static starting-hand ordering that does not
+> vary with the board, position or stack depth, and has no notion of equilibrium.
+
+### Agent mode (`POKER_AGENT=on`)
+
+Off by default. Turned on, the bot goes from one model call to a multi-step tool loop.
+
+**It exists to fix the optimistic equity above.** In single-shot mode we compute equity
+for the model and paste it into the prompt, with the assumption hard-coded to "opponents
+hold two random cards". The model reads an inflated number and has no way to question it.
+Agent mode makes equity a tool and lets the model supply the range:
+
+| Preflop, one opponent | Any two | Top 35% | Top 15% | Top 5% |
+| --- | ---: | ---: | ---: | ---: |
+| **A♠K♦** | 65.1% | 62.7% | 58.4% | **44.9%** |
+| **A♠A♦** | 85.0% | 84.2% | 83.6% | 82.4% |
+| **Q♠Q♦** | 79.7% | 72.6% | 68.4% | 60.0% |
+| **7♥6♥** | 45.7% | 39.0% | 35.4% | 28.4% |
+| **7♥2♦** | 34.7% | 29.6% | 25.8% | 19.1% |
+
+Same hand, same pot odds, and the conclusion can flip from call to fold. That gap is the
+entire value of this layer. Two rows are worth pausing on:
+
+- **AA barely moves** (85.0 → 82.4). If narrowing the range pushed every hand's equity
+  down, it would be a pessimism constant carrying no information. AA holds because it is
+  already ahead of everything — which is exactly what "range" means physically.
+- **QQ falls about as fast as AKo** from a much higher start. Once the range narrows, a
+  big pair faces only bigger pairs and AK, while AK at least gets to fight the opponent's
+  A-x for a kicker.
+
+#### How the range is ordered
+
+The sort key has two parts: **playability tier first, real equity within a tier**.
+
+Equity alone is not enough. Equity answers "how strong is this hand"; a range answers
+"which hands would they play". Comparing real opening ranges against "top X% by equity"
+at matched combo counts, CO overlaps only 75%, and the disagreement is entirely
+one-directional: equity ordering adds offsuit high cards (A9o A8o K9o A5o) and drops
+suited connectors and small pairs (76s 65s 54s 98s 22 33). 76s ranks 116/169 by equity,
+yet it is in every CO opening chart; K9o ranks 40th and is in none of them.
+
+- **Playability tier** (`server/bot/data/ranges.js`): read off a ladder of real ranges.
+  How tight a spot a hand still shows up in is how playable it is — from "still jamming
+  over a 4bet" (1.2%, only AA/AKs/KK) out to "big blind defending a small blind open"
+  (65%). Each hand lands in the first tier it appears in; 12 tiers total.
+- **Equity within a tier** (`server/bot/data/preflop.js`): each of the 169 starting hands
+  against one random opponent, computed with this project's own `evaluator.js` (one
+  million simulations per hand) and cross-checked against published figures — AA 85.2%,
+  KK 82.4%, AKo 65.3%, 72o 34.6%, worst deviation 0.1 points.
+
+Overlap with real ranges after the change:
+
+| | Old (equity only) | New (tier + equity) |
+| --- | ---: | ---: |
+| CO open (an input to the ladder — this is fitting, not validation) | 75.1% | 100% |
+| **31 charts not used to build the ladder (held out)** | **72.9%** | **86.9%** |
+
+The held-out row is the one that carries weight: ISO, SB/BTN defence and the various
+vs-3bet charts took no part in the construction.
+
+> **Provenance and licence**: tiers are derived from
+> [AHTOOOXA/poker-charts](https://github.com/AHTOOOXA/poker-charts) (MIT),
+> `greenline.ts`, pinned at commit `85ad2041`. That file states it was extracted from
+> GreenCharts2024_01.pdf (Greenline Poker) — the underlying charts are a third party's
+> work, and relicensing them as MIT may not have been the upstream repo's to do. We take
+> only the tier assignment, reproduce none of the original presentation, and redistribute
+> no PDF. Judge that chain for yourself.
+>
+> **Remaining limitations**: the tiers come from one 6-max 100bb cash-game chart set. They
+> do not vary by exact position or stack depth and carry no mixed frequencies. Tables here
+> are 2–8 handed with stacks that move.
+>
+> One property worth knowing: **suited connectors appear in the tightest tiers**. UTG's
+> continuing range against a 3bet flats 87s and T9s — that is genuine GTO play (suited
+> connectors continue on playability and implied odds), not a parsing artifact. The
+> consequence is that this ordering places 87s ahead of AJo. As a statement about *ranges*
+> that is correct (AJo folds to a 3bet, 87s does not); against a human rock who plays by
+> raw hand strength, putting 87s inside "the top 7%" is wrong. That is the inherent cost of
+> using "how tight a spot it still shows up in" as the proxy.
+
+A decision looks roughly like this:
+
+```
+read action sequence → read_opponents (老陈, early position: VPIP 22% / AF 3.1, showed AK, 88)
+                     → estimate_equity(range=0.10) → 41%, calling needs 45%
+                     → act(fold)
+```
+
+Three tools, deliberately only three:
+
+| Tool | What it does |
+| --- | --- |
+| `estimate_equity` | Monte Carlo equity under the model's own range assumption, plus the break-even percentage for calling |
+| `read_opponents` | Cross-hand profiles: VPIP, PFR, aggression factor, fold-to-bet, recent showdowns, **plus preflop stats split by position and which position bucket they are in this hand** |
+| `act` | The loop's only exit. Executes nothing; calling it stops the loop |
+
+Pot odds, position and the action sequence stay in the prompt — that is arithmetic and
+plain fact, and spending a tool round-trip to fetch it would only add latency and
+failure surface.
+
+**Opponent memory is built entirely from the redacted snapshot.** During a decision it
+absorbs the current hand's action sequence (idempotently — deciding several times in one
+hand never double-counts). At showdown the room calls `observe()` once to record who
+showed what: **that moment is the only time opponent hole cards are visible at all**, since
+during the bot's own turn they are still `"??"`. Below six hands of sample it reports no
+profile — a "VPIP 100%" computed from two hands is worse than silence, because the model
+will believe it.
+
+**Profiles are split by position.** Position is the single strongest predictor of a
+preflop range — the same player's entry rate from under the gun and from the button can
+differ by more than a factor of two, and pooling them produces a VPIP that describes
+neither. Seats fall into four buckets: `blinds`, `late` (button and the seat before it),
+`middle`, `early`. The split is by distance from the button rather than 6-max position
+names, because tables here are 2–8 handed. Four buckets rather than six named positions is
+a sample-size decision, and only preflop stats are split — postflop aggression reads more
+like temperament, and quartering its sample would buy nothing but noise. `read_opponents`
+adds a `here` field: which bucket this opponent sits in *this hand*, and their history
+there.
+
+**A bot's profile is dropped when it leaves the table.** Bot nicknames come from a fixed
+pool of twenty in `persona.js`, and profiles are keyed by nickname. Without the drop, the
+next bot to draw "老陈" inherits the previous 老陈's VPIP and showdown history — with a
+completely different randomly drawn persona. The name pool is barely larger than the
+table, so on a long-running server this is a certainty, not a coincidence. Humans are
+exempt: they pick their own names, they reconnect, and their profiles should survive.
+
+**It wraps the old driver rather than replacing it.**
+
+```
+PokerAgent.decide()
+  ├─ succeeded → the agent's action (still clamped by the same coerceAction)
+  └─ any failure → BotDriver.decide() (single-shot LLM → rule policy → always legal)
+```
+
+Step budget exceeded, wall clock exceeded, model without function calling, packages not
+installed at all — every one of those lands on that fallback path. So the three safety
+rules below hold unchanged, and behaviour when every external service is down is exactly
+what it was before.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `POKER_AGENT` | off | Set to `on` to enable |
+| `POKER_AGENT_MODEL` | same as `POKER_BOT_MODEL` | Agent-specific model; **must support function calling** |
+| `POKER_AGENT_MAX_STEPS` | `4` | Max steps per decision. Each step is a model call, so this sets the bill |
+| `POKER_AGENT_MAX_MS` | `20000` | Wall-clock cap per decision; over it, fall back to single-shot |
+| `POKER_AGENT_EQUITY_MS` | `1200` | Budget per `estimate_equity` call |
+
+The costs, stated plainly: 2–4 model calls per decision, **roughly 3× the tokens** of
+single-shot mode, and a few seconds more latency. This path also needs `ai`,
+`@ai-sdk/openai-compatible` and `zod` (~21 MB). The table itself still depends only on
+`ws` — those three are pulled in via a dynamic `import()`, and if they are missing the
+server logs it and falls back to single-shot.
+
+### Evaluation: what is range modelling actually worth
+
+`npm run eval` is a self-play harness that ablates exactly one thing: same rule policy,
+same decks, same random stream, with the only variable being whether equity is computed
+against random cards or against a range inferred from the action sequence.
+
+It does not evaluate the agent directly — that would measure the product of the model's
+judgement and the value of range modelling, and burn API credits on every run. A
+deterministic, deliberately dumb heuristic (`bot/range.js`) answers the prior question.
+
+```bash
+npm run eval -- --calibrate --decks 600   # is the range inference accurate?
+npm run eval -- --shadow --decks 800      # how many decisions change?
+npm run eval -- --decks 9000              # bb/100; enormous variance
+```
+
+#### The calibration check: the only direct way to falsify a range inference
+
+Inside the harness we hold the engine's **full information**, so we can ask directly: when
+the heuristic claims "the opponent's range is the top X%", where do those opponents' actual
+cards rank? Every decision and every live opponent is one observation, so a few hundred
+decks expose systematic bias — two orders of magnitude less variance than bb/100.
+
+That check caught a real error in the first version of the heuristic:
+
+| Assumed range | Opponents' actual rank (median) | |
+| --- | --- | --- |
+| Top 5% | Top 20% | **4× too tight** |
+| Top 10% | Top 20% | 2× too tight |
+| Top 45% (single raise) | Top 20% | 2.2× too *loose* |
+
+Two errors pointing opposite ways, with one explanation: **the first act of aggression
+carries most of the information and each later one adds much less**, while the original
+multiplicative model treated them alike and compounded far too hard. "Someone bet three
+streets, therefore he only plays the top 5% of hands" is absurd in any population — real
+players bluff. An over-tight range makes the bot fold hands it should call.
+
+After recalibrating on that data (first attack shrinks to 0.35, each later one ×0.8, floor
+raised from 0.05 to 0.12), worst error fell from 4× to 2×.
+
+**Changing the ordering invalidated those constants.** Which hands "top X%" denotes is set
+by the sort order, so moving to playability tiers made the fitted constants stale by
+construction. Recalibrating found two things:
+
+- the ordering change **fixed the tight end by itself** — the bucket that was 4× too tight
+  now reads 1×;
+- one systematic error remained: a single raise was inferred too loose (claimed top 35%,
+  opponents actually held top 10%), consistent across three seeds.
+
+**This was deliberately not fitted away.** The calibration population is the rule bot
+itself: a fixed handStrength threshold that never bluffs preflop, so "someone raised" is
+equivalent to "they have it" *for that population*. Real players and LLMs open far wider
+and steal blinds. Fitting to the measured 0.10 would weld a non-bluffing opponent's
+properties into the code. `FIRST_SHRINK` went to 0.22 as a deliberate compromise, leaving
+headroom for opponents who bluff.
+
+The floor was also tried at 0.06, to give multi-street aggression more resolution. **The
+measurement sent it back**: the top-5% bucket immediately went 2–4× too tight again —
+exactly what 0.12 was there to prevent.
+
+With 0.22 / 0.12, three seeds × 700 decks:
+
+| Assumed range | Opponents' actual rank (median) | |
+| --- | --- | --- |
+| Top 10% | Top 10% / Top 20% / Top 10% | 1× / 2× / 1× |
+| Top 20% | Top 10% (all three seeds) | 0.5× |
+| Top 100% | Top 50% (all three seeds) | 0.5× — **this one is correct**: a random hand's median *is* the 50th percentile |
+
+Worst deviation fell from 3.3× to 2×. Two regression guards pin this down:
+`test/eval.test.js` asserts "no bucket is more than 3× too tight", and `test/agent.test.js`
+asserts a single raise infers a range inside the calibrated band [0.15, 0.30] — so changing
+the ordering or the constants without re-running `--calibrate` fails the build.
+
+#### Shadow evaluation: the mechanism does engage
+
+The existing policy drives the hand; at every equity-relevant decision both assumptions
+are computed and we record whether the range assumption would change the call.
+
+Across the 1,206 decisions where the range narrowed, **11.7% changed action**, equity was
+revised down by a median of **9.4 points**, and the direction was **156 "call → fold"
+against 20 the other way** — close to 8:1 toward cutting losses.
+
+**The 0.9% is a measurement noise floor, not zero.** When range = 1 both estimates run the
+identical code path and should agree exactly; they still disagree 0.9% of the time purely
+because two Monte Carlo runs drew different samples. Read the 11.7% against 0.9%. An A/B
+result with no measured noise floor should not be trusted.
+
+By street (800 decks, seed 3):
+
+| Street | Decisions | Mean inferred range | Action changed |
+| --- | ---: | ---: | ---: |
+| Preflop | 4093 | 0.95 | 1.5% |
+| Flop | 89 | 0.17 | 22.5% |
+| Turn | 326 | 0.14 | 10.7% |
+| River | 547 | 0.13 | 11% |
+
+Preflop barely moves (mean inferred range 0.95, i.e. almost no narrowing) — **a limitation
+of this heuristic**, which infers nothing without a raise, and preflop dominates the equity
+decisions. The real agent has the model pick the range, and it can also reason from
+position, player count and opponent profiles — which is why profiles are now split by
+position.
+
+#### bb/100: a significant difference, at last
+
+9,000 decks / 18,000 hands, six-handed, two independent seeds per row:
+
+| Ordering | Single-raise shrink | seed 1 | seed 2 | Pooled |
+| --- | ---: | ---: | ---: | ---: |
+| Chen | first version | −5.81 ± 11.35 | — | — |
+| Equity only | first version | −7.54 ± 11.13 | — | — |
+| Equity only | 0.35 | +6.23 ± 9.88 | +3.15 ± 9.69 | +4.7 ± 6.9 |
+| Playability tiers | 0.35 | +1.49 ± 9.99 | +14.28 ± 8.98 | +7.9 ± 6.7 |
+| **Playability tiers** | **0.22** | **+16.04** ± 9.22 | **+13.67** ± 9.49 | **+14.9 ± 6.6** |
+
+Both seeds of the last row are individually significant (p=0.0007 and p=0.0018), pooled
+z=4.4. **This is the first time this harness has shown that range modelling wins money.**
+
+**How much each change contributed cannot be resolved at this sample size.** The middle row
+is the ablation. Seed 1 gave +1.49 (p=0.77, nowhere near significant) and I nearly wrote
+down "the constant did the work, not the ordering". Seed 2 gave +14.28 (p=0.0018,
+significant). **Identical code, and the two seeds differ by 12.8 bb/100 — more than the
+effect being attributed.** That row's pooled interval overlaps both its neighbours, so the
+honest statement is: the final configuration significantly beats the baseline, and the
+credit cannot be split.
+
+This is a live instance of the warning this report keeps repeating: at this sample size
+point estimates flip sign, and attributing from a single seed produces a confident wrong
+answer.
+
+One caveat, now more important than before: **calibration was done against the rule bot's
+own population.** Its firing threshold is a fixed handStrength cutoff and it never bluffs
+preflop, so "assume the opponent is tighter and fold more" is nearly free against it.
+Against humans or an LLM who bluff, the same constant is exploitable. The +14.9 is
+**in-sample** in that sense and must not be read as "it beats humans by 15 bb/100".
+
+The three-part conclusion still holds:
+
+1. the calibration check proved the first range inference had a 4× systematic error, now fixed;
+2. the shadow evaluation proves the mechanism changes decisions, in the direction theory
+   predicts (11.7% against a 0.9% noise floor, 156:20 toward cutting losses);
+3. bb/100 now **does** show it wins money **against this opponent population** — a different
+   population needs a fresh measurement.
+
+Two variance-reduction techniques carry the bb/100 measurement, both in `eval/harness.js`:
+**duplicate dealing** (each deck played twice with policies rotated one seat, so card luck
+cancels) and **treating a deck, not a hand, as the independent unit** (the two replays are
+correlated by construction; counting hands would inflate the sample twofold and shrink the
+interval into fiction). When a result is not significant the report prints how many more
+decks significance would need, together with a warning that an underpowered point estimate
+changes sign — a warning that has now come true three times: once going from 2,000 to 9,000
+decks, once when the ordering changed, and once in the ablation above, where identical code
+differed by 12.8 bb/100 across two seeds and overturned the conclusion I had drawn from the
+first one.
 
 Three rules the bot code is built around, each with a test that enforces it:
 

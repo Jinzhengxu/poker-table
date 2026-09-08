@@ -1,8 +1,12 @@
 # 德州扑克在线桌 —— 生产镜像
 #
-# 设计取舍：整个服务只有一个运行时依赖（ws），没有任何构建步骤，
-# 所以不需要多阶段构建 —— 单阶段 + 精确的 COPY 白名单已经足够小
-# （最终镜像 ≈ node:22-alpine 基础层 + 几十 KB 源码 + ws）。
+# 设计取舍：没有任何构建步骤，所以不需要多阶段构建 —— 单阶段 + 精确的
+# COPY 白名单已经足够小。
+#
+# 依赖分两层：牌桌本身只要 ws（204KB）；agent 版人机（POKER_AGENT=on）另外要
+# ai / @ai-sdk / zod，约 21MB。后者是可选的——包不在也能启动，只是自动退回
+# 单轮人机。想要最小镜像就把 npm ci 换成 `npm ci --omit=dev --omit=optional`
+# 并把那三个包挪到 optionalDependencies。
 FROM node:22-alpine
 
 # NODE_ENV=production 会让 npm / Express 之类的库走生产分支；

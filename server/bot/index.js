@@ -11,6 +11,7 @@
 import { clientsFromEnv, isRetryable, LLMClient, PROVIDERS } from './provider.js';
 import { buildSystem, buildUser, coerceAction, fallbackAction } from './decide.js';
 import { estimateEquityAsync, countLiveOpponents } from './equity.js';
+import { inferOpponentRange } from './range.js';
 
 // 人格改成随机组合生成，见 persona.js。每个人机在加入时抽一次，
 // 之后整个生命周期不变（所以它的打法是一致的，不会一手紧一手松）。
@@ -142,6 +143,15 @@ export class BotDriver {
   /**
    * 算这次决策的胜率。任何异常都吞掉返回 null——胜率是加分项，
    * 拿不到就退回原来的行为，绝不能因为它让人机卡住。
+   *
+   * 对手范围从本手的行动序列推（range.js）。以前这里写死成「随机两张牌」，
+   * 那个假设系统性偏乐观，于是规则策略会做一堆亏钱的跟注 —— 跟注决策就是
+   * 拿胜率和底池赔率比大小，喂给它一个偏高的胜率，它就会跟一些本该弃的牌。
+   *
+   * 注意两处配套：
+   *   - 提示词里的建模说明会跟着 equity.range 走（见 decide.js 的 buildUser），
+   *     否则模型以为这个数还偏乐观，会自己再打一次折，等于修正两遍。
+   *   - 翻牌前没人加注时推断结果是 1（任意两张），行为和以前完全一样。
    */
   async #equityFor(state, signal) {
     if (!this.equitySims) return null;                 // 设成 0 = 关闭
@@ -149,6 +159,16 @@ export class BotDriver {
     if (!Array.isArray(hole) || hole.length !== 2) return null;
     const opponents = countLiveOpponents(state);
     if (opponents < 1) return null;
+
+    let opponentRange = null;
+    try {
+      opponentRange = inferOpponentRange({
+        history: state.table?.history,
+        mySeat: state.you?.seat,
+      });
+    } catch {
+      opponentRange = null;                            // 推不出来就按随机两张牌
+    }
 
     try {
       return await estimateEquityAsync({
@@ -158,6 +178,7 @@ export class BotDriver {
         sims: this.equitySims,
         budgetMs: this.equityMs,
         chunkMs: this.equityChunkMs,
+        opponentRange,
         signal,
       });
     } catch (e) {

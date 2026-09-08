@@ -59,7 +59,19 @@ const MIME = {
 };
 
 // 人机驱动：没配任何 LLM key 也能构造成功，只是所有人机退化成规则策略。
-const botDriver = new BotDriver();
+//
+// POKER_AGENT=on 时在外面再套一层 agent（多轮工具调用：自己判断对手范围 ->
+// 按那个范围算胜率 -> 提交动作）。agent 那一路需要 ai / @ai-sdk 这几个包，
+// 所以用动态 import 引：**装不上就自动退回单轮**，牌桌本身仍然只依赖 ws。
+let botDriver = new BotDriver();
+if (String(process.env.POKER_AGENT || '').toLowerCase() === 'on') {
+  try {
+    const { PokerAgent } = await import('./agent/index.js');
+    botDriver = new PokerAgent({ fallback: botDriver });
+  } catch (e) {
+    console.error(`[agent] 启用失败，退回单轮人机：${e.message}`);
+  }
+}
 console.log(`[bot] 人机后端：${botDriver.describe()}`);
 
 // 牌桌初始配置：代码默认值 -> 环境变量覆盖。房主之后仍可在设置页改，

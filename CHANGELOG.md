@@ -9,6 +9,217 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Range ordering now sorts by playability tier first, equity second.** Equity alone
+  answers "how strong is this hand"; `opponentRange` asks "which hands would they
+  play". Measured against real opening charts at matched combo counts, equity-only
+  ordering overlaps CO opens by just 75%, and the disagreement is entirely
+  one-directional — it adds offsuit high cards (A9o A8o K9o A5o) and drops suited
+  connectors and small pairs (76s 65s 54s 98s 22 33). 76s ranks 116/169 by equity yet
+  appears in every CO chart; K9o ranks 40th and appears in none.
+
+  `server/bot/data/ranges.js` assigns each of the 169 hands one of 12 playability
+  tiers, read off a nested ladder of real ranges from "still jamming over a 4bet"
+  (1.2%: AA/AKs/KK) out to "big blind defending a small blind open" (65%). Generated
+  by `scripts/build-preflop-ranges.mjs`, which self-checks (169 hands present, tier
+  bounds monotone, 76s ahead of K9o) and refuses to write on failure.
+
+  Overlap with real ranges, held-out charts only (31 charts that took no part in
+  building the ladder): **72.9% → 86.9%**.
+
+  Provenance: tiers derive from [AHTOOOXA/poker-charts](https://github.com/AHTOOOXA/poker-charts)
+  (MIT), `greenline.ts` at commit `85ad2041`, which states it was extracted from
+  GreenCharts2024_01.pdf (Greenline Poker). The underlying charts are a third party's
+  work and relicensing them may not have been upstream's to do; we take only the tier
+  assignment and redistribute no original presentation. See the generator's header.
+
+- **Opponent profiles are split by position.** Position is the strongest single
+  predictor of a preflop range — the same player's entry rate from under the gun and
+  from the button can differ by more than 2×, and pooling them describes neither.
+  `positionOf()` buckets seats into `blinds` / `late` / `middle` / `early` by distance
+  from the button (tables are 2–8 handed, so 6-max position names do not apply). Only
+  preflop stats are split; postflop aggression reads as temperament and quartering its
+  sample would buy noise. `read_opponents` adds a `here` field naming the opponent's
+  bucket *this hand* plus their history in it. Position is derived from `isSB`/`isBB`
+  when available and from `isButton` otherwise — the former go false once the hand
+  ends, which is exactly when `#finishHand()` calls `observe()`.
+
+### Fixed
+
+- **A bot's opponent profile is now dropped when it leaves the table.** Profiles are
+  keyed by nickname, and bot nicknames come from a fixed pool of twenty in
+  `persona.js`. Without the drop, the next bot to draw "老陈" inherited the previous
+  老陈's VPIP, fold-to-bet and showdown history — with a completely different randomly
+  drawn persona. The name pool is barely larger than the table, so on a long-running
+  server this was a certainty, not a coincidence. `Room#vacate()` calls the new
+  optional `botDriver.forget?.(name)`; humans are deliberately exempt, since they pick
+  their own names, reconnect, and should keep their profiles.
+
+- **`runMatch` zero-sum test no longer compares rounded values with strict equality.**
+  `Math.round` breaks ties toward +∞, so a true value landing exactly on a half-cent
+  rounds to `+70.63 / −70.62`. The invariant held; the assertion was wrong. It now
+  allows one rounding step.
+
+### Changed
+
+- **bb/100 is significant for the first time.** 9,000 decks / 18,000 hands, six-handed,
+  playability-tier ordering with the recalibrated constant: **+16.04 ± 9.22 (seed 1,
+  p=0.0007)** and **+13.67 ± 9.49 (seed 2, p=0.0018)**, pooled **+14.9 ± 6.6**, z=4.4.
+  Previously the same harness could only show that the sign had gone from consistently
+  negative to consistently positive.
+
+  **The credit cannot be split between the two changes.** The ablation (new ordering, old
+  constant) gave +1.49 ± 9.99 on seed 1 — nowhere near significant, which nearly produced
+  the conclusion "the constant did the work, not the ordering" — and +14.28 ± 8.98
+  (p=0.0018) on seed 2. Identical code, 12.8 bb/100 apart, larger than the effect being
+  attributed. Its pooled interval overlaps both neighbours.
+
+  Caveat, now load-bearing: the constant was tuned against the rule bot's own population,
+  which never bluffs preflop, so "assume tighter and fold more" is nearly free against it.
+  The number is in-sample in that sense and is not a claim about play against humans.
+
+- **Range heuristic recalibrated for the new ordering.** "Top X%" now denotes a
+  different set of hands, so the constants fitted against the equity ordering were
+  stale by construction. Recalibrating found that the ordering change *by itself*
+  fixed the tight end (the bucket that was 4× too tight now reads 1×), leaving one
+  systematic error: a single raise was inferred too loose (claimed top 35%, opponents
+  actually held top 10%, consistent across three seeds). `FIRST_SHRINK` 0.35 → 0.22,
+  deliberately **not** fitted all the way to 0.10 — the calibration population is the
+  rule bot itself, which has a fixed handStrength threshold and never bluffs preflop,
+  so "someone raised" is equivalent to "they have it" for that population alone.
+  `FLOOR` was tried at 0.06 and reverted to 0.12 on measurement: the top-5% bucket
+  immediately went 2–4× too tight again. Worst deviation 3.3× → 2×.
+
+- **Range ordering previously used real preflop equity, not the Chen formula.**
+  `server/bot/data/preflop.js` holds each of the 169 starting hands' equity against
+  one random opponent, generated by `scripts/build-preflop-equity.mjs` from this
+  project's own `evaluator.js` (one million simulations per hand, fixed seed). The
+  generator refuses to write the file if it deviates more than one point from
+  published figures, and the anchors are pinned by a test. "Top X%" now has an exact
+  meaning: the top X% of combos by equity.
+
+  Effects on the shadow evaluation, same seed, ordering as the only variable:
+  decisions changed 11.5% → 14.0%, median equity revision 9.2 → 9.8 points,
+  noise floor 0.9% → 0.7%, and the fold/call direction ratio sharpened 6:1 → 8.9:1.
+
+- **The rule fallback now uses range-aware equity too.** `BotDriver` infers a range
+  from the action sequence before estimating equity, instead of assuming random
+  cards. The call decision compares equity to pot odds, so feeding it an
+  optimistic number made the bot call hands it should fold. The prompt's stated
+  modelling assumption follows the actual one (`buildUser` branches on
+  `equity.range`) — hardcoding "random two cards" would have the model discount an
+  already-discounted number twice. When the agent's action is unusable, it now
+  routes to `BotDriver` rather than to `coerceAction`'s equity-less rule fallback.
+
+- **Calibration check (`npm run eval -- --calibrate`).** Inside the harness we hold
+  the engine's full information, so we can ask where opponents' actual cards rank
+  when the heuristic claims a range. Every live opponent at every decision is one
+  observation — two orders of magnitude less variance than bb/100, and the only
+  direct way to falsify a range inference.
+
+  It caught a real error: the first heuristic was **4× too tight** at the top-5%
+  bucket while simultaneously 2.2× too loose after a single raise. One explanation
+  covers both — the first act of aggression carries most of the information and
+  later ones add much less, while a multiplicative model compounds them equally.
+  Recalibrated (first attack 0.35, later ones ×0.8, floor 0.05 → 0.12), the worst
+  error fell to 2× and the largest bucket now lands exactly. bb/100 followed:
+  −7.54 → **+6.23** (seed 1) and **+3.15** (seed 2), pooled ≈ +4.7 ± 6.9 — the sign
+  went from consistently negative to consistently positive, though the interval
+  still spans zero and no significant difference has been measured. The heuristic's
+  constants are pinned by a test asserting no bucket exceeds 3× too tight.
+
+  This function must never be referenced by runtime code: it reads opponents' hole
+  cards, which a bot at the table must never have. It lives only in `server/eval/`,
+  which is not copied into the image.
+
+- **Self-play evaluation harness (`npm run eval`, `server/eval/`).** Ablates one thing:
+  same rule policy, same decks, same random stream, with equity computed either
+  against random cards or against a range inferred from the action sequence
+  (`bot/range.js`).
+
+  Two variance-reduction techniques carry it. **Duplicate dealing**: each deck is
+  played twice with policies rotated one seat, so card luck cancels between the
+  arms. **A deck, not a hand, is the independent unit**: the two replays of one
+  deck are strongly correlated by construction, and counting hands would inflate
+  the sample size twofold and shrink the confidence interval into fiction.
+
+  `--shadow` adds a much lower-variance measurement: drive the hand with the
+  existing policy, and at every equity-relevant decision compute both assumptions
+  and record whether the range assumption would change the call.
+
+  What it found, both halves: where the heuristic narrows the range (1,125
+  decisions), **11.5% of actions change**, equity is revised down by a median of
+  **9.2 points**, and the direction is **139 "call → fold" against 23 the other
+  way** — as theory predicts, reproducible across seeds. But bb/100 **does not
+  resolve**: +11.51 ± 21.31 over 2,000 decks and −5.81 ± 11.35 over 9,000 decks
+  from the *same random stream*, so the point estimate flipped sign as the sample
+  grew. The first number was noise, not a near-miss.
+
+  Reporting deliberately makes that hard to fudge. Every run prints a confidence
+  interval; a non-significant result is labelled "没测出差别" (no difference
+  measured), never "tied"; and the harness computes how many more decks
+  significance would need, with the caveat that an underpowered point estimate
+  changes sign. The shadow mode also reports its own **measurement noise floor**
+  (0.9%: two Monte Carlo runs on the identical code path disagreeing purely from
+  sampling), so the 12% figures are read against 0.9% rather than against zero.
+
+- **`bot/range.js`** — deterministic opponent-range inference from the action
+  sequence, used only by the evaluation harness. Deliberately dumb (it counts how
+  often opponents attacked and nothing else) so the ablation measures range
+  modelling itself rather than a model's judgement. Its blind spot is documented:
+  it infers nothing preflop without a raise, which is 77% of equity decisions.
+
+- **`actionHistory(events)` exported from `server/engine.js`** — the per-street
+  action sequence transform, previously private to `Room`. Blinds and antes are
+  `blind` / `ante` events rather than `action`, so VPIP statistics never have to
+  separate voluntary money from posted blinds. Now shared by the snapshot, the
+  bot prompt and the harness.
+
+- **Agent mode for bots (`POKER_AGENT=on`, off by default).** The bot goes from
+  one model call to a multi-step tool loop built on the Vercel AI SDK.
+
+  What it actually fixes: single-shot mode computed equity *for* the model and
+  pasted it into the prompt with the assumption hard-coded to "opponents hold two
+  random cards" — a systematically optimistic number the model had no way to
+  question. Equity is now a tool, and the model supplies the range. AKo preflop
+  against one opponent is ~66% against any two cards but only ~47% against a
+  top-5% range; same hand, same pot odds, and the conclusion flips from call to
+  fold. (AA is ~83% under every assumption, because it is already ahead of
+  everything — also correct.)
+
+  Three tools: `estimate_equity` (Monte Carlo under a caller-supplied range),
+  `read_opponents` (cross-hand profiles), and `act` (the loop's only exit — it
+  executes nothing and calling it stops the loop). Pot odds, position and the
+  action sequence stay in the prompt; spending a tool round-trip on arithmetic
+  would only add latency and failure surface.
+
+  It wraps the existing driver rather than replacing it. Step budget exceeded,
+  wall clock exceeded, model without function calling, packages not installed —
+  every failure lands on `BotDriver.decide()` (single-shot LLM → rule policy →
+  always legal). All three bot safety rules are unchanged, and behaviour with
+  every external service down is exactly what it was before.
+
+  Costs, stated plainly: 2–4 model calls per decision, roughly 3× the tokens, a
+  few seconds more latency, and `ai` / `@ai-sdk/openai-compatible` / `zod`
+  (~21 MB) for that path only. The table still depends only on `ws` — those are
+  loaded via a dynamic `import()` and the server falls back if they are absent.
+
+- **Range-aware equity estimation (`opponentRange` in `bot/equity.js`).** Opponent
+  hands can now be sampled from the top X% of starting hands (ranked by Chen
+  score) instead of uniformly from the deck. Reported alongside the estimate so
+  callers can tell the model which assumption produced the number — `61%` against
+  random cards and `61%` against a tight range are very different claims.
+
+  The ranking is an approximation and documented as one: Chen is a heuristic, not
+  a true equity ordering, and ties within a score band are cut arbitrarily.
+
+- **Cross-hand opponent memory (`agent/memory.js`).** VPIP, PFR, postflop
+  aggression, fold-to-bet and recent showdowns, accumulated per player name
+  across hands. Built entirely from the redacted snapshot: betting stats come
+  from the action history during a decision (idempotently, so deciding several
+  times in one hand never double-counts), and showdown cards from a single
+  `observe()` call the room makes when a hand ends — the only moment opponent
+  hole cards are visible at all. Reports nothing below six hands of sample.
+
 - **Hotword (`/hotword`), a third game.** Two players race to guess the same
   hidden Chinese word; whoever gets it first wins, and everyone else watches.
   Every guess comes back with its closeness rank among all 52,728 vocabulary

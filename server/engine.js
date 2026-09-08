@@ -47,6 +47,38 @@ function sameSeats(a, b) {
   return true;
 }
 
+/**
+ * 把 `hand.events` 压成按街道分段的行动序列。
+ *
+ * 纯函数，不含任何牌面 —— 给谁看都安全，所以快照里可以直接下发（SPEC §8.3），
+ * 人机的提示词和评测台也都用它。盲注/前注是 `blind` / `ante` 事件，不是 `action`，
+ * 所以**不会**混进来：统计 VPIP 时不必再去区分「主动投钱」和「被迫下盲」。
+ *
+ * @param {Array<object>} events  Hand#events
+ * @returns {Array<{street:string, acts:Array<{seat:number,type:string,amount:number}>}>}
+ *          已经发生过动作的街道，按顺序排列
+ */
+export function actionHistory(events) {
+  if (!Array.isArray(events)) return [];
+  const streets = [{ street: PHASES.PREFLOP, acts: [] }];
+  const marker = { flop: PHASES.FLOP, turn: PHASES.TURN, river: PHASES.RIVER };
+  for (const e of events) {
+    if (!e) continue;
+    if (marker[e.kind]) {
+      streets.push({ street: marker[e.kind], acts: [] });
+      continue;
+    }
+    if (e.kind !== 'action' || typeof e.type !== 'string') continue;
+    streets[streets.length - 1].acts.push({
+      seat: e.seat,
+      type: e.type,
+      amount: Number.isFinite(e.amount) ? e.amount : 0,
+    });
+  }
+  // 丢掉还没发生任何动作的街道（比如刚翻牌还没人行动）
+  return streets.filter((s) => s.acts.length > 0);
+}
+
 export class Hand {
   /**
    * @param {object} opts
