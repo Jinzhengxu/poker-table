@@ -430,6 +430,13 @@ function fakeModelEntry(script, seen) {
   };
 }
 
+/** 面对全下：只能跟或弃，连加注都不行 */
+const LEGAL_FACING_BET_NO_RAISE = {
+  canFold: true, canCheck: false, canCall: true, callAmount: 200,
+  canBet: false, minBet: 0, canRaise: false, minRaiseTo: 0, maxRaiseTo: 0,
+  isAllInCall: true,
+};
+
 const LEGAL_FACING_BET = {
   canFold: true, canCheck: false, canCall: true, callAmount: 20,
   canBet: false, minBet: 10, canRaise: true, minRaiseTo: 40, maxRaiseTo: 500,
@@ -588,6 +595,40 @@ test('agent：没有任何模型时退化成原来的单轮人机，照样给合
   assert.ok(out.source.startsWith('fallback:'));
 });
 
+test('agent：6 步预算 = 5 次工具调用 + 最后一步收尾', async () => {
+  // 步数上限是「上限」而不是「工具调用次数」——最后一步被 prepareStep 锁成 act 了。
+  // 这条测试把这个关系钉住：改默认值时必须同时想清楚工具调用还剩几次。
+  const eq = { tool: 'estimate_equity', args: { opponent_range: 0.2 } };
+  const agent = makeAgent(
+    [eq, eq, eq, eq, eq, { tool: 'act', args: { action: 'fold' } }],
+    null,
+    { maxSteps: 6 },
+  );
+
+  const out = await agent.decide(agentState(), P0);
+  assert.equal(out.source, 'agent', '5 次工具调用该还在预算内');
+  assert.equal(agent.stats.steps, 6);
+  assert.equal(agent.stats.toolCalls, 6, '5 次胜率 + 1 次 act');
+});
+
+test('agent：默认的步数和墙钟是配套的一对，环境变量能各自覆盖', () => {
+  const mk = (env) => new PokerAgent({
+    models: [],
+    fallback: new BotDriver({ clients: [], minThinkMs: 0, logger: quiet() }),
+    logger: quiet(),
+    env,
+  });
+
+  const def = mk({});
+  assert.equal(def.maxSteps, 6, '6 步 = 5 次工具调用，够横向比几个下注尺度');
+  // 30s 闸门 + 1.5s 兜底算胜率 + 8s 兜底的单轮调用 ≈ 40s，行动时限 45 秒还剩 5 秒
+  assert.equal(def.maxThinkMs, 30_000, '墙钟必须跟着步数走，否则多给的步数用不上');
+
+  const custom = mk({ POKER_AGENT_MAX_STEPS: '3', POKER_AGENT_MAX_MS: '5000' });
+  assert.equal(custom.maxSteps, 3);
+  assert.equal(custom.maxThinkMs, 5000);
+});
+
 test('agent：整次决策有墙钟上限，不会无限等下去', async () => {
   const slow = {
     provider: 'deepseek', label: 'DeepSeek', model: 'test', apiKey: 'sk-x',
@@ -617,6 +658,70 @@ test('agent：整次决策有墙钟上限，不会无限等下去', async () => 
   const dt = Date.now() - t0;
   assert.ok(dt < 5000, `超时闸门没生效，等了 ${dt}ms`);
   assert.ok(out.source.startsWith('fallback:'));
+});
+
+test('agent：给模型的提示词收尾是「调 act」，不是「输出 json」', async () => {
+  const seen = [];
+  const agent = makeAgent([{ tool: 'act', args: { action: 'fold' } }], seen);
+  await agent.decide(agentState(), P0);
+
+  const blob = JSON.stringify(seen);
+  // 两条路共用 buildUser，但收尾方式必须分开。让 agent 读到「输出 json」，
+  // 它就会真的输出一段 JSON 文本而不调 act —— 一整轮多步调用白烧，再退回单轮。
+  assert.ok(!blob.includes('输出你的决定（json）'), '单轮那路的 JSON 收尾语漏进 agent 提示词了');
+  assert.ok(blob.includes('工具用够了就调 act 提交你的决定'), 'agent 那路该让模型调工具收尾');
+});
+
+test('agent：外部取消不算模型故障，也不再打第二次 LLM', async () => {
+  // 一直吊着不返回的模型：只有被取消时才结束
+  const hang = {
+    provider: 'deepseek', label: 'DeepSeek', model: 'test', apiKey: 'sk-x',
+    baseUrl: 'https://example.invalid/v1',
+    languageModel: new MockLanguageModelV4({
+      doGenerate: (options) => new Promise((resolve, reject) => {
+        const sig = options.abortSignal;
+        if (sig?.aborted) return reject(new Error('aborted'));
+        sig?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      }),
+    }),
+  };
+  const agent = new PokerAgent({
+    models: [hang],
+    fallback: new BotDriver({ clients: [], minThinkMs: 0, logger: quiet() }),
+    minThinkMs: 0,
+    logger: quiet(),
+  });
+
+  const ac = new AbortController();
+  const p = agent.decide(agentState(), P0, ac.signal);
+  setTimeout(() => ac.abort(), 5);
+  const out = await p;
+
+  assert.equal(out.source, 'canceled');
+  assert.ok(['fold', 'check', 'call', 'bet', 'raise', 'allin'].includes(out.action.type),
+    '取消了也得返回一个合法动作，不能抛给房间');
+  assert.equal(agent.stats.canceled, 1);
+  assert.equal(agent.stats.errors, 0, '手牌结束不是模型的错，不该记成故障');
+  assert.equal(agent.health.get(hang).fails, 0, '取消不该记进健康度，否则取消三次就冷却 60 秒');
+  assert.equal(agent.stats.fallback, 0, '房间早就不要这个动作了，不该再打一次 LLM');
+});
+
+test('agent：墙钟到点时，工具里在飞的蒙特卡洛也会被叫停', async () => {
+  // 工具拿到的必须是「墙钟 + 外部取消」的合成信号。只传外部信号的话，
+  // 超时把 generateText 中断了，这次蒙特卡洛还会自顾自跑满 5 秒的预算。
+  const agent = makeAgent(
+    [{ tool: 'estimate_equity', args: { opponent_range: 0.2 } },
+     { tool: 'act', args: { action: 'fold' } }],
+    null,
+    { maxThinkMs: 150, equitySims: 50_000_000, equityMs: 5000 },
+  );
+
+  const t0 = Date.now();
+  const out = await agent.decide(agentState(), P0);
+  const dt = Date.now() - t0;
+
+  assert.ok(dt < 2500, `蒙特卡洛没被叫停，等了 ${dt}ms（工具拿到的可能还是外部信号）`);
+  assert.ok(out.source.startsWith('fallback:'), '墙钟到点该退回单轮');
 });
 
 // ==================== 安全红线 ====================
@@ -730,6 +835,179 @@ test('buildTools：模型传了离谱的范围值也不报错，夹成合理值'
     const out = await tools.estimate_equity.execute({ opponent_range: bad });
     assert.ok(out.equity_pct >= 0 && out.equity_pct <= 100, `范围 ${bad} 算出了 ${out.equity_pct}`);
   }
+});
+
+// ==================== plan_bet：开火那一边的算术 ====================
+
+/** 一个「本轮还没人下注、我可以开火」的局面 */
+const LEGAL_CAN_BET = {
+  canFold: true, canCheck: true, canCall: false, callAmount: 0,
+  canBet: true, minBet: 10, canRaise: false, minRaiseTo: 0, maxRaiseTo: 500,
+  isAllInCall: false,
+};
+
+/**
+ * 造一个开火局面。pot 100，我和对手本轮都还没投钱，所以「下注 100」
+ * 就是教科书里那个 100 打 100 的池 —— 纯诈唬需要 50% 弃牌率的那个例子。
+ */
+function betState({ hole = ['Qs', 'Qd'], seats, legal, ...rest } = {}) {
+  const st = snap({
+    pot: 100,
+    legal: legal || LEGAL_CAN_BET,
+    seats: seats || [
+      { seat: 0, name: '我', chips: 500, committedRound: 0, state: 'in', cards: hole },
+      { seat: 1, name: '老陈', chips: 500, committedRound: 0, state: 'in', cards: ['??', '??'] },
+    ],
+    ...rest,
+  });
+  st.you.cards = hole;
+  return st;
+}
+
+function planTools(state) {
+  return buildTools({ state, equitySims: 4000, equityMs: 400 }).tools;
+}
+
+test('plan_bet：needs_fold_pct 就是底池赔率的镜像，和回给模型的其它数自洽', async () => {
+  const tools = planTools(betState());
+  const r = await tools.plan_bet.execute({ amount: 100, continue_range: 0.2 });
+
+  // 被跟时平均亏多少 = 掏出去的 − 能赢回来的
+  const loss = Math.max(0, r.risk - (r.equity_when_called_pct / 100) * r.pot_when_called);
+  const expect = loss > 0 ? Math.round((loss / (r.win_if_all_fold + loss)) * 100) : 0;
+  assert.equal(r.needs_fold_pct, expect, '需要的弃牌率和它自己给的那几个数对不上');
+
+  assert.equal(r.action, 'bet');
+  assert.equal(r.risk, 100);
+  assert.equal(r.win_if_all_fold, 100);
+  assert.equal(r.pot_when_called, 300, '我 100、他跟 100、原来 100');
+});
+
+test('plan_bet：纯诈唬要的弃牌率接近教科书的 50%', async () => {
+  // 32o 打在 A K 7 的面上，对一个前 5% 的续注范围基本没有胜率
+  const tools = planTools(betState({ hole: ['3c', '2d'] }));
+  const r = await tools.plan_bet.execute({ amount: 100, continue_range: 0.05 });
+  assert.ok(r.needs_fold_pct > 38 && r.needs_fold_pct <= 50,
+    `100 打 100 的纯诈唬该要 50% 上下，给的是 ${r.needs_fold_pct}%`);
+});
+
+test('plan_bet：有牌力的半诈唬，需要的弃牌率明显更低', async () => {
+  const junk = await planTools(betState({ hole: ['3c', '2d'] }))
+    .plan_bet.execute({ amount: 100, continue_range: 0.2 });
+  const pair = await planTools(betState({ hole: ['Ks', 'Qd'] }))
+    .plan_bet.execute({ amount: 100, continue_range: 0.2 });
+
+  // 同样的尺度、同样的续注范围，唯一的变量是被跟以后你还能赢回来多少。
+  // 这个差别就是「半诈唬」的全部内容，模型心算不出来。
+  assert.ok(pair.needs_fold_pct < junk.needs_fold_pct - 5,
+    `半诈唬(${pair.needs_fold_pct}%) 该明显低于纯诈唬(${junk.needs_fold_pct}%)`);
+});
+
+test('plan_bet：价值下注被跟也不亏，弃牌率无所谓', async () => {
+  // A K 7 的面上拿一对 A（三条），对前 50% 的续注范围压倒性领先
+  const tools = planTools(betState({ hole: ['Ac', 'Ad'] }));
+  const r = await tools.plan_bet.execute({ amount: 100, continue_range: 0.5 });
+
+  assert.equal(r.needs_fold_pct, 0);
+  assert.ok(r.verdict.includes('价值'), `结论该说这是价值下注，给的是「${r.verdict}」`);
+});
+
+test('plan_bet：给了当前范围就能推他会弃多少，人越多越难诈唬', async () => {
+  const heads = await planTools(betState())
+    .plan_bet.execute({ amount: 100, continue_range: 0.1, opponent_range: 0.4 });
+  // 前 40% 里只有前 10% 会继续 -> 弃掉 75%
+  assert.equal(heads.implied_fold_pct, 75);
+
+  const three = await planTools(betState({
+    seats: [
+      { seat: 0, name: '我', chips: 500, committedRound: 0, state: 'in', cards: ['Qs', 'Qd'] },
+      { seat: 1, name: '老陈', chips: 500, committedRound: 0, state: 'in', cards: ['??', '??'] },
+      { seat: 2, name: '小杨', chips: 500, committedRound: 0, state: 'in', cards: ['??', '??'] },
+    ],
+  })).plan_bet.execute({ amount: 100, continue_range: 0.1, opponent_range: 0.4 });
+  // 两个人都得弃：0.75^2
+  assert.equal(three.implied_fold_pct, 56);
+  assert.ok(three.note.includes('只有一个人跟'), '多人底池要说明这里用的是单个跟注者的假设');
+});
+
+test('plan_bet：续注范围不比当前范围紧时，指出矛盾而不是硬算', async () => {
+  const r = await planTools(betState())
+    .plan_bet.execute({ amount: 100, continue_range: 0.5, opponent_range: 0.3 });
+  assert.equal(r.implied_fold_pct, 0);
+  assert.ok(r.note.includes('一张牌都不弃'), '该点破这个假设自相矛盾');
+});
+
+test('plan_bet：金额越界夹回区间并说明', async () => {
+  const r = await planTools(betState()).plan_bet.execute({ amount: 99999, continue_range: 0.2 });
+  assert.equal(r.amount, 500, '该夹到 maxRaiseTo');
+  assert.equal(r.allin, true);
+  assert.ok(r.note.includes('夹到 500'));
+});
+
+test('plan_bet：对手跟不满你这个注时，多出来的会退给你', async () => {
+  const r = await planTools(betState({
+    seats: [
+      { seat: 0, name: '我', chips: 500, committedRound: 0, state: 'in', cards: ['Qs', 'Qd'] },
+      { seat: 1, name: '老陈', chips: 60, committedRound: 0, state: 'in', cards: ['??', '??'] },
+    ],
+  })).plan_bet.execute({ amount: 200, continue_range: 0.2 });
+
+  // 他只有 60，所以底池最多到 100 + 60 + 60，多出来的 140 退回
+  assert.equal(r.pot_when_called, 220);
+  assert.ok(r.note.includes('退给你'), `该说明会退钱，note 是「${r.note}」`);
+});
+
+test('plan_bet：下不了注的局面直接说清楚，不浪费一整轮', async () => {
+  const r = await planTools(snap({ legal: LEGAL_FACING_BET_NO_RAISE }))
+    .plan_bet.execute({ amount: 100, continue_range: 0.2 });
+  assert.ok(r.error, '面对全下只能跟或弃，该回一个明确的错误');
+});
+
+test('plan_bet：ev_chips 能在尺度之间分出高下（needs_fold_pct 做不到这件事）', async () => {
+  // 三条 A 的面上拿三条：needs_fold_pct 对任何尺度都是 0，看不出该下多大。
+  // ev_chips 能 —— 尺度越大他继续得越少，所以模型要给不同的 continue_range。
+  const tools = planTools(betState({ hole: ['Ac', 'Ad'] }));
+  const small = await tools.plan_bet.execute({ amount: 33, continue_range: 0.6, opponent_range: 0.6 });
+  const big = await tools.plan_bet.execute({ amount: 300, continue_range: 0.2, opponent_range: 0.6 });
+
+  assert.equal(small.needs_fold_pct, 0);
+  assert.equal(big.needs_fold_pct, 0, '两个尺度都是价值下注，这个数分不出高下');
+  assert.ok(big.ev_chips > small.ev_chips,
+    `拿着三条该下大：小注 ${small.ev_chips} vs 大注 ${big.ev_chips}`);
+});
+
+test('plan_bet：纯诈唬时，弃牌率一样则小注的期望收益更高', async () => {
+  const tools = planTools(betState({ hole: ['3c', '2d'] }));
+  // 同一个续注范围（也就是假设他弃牌率不随尺度变），此时多下的每一分都是白冒风险
+  const small = await tools.plan_bet.execute({ amount: 33, continue_range: 0.1, opponent_range: 0.4 });
+  const big = await tools.plan_bet.execute({ amount: 200, continue_range: 0.1, opponent_range: 0.4 });
+  assert.ok(small.ev_chips > big.ev_chips,
+    `弃牌率不变时诈唬该下小：小注 ${small.ev_chips} vs 大注 ${big.ev_chips}`);
+});
+
+test('plan_bet：没给 opponent_range 就没有 ev_chips（推不出他会弃多少）', async () => {
+  const r = await planTools(betState()).plan_bet.execute({ amount: 100, continue_range: 0.2 });
+  assert.equal(r.ev_chips, null);
+  assert.equal(r.implied_fold_pct, null);
+  assert.ok(Number.isFinite(r.needs_fold_pct), '需要多少弃牌率不依赖那个参数，照样要给');
+});
+
+test('plan_bet：走得通整条 agent 循环，trace 记得下这次规划', async () => {
+  const agent = makeAgent([
+    { tool: 'plan_bet', args: { amount: 60, continue_range: 0.1, opponent_range: 0.4 } },
+    { tool: 'act', args: { action: 'bet', amount: 60, say: '试试' } },
+  ]);
+
+  const out = await agent.decide(betState(), P0);
+  assert.equal(out.source, 'agent');
+  assert.equal(out.action.type, 'bet');
+  assert.equal(out.action.amount, 60);
+  assert.ok(out.trace.some((c) => c.tool === 'plan_bet'), 'trace 里没记下 plan_bet');
+});
+
+test('buildAgentSystem：教了开火那一边该先调 plan_bet', () => {
+  const sys = buildAgentSystem(P0, 4);
+  assert.ok(sys.includes('plan_bet'), '系统提示词里没提这个工具，模型不会用');
 });
 
 // ==================== 房间集成 ====================

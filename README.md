@@ -394,19 +394,50 @@ A decision looks roughly like this:
 read action sequence → read_opponents (老陈, early position: VPIP 22% / AF 3.1, showed AK, 88)
                      → estimate_equity(range=0.10) → 41%, calling needs 45%
                      → act(fold)
+
+or, when firing:
+
+read action sequence → plan_bet(amount=60, continue_range=0.10, opponent_range=0.35)
+                     → needs him to fold 27%, he folds 71%, EV +48
+                     → act(bet, 60)
 ```
 
-Three tools, deliberately only three:
+Four tools — three to think with, one to finish:
 
 | Tool | What it does |
 | --- | --- |
 | `estimate_equity` | Monte Carlo equity under the model's own range assumption, plus the break-even percentage for calling |
 | `read_opponents` | Cross-hand profiles: VPIP, PFR, aggression factor, fold-to-bet, recent showdowns, **plus preflop stats split by position and which position bucket they are in this hand** |
+| `plan_bet` | Is this bet size worth it: how often he has to fold for it to break even, how often he actually will, and the EV of that size in chips |
 | `act` | The loop's only exit. Executes nothing; calling it stops the loop |
 
 Pot odds, position and the action sequence stay in the prompt — that is arithmetic and
 plain fact, and spending a tool round-trip to fetch it would only add latency and
 failure surface.
+
+**Why `plan_bet` exists.** The first version of this tool set spoke only one language:
+calling. `estimate_equity` returns equity and the break-even percentage for a call — every
+number is a calling number. But roughly half the money in poker comes from firing (value
+bets and bluffs), and on that side the model had nothing: bet sizes were vibes. The step
+from "he folds to 55% of bets" to "betting two-thirds pot needs him to fold 40% of the
+time" is arithmetic models get wrong, and they get it wrong in one direction — they
+*underestimate* the fold frequency required, and so they fire too often.
+
+The formula is the mirror image of pot odds: **required fold % = loss / (pot + loss)**,
+where the loss already subtracts what you win back on the times you get called. That
+subtraction is the whole content of the word "semi-bluff": into a 100 pot, betting 100 as a
+pure bluff needs 50% folds; the same bet with a draw worth 30% equity needs 9%.
+
+Two modelling assumptions, stated because the model has to know them:
+
+- **The baseline is "if you don't bet, you get nothing."** So a strong hand reads
+  `needs_fold_pct: 0` — true ("betting does not lose"), but useless for choosing between a
+  third-pot bet and a shove. That is what `ev_chips` is for: try a few sizes, take the
+  largest. Same caveat in reverse — it ranks sizes against each other, never against
+  checking, because checking wins money too and that is not in this model.
+- **Pot maths assume a single caller**, so equity is computed against one opponent too.
+  Both halves have to share one assumption or the numbers fight each other. In a multiway
+  pot this is optimistic, and the result says so.
 
 **Opponent memory is built entirely from the redacted snapshot.** During a decision it
 absorbs the current hand's action sequence (idempotently — deciding several times in one
@@ -451,11 +482,11 @@ what it was before.
 | --- | --- | --- |
 | `POKER_AGENT` | off | Set to `on` to enable |
 | `POKER_AGENT_MODEL` | same as `POKER_BOT_MODEL` | Agent-specific model; **must support function calling** |
-| `POKER_AGENT_MAX_STEPS` | `4` | Max steps per decision. Each step is a model call, so this sets the bill |
-| `POKER_AGENT_MAX_MS` | `20000` | Wall-clock cap per decision; over it, fall back to single-shot |
-| `POKER_AGENT_EQUITY_MS` | `1200` | Budget per `estimate_equity` call |
+| `POKER_AGENT_MAX_STEPS` | `6` | Max steps per decision. Each step is a model call, so this sets the bill. Tool calls available are `steps − 1`, since the last step is forced to `act`: five, enough for read → equity → three bet sizes → act. A ceiling, not a cost — the loop stops the moment `act` is called |
+| `POKER_AGENT_MAX_MS` | `30000` | Wall-clock cap per decision; over it, fall back to single-shot. Has to move with the step budget, or the extra steps are unusable. 30s gate + 1.5s fallback equity + 8s fallback model call ≈ 40s, inside the 45s action timeout with 5s to spare |
+| `POKER_AGENT_EQUITY_MS` | `1200` | Budget per Monte Carlo call (`estimate_equity` and `plan_bet` each run one) |
 
-The costs, stated plainly: 2–4 model calls per decision, **roughly 3× the tokens** of
+The costs, stated plainly: 2–6 model calls per decision, **roughly 3–4× the tokens** of
 single-shot mode, and a few seconds more latency. This path also needs `ai`,
 `@ai-sdk/openai-compatible` and `zod` (~21 MB). The table itself still depends only on
 `ws` — those three are pulled in via a dynamic `import()`, and if they are missing the

@@ -49,8 +49,8 @@ services:
       # 下面三个必须给出具体默认值，不能像上面两行那样留空：代码里读的是
       # `Number(env.X ?? 默认值)`，而空字符串不是 nullish，Number('') === 0——
       # 留空会把「4 步」悄悄变成 2 步、「20 秒」变成 1 秒。
-      POKER_AGENT_MAX_STEPS: "${POKER_AGENT_MAX_STEPS:-4}"
-      POKER_AGENT_MAX_MS: "${POKER_AGENT_MAX_MS:-20000}"
+      POKER_AGENT_MAX_STEPS: "${POKER_AGENT_MAX_STEPS:-6}"
+      POKER_AGENT_MAX_MS: "${POKER_AGENT_MAX_MS:-30000}"
       POKER_AGENT_EQUITY_MS: "${POKER_AGENT_EQUITY_MS:-1200}"
 
       # 牌桌初始设置。不填就用代码默认值（盲注 5/10、起始筹码 1000）。

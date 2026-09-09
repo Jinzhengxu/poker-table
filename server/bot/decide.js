@@ -110,12 +110,21 @@ export function buildSystem(persona) {
  * 用户消息：当前牌局状态 + 可选动作。
  * 输入必须是 buildStateFor 的输出。
  *
+ * 两条路共用这一份局面描述（局面就是局面，和怎么收尾无关），但**收尾那句话
+ * 必须分开**：单轮那路要的是一个 JSON 对象，agent 那路要的是调 act 工具。
+ * 混用的后果不是风格问题 —— 让 agent 读到"输出 json"，它就真的会输出一段
+ * JSON 文本而不调 act，于是 readAct 拿到 null，一整轮多步调用白烧，再退回单轮。
+ *
  * @param {object} state  Room#buildStateFor(botPlayerId) 的返回值
+ * @param {object} [opts]
+ * @param {object} [opts.equity]   胜率估算，写进提示词（agent 那路不传，那是工具的活）
+ * @param {boolean} [opts.forTools] true = 收尾改成"调 act 提交"，给 agent 那路用
  * @returns {string}
  */
 export function buildUser(state, opts = {}) {
   const { table, seats, you, config } = state;
   const equity = opts.equity || null;
+  const forTools = !!opts.forTools;
   const legal = you.legal;
   const mySeat = you.seat;
   const me = seats[mySeat];
@@ -233,7 +242,9 @@ export function buildUser(state, opts = {}) {
   }
   lines.push('- allin（全下）');
   lines.push('');
-  lines.push('轮到你了，输出你的决定（json）。');
+  lines.push(forTools
+    ? '轮到你了。工具用够了就调 act 提交你的决定。'
+    : '轮到你了，输出你的决定（json）。');
 
   return lines.join('\n');
 }

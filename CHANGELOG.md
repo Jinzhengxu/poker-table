@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`plan_bet`: the agent's tool set now speaks the other half of poker.** The first
+  version spoke only one language — calling. `estimate_equity` returns equity and a
+  break-even percentage for a call; every number was a calling number. But roughly half
+  the money in poker comes from firing, and on that side the model had nothing, so bet
+  sizes were vibes. The step from "he folds to 55% of bets" to "two-thirds pot needs him
+  to fold 40%" is arithmetic models get wrong in one direction: they underestimate the
+  fold frequency required, and fire too often.
+
+  The formula is the mirror image of pot odds — **required fold % = loss / (pot + loss)**,
+  where the loss already subtracts what you win back on the times you get called. That
+  subtraction is the entire content of the word "semi-bluff": into a 100 pot, betting 100
+  as a pure bluff needs 50% folds; the same bet holding a draw worth 30% equity needs 9%.
+
+  Given `opponent_range` as well, it also reports how often he actually folds
+  (`1 − continue/current`, raised to the number of opponents) and `ev_chips` for the size.
+  `ev_chips` exists because `needs_fold_pct` cannot rank sizes: with a strong hand it
+  reads 0 for a third-pot bet and for a shove alike.
+
+  Two modelling assumptions, stated in the tool description because the model has to know
+  them: the baseline is "if you don't bet you get nothing", so `ev_chips` compares sizes
+  against each other and never against checking; and the pot maths assume a single caller,
+  so equity is computed against one opponent to match — optimistic in a multiway pot,
+  which the result says out loud.
+
 - **Range ordering now sorts by playability tier first, equity second.** Equity alone
   answers "how strong is this hand"; `opponentRange` asks "which hands would they
   play". Measured against real opening charts at matched combo counts, equity-only
@@ -45,6 +69,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The agent's prompt no longer asks for JSON and tool calls at the same time.** Both
+  paths share `buildUser`, whose closing line was "output your decision (json)" — correct
+  for the single-shot path, in direct conflict with the agent's system prompt, which says
+  to submit through the `act` tool and emit no prose. The likely failure was the expensive
+  one: the model writes a JSON blob as text, `readAct` returns null, a whole multi-step
+  loop is burned, and the decision falls back to single-shot anyway. `buildUser` now takes
+  `forTools`, and the two paths close differently.
+
+- **Cancelling a bot's turn is no longer counted as a model failure.** When a hand ends, a
+  bot is kicked, or the table resets, `Room#cancelBot()` aborts the in-flight decision.
+  That abort surfaced as a rejection, was charged to the model's health record, and three
+  of them put the agent path into a 60-second cooldown — during which the model may have
+  been working perfectly. It also triggered the fallback path, spending a second LLM call
+  on an action the room had already discarded (and damaging `BotDriver`'s own health
+  record on the way). Cancellation is now detected up front, counted separately as
+  `stats.canceled`, and returns a rule action without another call.
+
+- **The agent's wall clock now reaches inside its tools.** `buildTools` received the
+  external cancel signal rather than the composed "timeout or cancel" signal, so when the
+  20-second gate fired it stopped `generateText` but not the Monte Carlo run in flight,
+  which went on burning its full budget for a decision nobody wanted.
+
 - **A bot's opponent profile is now dropped when it leaves the table.** Profiles are
   keyed by nickname, and bot nicknames come from a fixed pool of twenty in
   `persona.js`. Without the drop, the next bot to draw "老陈" inherited the previous
@@ -60,6 +106,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allows one rounding step.
 
 ### Changed
+
+- **The agent's step budget went from 4 to 6, and its wall clock from 20s to 30s.** Tool
+  calls available are `maxSteps − 1`, since the last step is forced to `act` — four steps
+  bought three tool calls, enough for "read the profile, compute equity, plan one bet
+  size", but not enough to compare sizes against each other, which is the only way
+  `plan_bet`'s `ev_chips` is useful. Six buys five. This raises a ceiling, not a cost: the
+  loop stops the moment `act` is called, and most decisions still end in two or three
+  steps — what grows is the headroom on the hardest ones, which is where the money is.
+
+  The wall clock had to move with it or the extra steps would be unusable, with the gate
+  falling mid-loop and discarding everything already paid for. 30s gate + 1.5s fallback
+  equity + 8s fallback model call ≈ 40s, which stays inside the 45s action timeout with
+  5s of slack. Past that, raise the action timeout first.
 
 - **bb/100 is significant for the first time.** 9,000 decks / 18,000 hands, six-handed,
   playability-tier ordering with the recalibrated constant: **+16.04 ± 9.22 (seed 1,

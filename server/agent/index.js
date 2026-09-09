@@ -46,6 +46,9 @@ const COOLDOWN_MS = 60_000;
  * 这是循环的唯一出口——prepareStep 在最后一步会强制它调，所以即使模型
  * 想一直想下去也停得下来。
  *
+ * 步骤是按「跟注 / 开火」两条线写的：前四步管该不该跟，第五步管该不该开火。
+ * 工具集补上 plan_bet 之后，这两条线才都有确定性的算术撑着（见 tools.js 顶上）。
+ *
  * @param {object} persona {name, style}
  * @param {number} maxSteps
  */
@@ -69,7 +72,12 @@ export function buildAgentSystem(persona, maxSteps) {
 4. 结论在临界点上（胜率和底池赔率差不多）时，用一个更紧和一个更松的范围
    各算一次。如果两种假设下结论一致，就照做；如果会反转，说明这个决定
    取决于你对这个人的判断——那就按 read_opponents 的画像来定。
-5. 想好了就调 act 提交。这是唯一的出口。
+5. **想下注或加注，先调 plan_bet。** 跟注和开火是两套算术：跟注比的是
+   「你的胜率」和「底池赔率」，开火比的是「他会弃多少牌」和「需要他弃多少牌」。
+   尺度不同、需要的弃牌率就不同，这个数不要心算。
+   拿不准下多大，就换两三个 amount 各调一次，挑 ev_chips 最大的那个。
+   记住尺度越大他继续得越少，所以大注要配更紧的 continue_range。
+6. 想好了就调 act 提交。这是唯一的出口。
 
 你最多只有 ${maxSteps} 步，别把步数浪费在重复调同一个范围上。
 不要输出任何解释性文字，思考通过调用工具体现，结论通过 act 提交。`;
@@ -94,9 +102,22 @@ export class PokerAgent {
     this.memory = opts.memory || new OpponentMemory();
     this.logger = opts.logger || console;
 
-    this.maxSteps = Math.max(2, Number(opts.maxSteps ?? env.POKER_AGENT_MAX_STEPS ?? 4));
-    // 行动时限 45 秒。留够余量给网络抖动和兜底那一路，20 秒是安全的。
-    this.maxThinkMs = Math.max(1000, Number(opts.maxThinkMs ?? env.POKER_AGENT_MAX_MS ?? 20_000));
+    // 步数上限。**能用来调工具的是 maxSteps - 1 次** —— 最后一步被 prepareStep
+    // 锁成 act 了。6 步给出 5 次工具调用，够走完整的一条线：
+    // 读画像 → 算胜率 → 三个下注尺度各 plan_bet 一次挑最大的 EV → 出手。
+    // 原来是 4（3 次工具调用），只够「画像 + 胜率 + 一个尺度」，横向比尺度就不够了。
+    // 注意这是**上限不是开销**：模型一调 act 循环就停，绝大多数决策两三步就结束，
+    // 涨的是最难那几个决策的天花板 —— 而那正是值得多花钱的地方。
+    this.maxSteps = Math.max(2, Number(opts.maxSteps ?? env.POKER_AGENT_MAX_STEPS ?? 6));
+    // 墙钟。这个数必须跟着步数一起涨，否则多给的步数用不上 —— 闸门在半路
+    // 落下来，前面几步花的钱全部作废，还得再走一次兜底。
+    //
+    // 上限怎么定的（行动时限 45 秒，超时人机就被判过牌/弃牌，必须留够）：
+    //   30s  这道闸门
+    // + 1.5s 兜底那路自己要算一次胜率
+    // + 8s   兜底那路的单轮调用超时
+    // ≈ 40s，还剩 5 秒给网络抖动。再往上加就该先把行动时限也调大。
+    this.maxThinkMs = Math.max(1000, Number(opts.maxThinkMs ?? env.POKER_AGENT_MAX_MS ?? 30_000));
     this.minThinkMs = Math.max(0, Number(opts.minThinkMs ?? 900));
 
     // 每次 estimate_equity 的预算。模型可能调好几次，所以单次给得比旧版小一点，
@@ -116,6 +137,7 @@ export class PokerAgent {
       toolCalls: 0,    // 累计工具调用次数
       forcedAct: 0,    // 被 prepareStep 强制收尾的次数
       errors: 0,
+      canceled: 0,     // 被外部取消的次数（手牌结束等，不算故障）
       inputTokens: 0,
       outputTokens: 0,
     };
@@ -261,28 +283,35 @@ export class PokerAgent {
       return this.#viaFallback(state, persona, signal, started);
     }
 
+    // 墙钟闸门。这是旧版缺的那一环——BotDriver 里的 maxThinkMs 从来没被用上，
+    // 单轮调用还能靠 provider 自己的超时兜住，多轮循环则必须有人管总时长。
+    //
+    // **必须在造工具之前造好**：工具拿到的要是这个合成信号，不是外部那个。
+    // 只传外部信号的话，墙钟到点时 generateText 中断了，工具里在飞的那次
+    // 蒙特卡洛没人叫停，还会自顾自跑满它的预算 —— 决策早就不要了，CPU 白烧。
+    const timeout = AbortSignal.timeout(this.maxThinkMs);
+    const composed = signal ? AbortSignal.any([timeout, signal]) : timeout;
+
     const trace = { calls: [] };
     const { tools, readAct } = buildTools({
       state,
       memory: this.memory,
-      signal,
+      signal: composed,
       equitySims: this.equitySims,
       equityMs: this.equityMs,
       equityChunkMs: this.equityChunkMs,
       trace,
     });
 
-    // 墙钟闸门。这是旧版缺的那一环——BotDriver 里的 maxThinkMs 从来没被用上，
-    // 单轮调用还能靠 provider 自己的超时兜住，多轮循环则必须有人管总时长。
-    const timeout = AbortSignal.timeout(this.maxThinkMs);
-    const composed = signal ? AbortSignal.any([timeout, signal]) : timeout;
-
     let result;
     try {
       result = await generateText({
         model: model.languageModel,
         system: buildAgentSystem(persona, this.maxSteps),
-        prompt: buildUser(state),          // 不再预先注入胜率——那是工具的活
+        // 不再预先注入胜率——那是工具的活。forTools 换掉收尾那句话：
+        // 共用的 buildUser 默认要的是一个 JSON 对象，那是单轮那路的收尾方式，
+        // 和这里"只准调 act"的系统提示词直接打架。
+        prompt: buildUser(state, { forTools: true }),
         tools,
         stopWhen: [hasToolCall('act'), stepCountIs(this.maxSteps)],
         abortSignal: composed,
@@ -297,6 +326,21 @@ export class PokerAgent {
       });
       this.#onSuccess(model);
     } catch (err) {
+      // 外部取消（手牌结束、被踢、房间 reset）不是模型的错。
+      //
+      // 两件事都不能做：不能记进健康度 —— 否则连着取消三次就把 agent 这路
+      // 冷却 60 秒，而那三次模型可能一次都没出过问题；也不该再走兜底 ——
+      // 房间那边 #cancelBot 早就把 botPending 清了，这个动作生下来就没人要，
+      // 再打一次 LLM 只是白花钱，还会连累 BotDriver 自己的健康度。
+      if (signal?.aborted) {
+        this.stats.canceled++;
+        return {
+          action: fallbackAction(state, persona?.traits, null),
+          say: null,
+          source: 'canceled',
+          note: null,
+        };
+      }
       this.stats.errors++;
       this.#onFailure(model, err);
       this.logger.error(`[agent] ${persona.name} 循环失败，退回单轮：${err.message}`);
