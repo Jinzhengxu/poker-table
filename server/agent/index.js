@@ -413,6 +413,11 @@ export class PokerAgent {
     if (coerced.adjusted) {
       this.logger.error(`[agent] ${persona.name} 输出被修正：${coerced.adjusted}`);
     }
+    // 亮牌的那句话已经被 cleanSay 丢了，这里只是让它在日志里留个影。
+    // 同样【只进服务端日志】：这行里带着模型原话，也就是那手牌。
+    if (coerced.sayNote) {
+      this.logger.error(`[agent] ${persona.name} ${coerced.sayNote}`);
+    }
 
     // 模型的输出完全没法用（不是金额越界那种小毛病，而是动作本身不合法）。
     // 这里【不能】就地用 coerceAction 里那个 equity=null 的规则兜底 —— 那样

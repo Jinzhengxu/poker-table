@@ -468,6 +468,18 @@ function makeAgent(script, seen, opts = {}) {
   });
 }
 
+test('agent：act 里那句话在亮牌，话丢掉，动作照常', async () => {
+  // 两条路（单轮 / agent）都要拦。agent 这一路的话是从 act 工具的参数里来的，
+  // 和单轮那路走的是同一个 coerceAction，所以这条测试守的是"别哪天绕过去了"。
+  const agent = makeAgent([
+    { tool: 'act', args: { action: 'call', say: '顶对，跟一手看看' } },
+  ]);
+
+  const out = await agent.decide(agentState(), P0);
+  assert.equal(out.action.type, 'call', '说错话不该影响动作');
+  assert.equal(out.say, null, '这句在亮牌，不许进聊天区');
+});
+
 test('agent：先调胜率工具、再提交动作，走的是 agent 这条路', async () => {
   const agent = makeAgent([
     { tool: 'estimate_equity', args: { opponent_range: 0.15, reason: '他翻牌圈继续开火' } },

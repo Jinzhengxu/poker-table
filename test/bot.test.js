@@ -11,7 +11,7 @@ import { freshDeck, shuffle } from '../server/deck.js';
 import { fastScore7 } from '../server/bot/fastscore.js';
 import { estimateEquity, estimateEquityAsync, countLiveOpponents } from '../server/bot/equity.js';
 import { chenScore, handStrength, decideByRule, clamp } from '../server/bot/policy.js';
-import { buildUser, buildSystem, coerceAction, sanitizeName, positionName } from '../server/bot/decide.js';
+import { buildUser, buildSystem, coerceAction, cleanSay, sanitizeName, positionName } from '../server/bot/decide.js';
 import {
   parseJSONObject, ProviderError, isRetryable, PROVIDERS, LLMClient, clientsFromEnv,
 } from '../server/bot/provider.js';
@@ -191,6 +191,70 @@ test('coerceAction：say 截断到 20 字，空白视为没说', () => {
 
   const blank = coerceAction({ action: 'call', say: '   ' }, st);
   assert.equal(blank.say, null);
+});
+
+// ==================== 人机不许在聊天里亮牌 ====================
+//
+// 这几条守的是一件很具体的事：模型手上有底牌和胜率，放它自由发挥就会边打边解说。
+// 下面「实际见过的原话」四条是从线上聊天区抄下来的，不是编的。
+
+test('cleanSay：实际见过的亮牌原话，一条都不许发出去', () => {
+  const seen = [
+    '顶对，该打点价值',
+    '顶对，跟一手看看',
+    '河牌听顺子成花了，看你怎么走。',
+    '我这手是同花，你随意',
+    '底牌不错，跟了',
+    '手里两条A，推了',
+    '胜率七成，不怕你',
+    '纯诈唬，看你敢不敢跟',
+  ];
+  for (const text of seen) {
+    const out = cleanSay(text);
+    assert.equal(out.say, null, `这句在亮牌，应该被丢掉：${text}`);
+    assert.match(out.note, /说漏了牌/);
+  }
+});
+
+test('cleanSay：不涉及牌的闲聊照常发', () => {
+  const fine = [
+    '免费看翻牌，挺好',
+    '看看转牌再说',
+    '既然都到这了，推了吧',
+    '跟一手',
+    '你打得太凶了',
+    '运气是真差',
+    '加到 200 试试',
+    '不玩了，下班',
+  ];
+  for (const text of fine) {
+    const out = cleanSay(text);
+    assert.equal(out.say, text, `这句没亮牌，不该被拦：${text}`);
+    assert.equal(out.note, null);
+  }
+});
+
+test('cleanSay：整句丢掉，不做遮盖也不做改写', () => {
+  // 留半句更糟：删掉「顶对」剩下的「该打点价值」照样在报牌力
+  const out = cleanSay('顶对，该打点价值');
+  assert.equal(out.say, null);
+});
+
+test('coerceAction：亮牌的话被丢掉，但动作照常执行', () => {
+  const st = fakeState(LEGAL_FACING_BET);
+  const out = coerceAction({ action: 'raise', amount: 80, say: '顶对，该打点价值' }, st);
+  // 说错话不该影响动作 —— 这两件事是分开的
+  assert.equal(out.action.type, 'raise');
+  assert.equal(out.action.amount, 80);
+  assert.equal(out.say, null);
+  assert.match(out.sayNote, /说漏了牌/);
+  assert.equal(out.adjusted, null, '动作没问题就不该有动作层的修正记录');
+});
+
+test('buildSystem：提示词里得明说不许提自己的牌', () => {
+  const text = buildSystem({ name: '老白', style: '松凶' });
+  assert.match(text, /不许提你自己的牌/,
+    '拦截只是兜底，提示词那一头也得写着，否则模型每手都要说一句再被丢一句');
 });
 
 test('coerceAction：allin 在任何局面都被接受', () => {
@@ -731,6 +795,22 @@ function fakeClient(script) {
     },
   };
 }
+
+test('BotDriver：模型在闲聊里亮牌，话被吞掉，动作照走，日志留一行', async () => {
+  const logs = [];
+  const driver = new BotDriver({
+    clients: [fakeClient([{ action: 'raise', amount: 80, say: '顶对，该打点价值' }])],
+    minThinkMs: 0,
+    logger: { error: (m) => logs.push(m) },
+  });
+
+  const out = await driver.decide(fakeState(LEGAL_FACING_BET), P0);
+  assert.equal(out.source, 'llm');
+  assert.equal(out.action.type, 'raise');
+  assert.equal(out.say, null, '这句进了聊天区就等于亮牌');
+  assert.equal(driver.stats.sayDropped, 1);
+  assert.ok(logs.some((m) => /说漏了牌/.test(m)), '吞掉了要在服务端日志里看得见');
+});
 
 test('BotDriver：模型正常返回时走 LLM 路径', async () => {
   const driver = new BotDriver({

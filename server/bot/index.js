@@ -76,7 +76,7 @@ export class BotDriver {
     for (const c of this.clients) this.health.set(c, { fails: 0, until: 0 });
 
     /** 简单统计，运维时能看出人机到底在走 LLM 还是兜底 */
-    this.stats = { llm: 0, rule: 0, adjusted: 0, errors: 0 };
+    this.stats = { llm: 0, rule: 0, adjusted: 0, sayDropped: 0, errors: 0 };
   }
 
   /** 有没有可用的 LLM（没有就是纯规则人机，也能玩） */
@@ -299,6 +299,12 @@ export class BotDriver {
         if (coerced.adjusted) {
           this.stats.adjusted++;
           this.logger.error(`[bot] ${persona.name} 输出被修正：${coerced.adjusted}`);
+        }
+        // 话被丢掉了要看得见。**这行只进服务端日志**——它带着模型原话，
+        // 而原话里就是那手牌，回到聊天区等于白拦一趟。
+        if (coerced.sayNote) {
+          this.stats.sayDropped++;
+          this.logger.error(`[bot] ${persona.name} ${coerced.sayNote}`);
         }
         this.stats.llm++;
         out = { ...coerced, source: 'llm', note: coerced.adjusted };

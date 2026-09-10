@@ -778,7 +778,12 @@ export class Room {
     this.#pump();
   }
 
-  /** 人机的一句话进聊天区。注意：聊天内容不会回流进任何提示词。 */
+  /**
+   * 人机的一句话进聊天区。两条注意：
+   * 一是聊天内容不会回流进任何提示词；
+   * 二是这句话在 coerceAction 里已经过了 cleanSay ——
+   * 亮自己牌的话到不了这里，所以这里【不需要】也【不应该】再过滤一遍。
+   */
   #botSay(p, text) {
     const clean = String(text).replace(/[\r\n]/g, ' ').trim().slice(0, 60);
     if (!clean) return;

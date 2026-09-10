@@ -427,7 +427,10 @@ export function buildTools(ctx) {
       inputSchema: z.object({
         action: z.enum(['fold', 'check', 'call', 'bet', 'raise', 'allin']),
         amount: z.number().optional().describe('只有 bet / raise 需要'),
-        say: z.string().optional().describe('说给牌桌听的一句话，最多 20 字，可以不说'),
+        say: z.string().optional().describe(
+          '说给牌桌听的一句话，最多 20 字，可以不说。'
+          + '**不许提你自己的牌**：底牌、牌型、听牌、胜率、是不是在诈唬，'
+          + '说了等于亮牌，这句话会被整条丢掉。聊气氛、调侃对手、说你要干什么都行。'),
       }),
       // 故意没有 execute：这个工具不干活，它只是循环的终点。
     }),

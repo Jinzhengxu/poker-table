@@ -295,6 +295,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Bots were narrating their own hole cards into the table chat.** Observed verbatim at
+  the table: 「顶对，该打点价值」, 「河牌听顺子成花了，看你怎么走」. The `say` field is
+  filled by the same model call that picks the action, so the model has the hole cards and
+  the equity estimate in front of it, and commentating is the natural thing to do with
+  them. At a poker table that is showing your hand — everyone else simply plays against
+  the announcement, and the hand is over as a contest.
+
+  Fixed at both ends, because either one alone leaks. The prompts (one-shot system prompt
+  and the agent's `act` tool description) now spell out that hole cards, hand categories,
+  draws, equity, bluffing and value-betting are all off limits in `say`, and that a slip
+  gets the whole line dropped. Behind that, `cleanSay()` in `bot/decide.js` scans the
+  line and drops it outright on a hit — no masking, no rewriting: deleting 「顶对」 leaves
+  「该打点价值」, which still announces the hand and now reads like the bot is raving.
+  Both bot paths funnel through `coerceAction()`, so one guard covers one-shot and agent
+  alike; the drop is logged server-side (`stats.sayDropped`) and never echoed back to the
+  chat, since the log line quotes the model and the quote *is* the hand.
+
+  `coerceAction()` was split while doing this: `cleanSay()` handles the talking and
+  `coerceMove()` the action, so a line that reveals too much can no longer influence the
+  action and an illegal action can no longer swallow a harmless line. The word list is a
+  blacklist and is meant to be: it catches the phrasings that actually show up, not
+  「我这两张挺配」. The rule for adding to it is to have seen the line at a table first —
+  padding it out gets you bots that only ever say 「嗯」, which is its own kind of broken.
+
 - **`POKER_BOT_TIMEOUT_MS` never reached a backend configured from the browser.**
   `BotDriver#configure()` — the path the host uses when pasting a key under Settings — built
   its client with `timeoutMs: this.timeoutMs`, and `this.timeoutMs` was never assigned
