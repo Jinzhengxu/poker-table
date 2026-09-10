@@ -1928,10 +1928,20 @@
       return;
     }
     var parts = info.providers.map(function (p) {
-      return p.label + '（' + p.model + '，' + p.maskedKey + '）' + (p.cooling ? ' ⚠ 冷却中' : '');
+      // 「不思考」要露出来：它同时影响快慢、花多少钱和答得对不对
+      var how = p.model + (p.thinking === 'off' ? '，不思考' : '') + '，' + p.maskedKey;
+      return p.label + '（' + how + '）' + (p.cooling ? ' ⚠ 冷却中' : '');
     });
     D.botStatus.textContent = '已启用：' + parts.join('、');
     D.botStatus.className = 'bot-status ok';
+  }
+
+  /** 供应商下拉框的占位符：默认模型名和 key 形状都写在 <option> 的 data-* 上 */
+  function syncBotPlaceholders() {
+    var opt = D.botProvider.options[D.botProvider.selectedIndex];
+    if (!opt) return;
+    D.botModel.placeholder = opt.getAttribute('data-model') || '';
+    D.botKey.placeholder = opt.getAttribute('data-key') || 'sk-...';
   }
 
   /** 服务端还没有 LLM 时，把本机记住的配置推上去（重启后自动恢复） */
@@ -2555,6 +2565,11 @@
     });
 
     if (D.botForm) {
+      // 换供应商时把两个占位符跟着换掉：默认模型名各家不同，key 的形状也不同
+      // （银联云给的是网关签发的 uuid，不是 sk- 开头的上游 key）。
+      D.botProvider.addEventListener('change', syncBotPlaceholders);
+      syncBotPlaceholders();
+
       D.botForm.addEventListener('submit', function (e) {
         e.preventDefault();
         var st = S.state;

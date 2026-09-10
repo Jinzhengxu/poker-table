@@ -220,9 +220,13 @@
           <h4>人机后端</h4>
           <div id="botStatus" class="bot-status">未配置，人机将按内置规则打牌。</div>
           <label>供应商
+            <!-- data-model / data-key 是选中后要显示的占位符，app.js 读它们。
+                 写在这里而不是 js 里，是为了别在两个文件各存一份默认模型名。 -->
             <select id="botProvider">
-              <option value="deepseek">DeepSeek</option>
-              <option value="kimi">Kimi（月之暗面）</option>
+              <option value="deepseek" data-model="deepseek-chat" data-key="sk-...">DeepSeek</option>
+              <option value="kimi" data-model="moonshot-v1-8k" data-key="sk-...">Kimi（月之暗面）</option>
+              <option value="yinlianyun" data-model="deepseek-v4-flash"
+                data-key="网关 token（uuid 形式）">银联云（deepseek-v4-flash）</option>
             </select>
           </label>
           <label>API Key<input id="botKey" type="password" autocomplete="off"

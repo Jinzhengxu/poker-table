@@ -185,20 +185,23 @@ node scripts/build-hotword-data.mjs /tmp/tencent.bin
 底池赔率）。**兜底不只是给"没配 key"用的**——超时、限流、返回内容解析不了，全都落到这里，
 所以外部 API 抽风不会拖慢牌桌。一个 key 都不配也能用，只是人机按规则打、不说话。
 
-内置支持两家。两家都是 OpenAI 兼容的 `/chat/completions`，所以只有一个客户端实现，
+内置支持三家：Kimi（月之暗面）、DeepSeek、银联云（走 code-tool 网关，填的是网关签发的
+token，不是上游真 key）。三家都是 OpenAI 兼容的 `/chat/completions`，所以只有一个客户端实现，
 也不需要引入任何 SDK：
 
 | 变量                   | 默认值       | 含义                                       |
 | ---------------------- | ------------ | ------------------------------------------ |
 | `KIMI_API_KEY`         | —            | Kimi（月之暗面）的 key                     |
 | `DEEPSEEK_API_KEY`     | —            | DeepSeek 的 key                            |
-| `POKER_BOT_PROVIDER`   | `auto`       | `kimi` / `deepseek` / `auto`（有哪个用哪个）|
-| `POKER_BOT_MODEL`      | 各家默认     | 覆盖模型名                                 |
-| `POKER_BOT_BASE_URL`   | 各家默认     | 覆盖接入点（自建代理、海外站点）           |
-| `POKER_BOT_TIMEOUT_MS` | `8000`       | 单次请求超时，超了就走兜底                 |
+| `YINLIANYUN_API_KEY`   | —            | 银联云网关 token（默认模型 `deepseek-v4-flash`）|
+| `POKER_BOT_PROVIDER`   | `auto`       | `kimi` / `deepseek` / `yinlianyun` / `auto`（有哪个用哪个）|
+| `POKER_BOT_MODEL`      | 各家默认     | 覆盖模型名。这是**全局**的：多家一起用时会同时盖到每一家头上，而模型名并不通用 |
+| `POKER_BOT_BASE_URL`   | 各家默认     | 覆盖接入点（自建代理、海外站点）。同样是全局的 |
+| `POKER_BOT_TIMEOUT_MS` | 各家默认     | 单次请求超时，超了就走兜底。不填就按各家预设：多数 8000，银联云 30000（它的默认模型带思维链）|
+| `POKER_BOT_THINKING`   | `on`         | `off` = 让会思考的模型别想，直接答。只有声明了开关的家关得掉（目前只有银联云）；对另外两家填 off 只会记一行日志、请求一个字不改，因为它们的默认模型本来就不思考 |
 | `POKER_BOT_MAX_TOKENS` | `4096`       | 单轮回答的 token 上限。**接推理模型时别调小**：思维链和正文共用这个预算，不够就答到一半被截断、整手退回规则策略 |
 
-两个 key 都配的话，人机按座位轮流用；某一家开始报错就把它冷却 60 秒，换另一家顶上。
+配了多个 key 的话，人机按座位轮流用；某一家开始报错就把它冷却 60 秒，换另一家顶上。
 
 **也可以不配环境变量，直接在网页上填。** 房主在「设置 → 人机后端」里选供应商、粘 key、保存
 即可。key 经加密连接送到服务端，只存在内存里，**不会下发给牌桌上的其他人**，也不写日志。

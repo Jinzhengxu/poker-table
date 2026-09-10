@@ -8,6 +8,8 @@
 //   node scripts/agent-eval.mjs --mode rule           # 纯规则基线，不花钱
 //   node scripts/agent-eval.mjs --mode single         # 旧版单轮 LLM
 //   node scripts/agent-eval.mjs --model deepseek-v4-pro
+//   node scripts/agent-eval.mjs --provider yinlianyun    # 换一家跑同一套题
+//   node scripts/agent-eval.mjs --think off              # 让模型别想，直接答
 //   node scripts/agent-eval.mjs --tag range           # 只跑某一类
 //   node scripts/agent-eval.mjs --json > out.json
 //   node scripts/agent-eval.mjs --trace runs.jsonl    # 每次决策的完整轨迹落盘
@@ -21,8 +23,10 @@
 // 只有三条线都在同一套题上跑过，"agent 这轮改造值多少钱"才有答案。
 //
 // 环境变量（和线上人机同一套读法，见 server/agent/model.js）：
-//   DEEPSEEK_API_KEY      必填（rule 模式除外）
-//   POKER_BOT_BASE_URL    接入点，默认走 DeepSeek 官方
+//   <供应商的 keyEnv>     必填（rule 模式除外）。默认供应商是 deepseek，
+//                         也就是 DEEPSEEK_API_KEY；--provider yinlianyun 就读
+//                         YINLIANYUN_API_KEY。
+//   POKER_BOT_BASE_URL    接入点，默认走该供应商的预设
 //   POKER_AGENT_MODEL     模型名，--model 优先
 
 import { writeFileSync, appendFileSync } from 'node:fs';
@@ -31,7 +35,7 @@ import { SPOTS, TAGS, pairsOf, TRIVIAL, scoreTrivial, modelAnswered } from '../s
 import { PokerAgent } from '../server/agent/index.js';
 import { buildModel } from '../server/agent/model.js';
 import { BotDriver } from '../server/bot/index.js';
-import { LLMClient } from '../server/bot/provider.js';
+import { LLMClient, PROVIDERS } from '../server/bot/provider.js';
 
 // ---------------------------------------------------------------- 参数
 
@@ -49,9 +53,16 @@ const tagFilter = arg('tag', null);
 const idFilter = arg('id', null);
 const asJson = flag('json');
 const tracePath = arg('trace', null);
-const modelName = arg('model', process.env.POKER_AGENT_MODEL || 'deepseek-chat');
+const providerName = String(arg('provider', 'deepseek')).toLowerCase();
+const preset = PROVIDERS[providerName];
+if (!preset) {
+  console.error(`--provider 只能是 ${Object.keys(PROVIDERS).join(' / ')}，收到 ${providerName}`);
+  process.exit(2);
+}
+const thinking = String(arg('think', process.env.POKER_BOT_THINKING || 'on')).toLowerCase();
+const modelName = arg('model', process.env.POKER_AGENT_MODEL || preset.model);
 const baseUrl = arg('base-url', process.env.POKER_BOT_BASE_URL || undefined);
-const apiKey = process.env.DEEPSEEK_API_KEY || '';
+const apiKey = process.env[preset.keyEnv] || '';
 // 题库模式下墙钟给得比线上大方：这里不赶 45 秒的行动时限，
 // 要的是"模型想清楚能答成什么样"，被半路掐断的样本没有意义。
 const maxThinkMs = Number(arg('max-ms', 60_000));
@@ -64,7 +75,7 @@ if (!['agent', 'single', 'rule'].includes(mode)) {
   process.exit(2);
 }
 if (mode !== 'rule' && !apiKey) {
-  console.error('缺少 DEEPSEEK_API_KEY（rule 模式不需要）');
+  console.error(`缺少 ${preset.keyEnv}（rule 模式不需要）`);
   process.exit(2);
 }
 
@@ -106,7 +117,7 @@ function makeDriver(sharedModel, logger = quiet) {
 
   if (mode === 'single') {
     const client = new LLMClient({
-      provider: 'deepseek', apiKey, model: modelName, baseUrl,
+      provider: providerName, apiKey, model: modelName, baseUrl, thinking,
       // 带思维链的模型单轮也要十几秒，默认 8 秒会把每一题都打成兜底，
       // 那测的就不是模型而是超时。
       timeoutMs: maxThinkMs,
@@ -125,7 +136,7 @@ function makeDriver(sharedModel, logger = quiet) {
 }
 
 const sharedModel = mode === 'agent'
-  ? buildModel({ provider: 'deepseek', apiKey, model: modelName, baseUrl })
+  ? buildModel({ provider: providerName, apiKey, model: modelName, baseUrl, thinking })
   : null;
 
 // ---------------------------------------------------------------- 判分
@@ -310,7 +321,10 @@ for (const [key, sides] of pairsOf(spots)) {
 }
 
 const summary = {
-  mode, model: mode === 'rule' ? null : modelName, baseUrl: baseUrl || null,
+  mode,
+  provider: mode === 'rule' ? null : providerName,
+  thinking: mode === 'rule' ? null : thinking,
+  model: mode === 'rule' ? null : modelName, baseUrl: baseUrl || null,
   excludeTools,
   spots: spots.length, repeat, decisions: runs.length, seconds,
   correct, scored: scored.length,
@@ -336,7 +350,10 @@ if (asJson) {
   process.exit(0);
 }
 
-console.log(`## ${mode}${mode === 'rule' ? '' : ` · ${modelName}`}` +
+// 报告头上带供应商：同一个模型名在不同网关后面表现可能差一截，
+// 两份跑分贴在一起时得能认出哪份是哪份。
+console.log(`## ${mode}${mode === 'rule' ? '' : ` · ${preset.label} · ${modelName}` +
+              (thinking === 'off' ? ' · 不思考' : '')}` +
             `${excludeTools.length ? ` · 摘掉 ${excludeTools.join('/')}` : ''}\n`);
 console.log(`| 指标 | 值 |`);
 console.log(`| --- | --- |`);

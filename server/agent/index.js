@@ -198,6 +198,7 @@ export class PokerAgent {
         apiKey: client.apiKey,
         model: patch.model ? String(patch.model).trim() : client.model,
         baseUrl: client.baseUrl,
+        thinking: client.thinking,
       });
       this.models = this.models.filter((x) => x.provider !== provider);
       this.models.push(m);
@@ -331,6 +332,9 @@ export class PokerAgent {
     try {
       result = await generateText({
         model: model.languageModel,
+        // 关思维链的那个字段（如果这家支持、而且要求关了）。
+        // openai-compatible 会把这里不认识的键原样摊进请求体，见 model.js。
+        ...(model.providerOptions ? { providerOptions: model.providerOptions } : {}),
         system: buildAgentSystem(persona, this.maxSteps, toolNames),
         // 不再预先注入胜率——那是工具的活。forTools 换掉收尾那句话：
         // 共用的 buildUser 默认要的是一个 JSON 对象，那是单轮那路的收尾方式，

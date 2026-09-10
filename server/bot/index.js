@@ -26,19 +26,28 @@ export class BotDriver {
   /**
    * @param {object} [opts]
    * @param {import('./provider.js').LLMClient[]} [opts.clients] 不传则从环境变量装配
+   * @param {number} [opts.timeoutMs] 单次请求超时；不给就读 POKER_BOT_TIMEOUT_MS，
+   *                                  再没有就用各供应商自己的预设
+   * @param {'on'|'off'} [opts.thinking] 关思维链；不给就读 POKER_BOT_THINKING
    * @param {number} [opts.minThinkMs] 最短"思考"时间，让人机不至于秒回，默认 900
    * @param {number} [opts.maxThinkMs] 最长等待，超过就用兜底，默认 9000
    * @param {number} [opts.maxTokens]  单轮回答的 token 上限，默认 1024（要装得下思维链）
    * @param {object} [opts.logger]
    */
   constructor(opts = {}) {
-    this.clients = opts.clients || clientsFromEnv();
+    const env = opts.env || process.env;
+
+    this.clients = opts.clients || clientsFromEnv(env);
     this.minThinkMs = opts.minThinkMs ?? 900;
     this.maxThinkMs = opts.maxThinkMs ?? 9000;
     // 单轮回答的 token 上限。见 decide() 里那段：这个数要装得下「思维链 + 动作 JSON」。
     // 4096 是量出来的：deepseek-v4-flash 在题库那 20 个局面上，思维链用掉
     // 572 ~ 3372 个 token，而动作 JSON 本身只有二十来个。
-    this.maxTokens = Math.max(64, Number(opts.maxTokens ?? (opts.env || process.env).POKER_BOT_MAX_TOKENS ?? 4096));
+    //
+    // 这里【不能】用 ?? 兜底：环境变量传下来的是字符串，没设过的那个是 ''，
+    // 而 '' 不是 nullish，Number('') === 0，于是 4096 会被悄悄压到下限 64——
+    // 答案答一半被截断、解析失败、整手退回规则策略。用 || 才能把 '' 也接住。
+    this.maxTokens = Math.max(64, Number(opts.maxTokens) || Number(env.POKER_BOT_MAX_TOKENS) || 4096);
     this.logger = opts.logger || console;
 
     // 胜率估算。分片计算，所以这里有两个不同性质的预算：
@@ -47,7 +56,17 @@ export class BotDriver {
     //   equityMs      总墙钟上限 —— 这个可以大方给。行动时限 45 秒，人机本来
     //                 还要等 LLM 一两秒，几百毫秒完全不影响体验。
     // 于是精度不必和流畅度做取舍：慢机器只是算得久一点，而不是被迫降精度。
-    const env = opts.env || process.env;
+
+    // 单次请求超时。这里必须自己留一份：configure()（房主在前端填 key）会新建
+    // LLMClient，以前那行传的是压根不存在的 this.timeoutMs，于是前端配出来的
+    // 后端永远拿 8 秒，POKER_BOT_TIMEOUT_MS 对它无效。不填就传 undefined，
+    // 让供应商预设生效（银联云那种带思维链的默认 30 秒）。
+    this.timeoutMs = Number(opts.timeoutMs ?? env.POKER_BOT_TIMEOUT_MS) || undefined;
+
+    // 关思维链。同样要自己留一份，否则前端配出来的后端跟环境变量对不上。
+    this.thinking = String(opts.thinking ?? env.POKER_BOT_THINKING ?? 'on').toLowerCase() === 'off'
+      ? 'off' : 'on';
+
     this.equitySims = Math.max(0, Number(opts.equitySims ?? env.POKER_BOT_EQUITY_SIMS ?? 20000));
     this.equityMs = Math.max(1, Number(opts.equityMs ?? env.POKER_BOT_EQUITY_MS ?? 1500));
     this.equityChunkMs = Math.max(1, Number(opts.equityChunkMs ?? env.POKER_BOT_EQUITY_CHUNK_MS ?? 8));
@@ -68,7 +87,11 @@ export class BotDriver {
   /** 供 /healthz 之类的地方展示 */
   describe() {
     if (!this.hasLLM) return '规则人机（未配置 LLM）';
-    return this.clients.map((c) => `${c.label}(${c.model})`).join(' + ');
+    // 带上「不思考」是因为它同时影响延迟、花的钱和答得对不对，
+    // 而这三样出问题的时候，第一眼要看的就是启动日志这一行。
+    return this.clients
+      .map((c) => `${c.label}(${c.model}${c.thinking === 'off' ? '，不思考' : ''})`)
+      .join(' + ');
   }
 
   /**
@@ -78,7 +101,7 @@ export class BotDriver {
    * 快照里——那等于把 key 发给牌桌上所有人。对外只能用 status() 的脱敏结果。
    *
    * @param {object} patch
-   * @param {string} patch.provider  kimi | deepseek
+   * @param {string} patch.provider  kimi | deepseek | yinlianyun
    * @param {string} [patch.apiKey]  留空表示保留原有 key
    * @param {string} [patch.model]
    * @param {string} [patch.baseUrl]
@@ -104,6 +127,7 @@ export class BotDriver {
         model: patch.model ? String(patch.model).trim() : undefined,
         baseUrl: patch.baseUrl ? String(patch.baseUrl).trim() : undefined,
         timeoutMs: this.timeoutMs,
+        thinking: this.thinking,
       });
     } catch (e) {
       return { ok: false, msg: e.message || '配置无效' };
@@ -138,6 +162,7 @@ export class BotDriver {
         provider: c.provider,
         label: c.label,
         model: c.model,
+        thinking: c.thinking,
         maskedKey: maskKey(c.apiKey),
         cooling: (this.health.get(c)?.until ?? 0) > now,
       })),

@@ -793,6 +793,25 @@ test('buildModel：走 PROVIDERS 的预设，不另立一份接入点', () => {
 
   const k = buildModel({ provider: 'kimi', apiKey: 'sk-y' });
   assert.equal(k.baseUrl, 'https://api.moonshot.cn/v1');
+
+  const y = buildModel({ provider: 'yinlianyun', apiKey: 'tok' });
+  assert.equal(y.baseUrl, 'https://llm.code-tool.com:8443/yinlianyun/v1');
+  assert.equal(y.model, 'deepseek-v4-flash');
+});
+
+test('buildModel：thinking=off 变成 providerOptions，摊进请求体的那份和单轮共用一个预设', () => {
+  const off = buildModel({ provider: 'yinlianyun', apiKey: 'tok', thinking: 'off' });
+  assert.equal(off.thinking, 'off');
+  assert.deepEqual(off.providerOptions, { yinlianyun: { thinking: { type: 'disabled' } } });
+
+  const on = buildModel({ provider: 'yinlianyun', apiKey: 'tok' });
+  assert.equal(on.thinking, 'on');
+  assert.equal(on.providerOptions, null, 'on 的时候不能往请求里塞任何东西');
+
+  // 关不掉的家照实停在 on，口径和 LLMClient 一致
+  const ds = buildModel({ provider: 'deepseek', apiKey: 'sk-x', thinking: 'off' });
+  assert.equal(ds.thinking, 'on');
+  assert.equal(ds.providerOptions, null);
 });
 
 test('buildModel：不认识的供应商 / 缺 key 都要报错', () => {
@@ -805,6 +824,10 @@ test('modelsFromEnv：没配 key 就是空数组（不抛异常）', () => {
   const one = modelsFromEnv({ DEEPSEEK_API_KEY: 'sk-x' });
   assert.equal(one.length, 1);
   assert.equal(one[0].provider, 'deepseek');
+
+  const y = modelsFromEnv({ YINLIANYUN_API_KEY: 'tok' });
+  assert.equal(y.length, 1);
+  assert.equal(y[0].provider, 'yinlianyun');
 });
 
 test('modelsFromEnv：POKER_AGENT_MODEL 优先于 POKER_BOT_MODEL', () => {

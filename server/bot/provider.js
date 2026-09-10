@@ -1,12 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// LLM 供应商适配：Kimi(Moonshot) 与 DeepSeek。
+// LLM 供应商适配：Kimi(Moonshot)、DeepSeek，以及银联云网关。
 //
-// 两家都提供 OpenAI 兼容的 /chat/completions，请求体和响应体结构一致，
+// 三家都提供 OpenAI 兼容的 /chat/completions，请求体和响应体结构一致，
 // 所以这里只有一个客户端，差异全部收敛成 baseUrl / model / apiKey 三个字段。
 // 用 Node 22 自带的全局 fetch，不引入任何依赖（见 CONTRIBUTING.md 的约定）。
 
-/** 各供应商的默认接入点与模型 */
+/**
+ * 各供应商的默认接入点与模型。
+ *
+ * 两个可选字段，都只跟【带思维链的模型】有关：
+ *
+ *   timeoutMs    单次请求超时的默认值。那种模型光想就要十几秒，用全局那个
+ *                8 秒会稳定超时——而超时是【静默】的，牌桌照常进行，人机只是
+ *                悄悄退回规则策略，日志外面看不出来。POKER_BOT_TIMEOUT_MS 优先。
+ *   noThinkBody  「把思维链关掉」要往请求体里加的字段。各家的开关名字都不一样，
+ *                所以写在预设里，代码只管加不加。没写这个字段的供应商就是没有
+ *                已知开关（Kimi、DeepSeek 的默认模型本来就不带思维链），
+ *                这时要 off 也只能维持 on —— 但会照实说出来：日志里一行，
+ *                status() 里 thinking 字段仍然是 on。绝不发一个上游不认识的
+ *                字段过去，然后装作关掉了。
+ */
 export const PROVIDERS = Object.freeze({
   kimi: {
     label: 'Kimi',
@@ -19,6 +33,28 @@ export const PROVIDERS = Object.freeze({
     baseUrl: 'https://api.deepseek.com/v1',
     model: 'deepseek-chat',
     keyEnv: 'DEEPSEEK_API_KEY',
+  },
+  // 银联云：走 code-tool 网关，key 是网关自己签发的 token（uuid 形式），
+  // 不是上游的真 key。
+  //
+  // 默认模型 deepseek-v4-flash 带思维链，所以超时单独给到 30 秒：
+  // 题库 obvious 那 7 题实测单轮延迟 p50 7.5s、p95 27.8s，最短的一次问答
+  // （45 个输入 token）也要 5 秒。用全局那 8 秒的话 p50 就已经超了，
+  // 而且是静默超——每手都退回规则策略，页面上完全看不出来。
+  // 上限压在 30 秒是因为行动时限默认 45 秒，再加上算胜率的 1.5 秒还得留余量。
+  //
+  // 思维链可以关：这两个模型都认 thinking:{type:'disabled'}，关掉后
+  // reasoning_tokens 确实是 0（实测 flash 6~8s -> 2~3s，pro 7~10s -> 4s）。
+  // 同批试过的 enable_thinking:false / reasoning:{enabled:false} /
+  // chat_template_kwargs 都【只是被无视】，reasoning_tokens 照样不为 0；
+  // reasoning_effort 那两个直接 502。所以这里只认这一种写法。
+  yinlianyun: {
+    label: '银联云',
+    baseUrl: 'https://llm.code-tool.com:8443/yinlianyun/v1',
+    model: 'deepseek-v4-flash',
+    keyEnv: 'YINLIANYUN_API_KEY',
+    timeoutMs: 30_000,
+    noThinkBody: { thinking: { type: 'disabled' } },
   },
 });
 
@@ -75,11 +111,14 @@ export function isContentFilterError(err) {
 export class LLMClient {
   /**
    * @param {object} opts
-   * @param {string} opts.provider   PROVIDERS 的键（kimi / deepseek）
+   * @param {string} opts.provider   PROVIDERS 的键（kimi / deepseek / yinlianyun）
    * @param {string} opts.apiKey
    * @param {string} [opts.baseUrl]  覆盖默认接入点（自建代理 / 海外站点时用）
    * @param {string} [opts.model]
-   * @param {number} [opts.timeoutMs] 单次请求超时，默认 8000
+   * @param {number} [opts.timeoutMs] 单次请求超时，默认取供应商预设，没有则 8000
+   * @param {'on'|'off'} [opts.thinking] 关思维链。默认 on（照原样带着）。
+   *                                     预设里没有 noThinkBody 就关不掉，这时
+   *                                     this.thinking 会照实停在 'on'
    */
   constructor(opts) {
     const preset = PROVIDERS[opts.provider];
@@ -91,7 +130,14 @@ export class LLMClient {
     this.apiKey = opts.apiKey;
     this.baseUrl = (opts.baseUrl || preset.baseUrl).replace(/\/+$/, '');
     this.model = opts.model || preset.model;
-    this.timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 8000;
+    this.timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : (preset.timeoutMs ?? 8000);
+
+    // 关掉思维链要往请求体里加的字段；on 的时候是 null，请求体一个字都不变。
+    // 关不掉的家就停在 'on' —— 这个字段是**实际发生了什么**，不是**要求了什么**，
+    // 上层（日志、status()）照它显示才不会骗人。
+    this.noThinkBody = opts.thinking === 'off' ? (preset.noThinkBody || null) : null;
+    this.thinking = this.noThinkBody ? 'off' : 'on';
+    this.canDisableThinking = !!preset.noThinkBody;
   }
 
   /**
@@ -124,12 +170,13 @@ export class LLMClient {
             { role: 'system', content: system },
             { role: 'user', content: user },
           ],
-          // 两家都支持 OpenAI 的 JSON 模式。注意 DeepSeek 要求提示词里
+          // 三家都支持 OpenAI 的 JSON 模式。注意 DeepSeek 要求提示词里
           // 出现 "json" 字样才会进入该模式，prompt.js 里已经满足。
           response_format: { type: 'json_object' },
           temperature: 0.7,
           max_tokens: maxTokens,
           stream: false,
+          ...(this.noThinkBody || {}),
         }),
         signal: composed,
       });
@@ -214,18 +261,21 @@ function tryParse(s) {
 /**
  * 从环境变量装配客户端列表。
  *
- *   POKER_BOT_PROVIDER   kimi | deepseek | auto（默认 auto：有哪个 key 用哪个）
- *   KIMI_API_KEY / DEEPSEEK_API_KEY
+ *   POKER_BOT_PROVIDER   kimi | deepseek | yinlianyun | auto（默认 auto：有哪个 key 用哪个）
+ *   KIMI_API_KEY / DEEPSEEK_API_KEY / YINLIANYUN_API_KEY
  *   POKER_BOT_MODEL      覆盖模型名
  *   POKER_BOT_BASE_URL   覆盖接入点
- *   POKER_BOT_TIMEOUT_MS 单次请求超时，默认 8000
+ *   POKER_BOT_TIMEOUT_MS 单次请求超时，不填就按供应商预设（多数是 8000）
+ *   POKER_BOT_THINKING   on（默认）| off。off = 让模型别想，直接答
  *
  * @param {object} [env] 默认 process.env，测试时可注入
  * @returns {LLMClient[]} 可能为空（没配 key 就没有 LLM 人机，只能用规则人机）
  */
 export function clientsFromEnv(env = process.env) {
   const want = (env.POKER_BOT_PROVIDER || 'auto').toLowerCase();
-  const timeoutMs = Number(env.POKER_BOT_TIMEOUT_MS) || 8000;
+  // 不填就传 undefined，让每家自己的预设生效（银联云那种推理模型要 30 秒）
+  const timeoutMs = Number(env.POKER_BOT_TIMEOUT_MS) || undefined;
+  const thinking = String(env.POKER_BOT_THINKING || 'on').toLowerCase() === 'off' ? 'off' : 'on';
 
   const wanted = want === 'auto' ? Object.keys(PROVIDERS) : [want];
   const out = [];
@@ -241,13 +291,20 @@ export function clientsFromEnv(env = process.env) {
       if (want !== 'auto') console.error(`[bot] 已指定 ${name} 但没有设置 ${preset.keyEnv}`);
       continue;
     }
-    out.push(new LLMClient({
+    const client = new LLMClient({
       provider: name,
       apiKey,
       model: env.POKER_BOT_MODEL || undefined,
       baseUrl: env.POKER_BOT_BASE_URL || undefined,
       timeoutMs,
-    }));
+      thinking,
+    });
+    // 要求关却关不掉，得说一声。这两家的默认模型本来就不带思维链，
+    // 所以这行多半只是提示"这个开关对它没意义"，而不是出了错。
+    if (thinking === 'off' && client.thinking !== 'off') {
+      console.error(`[bot] ${client.label} 没有已知的关思维链开关，仍按原样调用`);
+    }
+    out.push(client);
   }
   return out;
 }

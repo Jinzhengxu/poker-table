@@ -12,7 +12,9 @@ import { fastScore7 } from '../server/bot/fastscore.js';
 import { estimateEquity, estimateEquityAsync, countLiveOpponents } from '../server/bot/equity.js';
 import { chenScore, handStrength, decideByRule, clamp } from '../server/bot/policy.js';
 import { buildUser, buildSystem, coerceAction, sanitizeName, positionName } from '../server/bot/decide.js';
-import { parseJSONObject, ProviderError, isRetryable } from '../server/bot/provider.js';
+import {
+  parseJSONObject, ProviderError, isRetryable, PROVIDERS, LLMClient, clientsFromEnv,
+} from '../server/bot/provider.js';
 import { BotDriver, randomPersona, PERSONA_NAMES, PERSONA_DIMENSIONS } from '../server/bot/index.js';
 import { traitBias } from '../server/bot/persona.js';
 import { modelAnswered } from '../server/eval/spots.js';
@@ -1499,4 +1501,150 @@ test('BotDriver：单轮回答的 token 预算默认够装思维链，且能用�
     2048, '环境变量该被读到');
   // 别让人把它调成 0 —— 那等于把这条路关掉，而且是静默的
   assert.ok(new BotDriver({ clients: [], maxTokens: 0, logger: quietLogger() }).maxTokens >= 64);
+});
+
+// ==================== 供应商预设 ====================
+//
+// 这一节守的全是【静默】那一类的坑：配错了牌桌照常开，人机只是每手都退回
+// 规则策略，页面上一点异常都看不出来，日志也要翻才有。
+
+test('PROVIDERS：三家的接入点、默认模型、key 环境变量都齐全', () => {
+  for (const [name, p] of Object.entries(PROVIDERS)) {
+    assert.match(p.baseUrl, /^https:\/\//, `${name} 的接入点必须是 https`);
+    assert.ok(p.model, `${name} 缺默认模型`);
+    assert.ok(p.keyEnv, `${name} 缺 key 的环境变量名`);
+    assert.ok(p.label, `${name} 缺展示名`);
+  }
+  const y = PROVIDERS.yinlianyun;
+  assert.equal(y.baseUrl, 'https://llm.code-tool.com:8443/yinlianyun/v1');
+  assert.equal(y.model, 'deepseek-v4-flash');
+  assert.equal(y.keyEnv, 'YINLIANYUN_API_KEY');
+});
+
+test('LLMClient：超时默认取供应商预设，环境变量仍然优先', () => {
+  // deepseek-v4-flash 带思维链，最短的一次问答实测就要 5 秒；用全局那 8 秒
+  // 会稳定超时，而超时是静默的 —— 所以这家的预设必须明显更长。
+  const y = new LLMClient({ provider: 'yinlianyun', apiKey: 'tok' });
+  assert.ok(y.timeoutMs >= 20000, `银联云默认 ${y.timeoutMs}ms 太短，会每手都超时退化`);
+
+  assert.equal(new LLMClient({ provider: 'deepseek', apiKey: 'sk-x' }).timeoutMs, 8000);
+  assert.equal(
+    new LLMClient({ provider: 'yinlianyun', apiKey: 'tok', timeoutMs: 5000 }).timeoutMs,
+    5000, '显式指定要盖过预设');
+});
+
+test('clientsFromEnv：三家 key 都认，auto 模式有几把就装几把', () => {
+  assert.deepEqual(clientsFromEnv({}), []);
+
+  const one = clientsFromEnv({ YINLIANYUN_API_KEY: 'tok' });
+  assert.equal(one.length, 1);
+  assert.equal(one[0].provider, 'yinlianyun');
+  assert.equal(one[0].model, 'deepseek-v4-flash');
+
+  const all = clientsFromEnv({
+    KIMI_API_KEY: 'sk-k', DEEPSEEK_API_KEY: 'sk-d', YINLIANYUN_API_KEY: 'tok',
+  });
+  assert.equal(all.length, 3);
+
+  const only = clientsFromEnv({
+    POKER_BOT_PROVIDER: 'yinlianyun', KIMI_API_KEY: 'sk-k', YINLIANYUN_API_KEY: 'tok',
+  });
+  assert.deepEqual(only.map((c) => c.provider), ['yinlianyun']);
+});
+
+test('clientsFromEnv：POKER_BOT_TIMEOUT_MS 没设或是空串时，落回各家预设', () => {
+  const [y] = clientsFromEnv({ YINLIANYUN_API_KEY: 'tok', POKER_BOT_TIMEOUT_MS: '' });
+  assert.ok(y.timeoutMs >= 20000, '空字符串不能被当成 0 —— 那等于每次请求立刻超时');
+
+  const [y2] = clientsFromEnv({ YINLIANYUN_API_KEY: 'tok', POKER_BOT_TIMEOUT_MS: '12000' });
+  assert.equal(y2.timeoutMs, 12000);
+});
+
+test('BotDriver.configure：前端配出来的后端也要拿到该有的超时', () => {
+  // 回归：这里以前传的是压根不存在的 this.timeoutMs，于是前端配的后端
+  // 永远吃 8 秒，POKER_BOT_TIMEOUT_MS 对它完全无效。
+  const d = new BotDriver({ clients: [], env: {}, logger: quietLogger() });
+  d.configure({ provider: 'yinlianyun', apiKey: 'tok' });
+  assert.ok(d.clients[0].timeoutMs >= 20000);
+  assert.match(d.describe(), /银联云/);
+
+  const d2 = new BotDriver({ clients: [], env: { POKER_BOT_TIMEOUT_MS: '15000' }, logger: quietLogger() });
+  d2.configure({ provider: 'yinlianyun', apiKey: 'tok' });
+  assert.equal(d2.clients[0].timeoutMs, 15000, '环境变量该管到前端配出来的这一路');
+});
+
+test('BotDriver：环境变量是空字符串时，token 预算不能被压到下限', () => {
+  // docker-compose 里 "${X:-}" 展开出来就是空字符串。'' 不是 nullish，
+  // Number('') === 0，用 ?? 兜底会把 4096 悄悄变成 64 —— 答案答一半被截断。
+  const d = new BotDriver({ clients: [], env: { POKER_BOT_MAX_TOKENS: '' }, logger: quietLogger() });
+  assert.ok(d.maxTokens >= 4096, `空串被当成了 ${d.maxTokens}`);
+});
+
+// ==================== 关思维链 ====================
+//
+// 带思维链的模型慢、贵，而且思维链和正文共用 token 预算。能关的家要能关掉，
+// 关不掉的家要【说自己没关掉】—— 最坏的结果是发一个上游不认识的字段过去，
+// 请求照样成功、思维链照样在，只有账单知道。
+
+test('LLMClient：thinking=off 时把预设里那个开关加进请求体', async () => {
+  const c = new LLMClient({ provider: 'yinlianyun', apiKey: 'tok', thinking: 'off' });
+  assert.equal(c.thinking, 'off');
+
+  const seen = {};
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    seen.url = url;
+    seen.body = JSON.parse(init.body);
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: '{"action":"fold"}' } }] }),
+      { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    await c.completeJSON({ system: 's', user: 'u' });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.deepEqual(seen.body.thinking, { type: 'disabled' });
+  assert.equal(seen.body.model, 'deepseek-v4-flash');
+});
+
+test('LLMClient：thinking=on 时请求体一个字都不多', async () => {
+  const c = new LLMClient({ provider: 'yinlianyun', apiKey: 'tok' });
+  assert.equal(c.thinking, 'on');
+
+  let body = null;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    body = JSON.parse(init.body);
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: '{"action":"fold"}' } }] }),
+      { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    await c.completeJSON({ system: 's', user: 'u' });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal('thinking' in body, false);
+});
+
+test('LLMClient：没有已知开关的家，要 off 也照实停在 on', () => {
+  // 关键是不能发一个上游不认识的字段过去然后装作关掉了。
+  // DeepSeek / Kimi 的默认模型本来就不带思维链，这个开关对它们没意义。
+  const c = new LLMClient({ provider: 'deepseek', apiKey: 'sk-x', thinking: 'off' });
+  assert.equal(c.thinking, 'on', '关不掉就得说关不掉');
+  assert.equal(c.noThinkBody, null);
+  assert.equal(c.canDisableThinking, false);
+});
+
+test('clientsFromEnv / BotDriver：POKER_BOT_THINKING 一路传到前端配的后端', () => {
+  const [c] = clientsFromEnv({ YINLIANYUN_API_KEY: 'tok', POKER_BOT_THINKING: 'off' });
+  assert.equal(c.thinking, 'off');
+  assert.equal(clientsFromEnv({ YINLIANYUN_API_KEY: 'tok' })[0].thinking, 'on', '默认不动它');
+
+  const d = new BotDriver({ clients: [], env: { POKER_BOT_THINKING: 'off' }, logger: quietLogger() });
+  d.configure({ provider: 'yinlianyun', apiKey: 'tok' });
+  assert.equal(d.clients[0].thinking, 'off');
+  assert.match(d.describe(), /不思考/);
+  assert.equal(d.status().providers[0].thinking, 'off', '房主要能在页面上看见');
 });

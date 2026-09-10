@@ -326,6 +326,7 @@ export class Hand {
 {"t":"addBot","seat":3}                      // 仅房主：加一个人机。seat 可省略 = 挑第一个空位
 {"t":"botConfig","patch":{"provider":"deepseek","apiKey":"sk-...","model":"..."}}
                                              // 仅房主：配置人机的 LLM 后端。
+                                             // provider: kimi | deepseek | yinlianyun。
                                              // apiKey 留空 = 沿用已有 key（只改模型）。
                                              // patch.remove=true 表示移除该供应商。
 {"t":"showCards"}                            // 不摊牌获胜时，主动把底牌亮给全桌
@@ -396,7 +397,7 @@ export class Hand {
   ],
   "bot": { "hasLLM":true,
            "providers":[{"provider":"deepseek","label":"DeepSeek","model":"deepseek-chat",
-                         "maskedKey":"sk-…9876","cooling":false}] },
+                         "thinking":"on","maskedKey":"sk-…9876","cooling":false}] },
   "you": {
     "playerId":"p_ab12", "seat":1, "isHost":true, "sittingOut":false,
     "canShowCards":false,
@@ -434,7 +435,7 @@ export class Hand {
 
 | 文件 | 职责 |
 |---|---|
-| `bot/provider.js` | Kimi / DeepSeek 的 HTTP 客户端。两家都是 OpenAI 兼容的 `/chat/completions`，只有一个实现 |
+| `bot/provider.js` | Kimi / DeepSeek / 银联云 的 HTTP 客户端。三家都是 OpenAI 兼容的 `/chat/completions`，只有一个实现。超时默认值可以按供应商给（带思维链的模型 8 秒不够）|
 | `bot/persona.js` | 人格：从 5 个正交维度随机组合生成（范围/攻击性/诈唬/抗压/话风）|
 | `bot/equity.js` | 蒙特卡洛胜率估算，带墙钟预算 |
 | `bot/fastscore.js` | 只给胜率用的快速 7 张牌打分。**打分公式与 `evaluator.js` 完全一致** |

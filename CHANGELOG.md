@@ -9,6 +9,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A third bot provider: UnionPay Cloud (`yinlianyun`), reached through the code-tool
+  gateway.** `YINLIANYUN_API_KEY` holds a token the *gateway* issues (a UUID), not the
+  upstream vendor's key, and the default model is `deepseek-v4-flash`. It is the same
+  OpenAI-compatible shape as the other two, so the client, the agent's model factory and
+  the host's provider dropdown all took a preset and nothing else.
+
+  What did not fit the existing shape is the timeout. `POKER_BOT_TIMEOUT_MS` defaulted to
+  8000 for everyone, and this provider's default model thinks before it answers: measured
+  on the `obvious` spots, one-shot latency is p50 7.5s / p95 27.8s, and even the smallest
+  possible exchange (45 input tokens) takes 5 seconds. An 8-second cap loses more than half
+  the hands, *silently* — the table plays on, the bot just quietly reverts to the rule
+  policy every hand. So `PROVIDERS` entries may now carry their own `timeoutMs`, and this
+  one asks for 30s; the env var still wins when it is set. 30s is the ceiling, not a
+  preference: the action clock is 45s and equity estimation wants 1.5s of it.
+
+  `scripts/agent-eval.mjs` takes `--provider` now (it was pinned to DeepSeek), reads
+  whichever `keyEnv` that provider declares, and prints the provider in the report header —
+  the same model name behind two different gateways does not have to score the same.
+  Both paths were run end-to-end against the live gateway: one-shot answers 7/7 on the
+  `obvious` spots with zero fallbacks, and tool calling works — 7/7 at 4.7 tool calls per
+  decision. Agent mode is another matter operationally: a full decision runs p50 24s there,
+  so under the default 30s gate about half of them fall back to the one-shot path. If you
+  want the tool loop on this provider, raise `POKER_ACTION_TIMEOUT` to ~90s and the gate to
+  70000; otherwise leave `POKER_AGENT` off here. `.env.example` says so at the knob.
+
+- **`POKER_BOT_THINKING=off` — telling a reasoning model not to think.** The chain of
+  thought is where this provider's latency and most of its token bill go, so whether it can
+  be turned off is worth knowing rather than assuming. It can: both `deepseek-v4-*` models
+  behind the gateway honour `thinking: {type: "disabled"}` and come back with
+  `reasoning_tokens: 0`. Four other spellings were tried in the same sitting —
+  `enable_thinking: false`, `reasoning: {enabled: false}`, `chat_template_kwargs`, and
+  `extra_body` — all of them accepted and *ignored*, still reasoning; `reasoning_effort`
+  502s. So the switch lives in the preset (`noThinkBody`) rather than in the call sites,
+  and providers that do not declare one cannot be switched off.
+
+  A provider without a switch reports `thinking: 'on'` even when off was asked for — the
+  field says what happened, not what was requested — and `clientsFromEnv` logs which
+  provider ignored the flag. The alternative (send an unknown field and assume it worked)
+  fails invisibly: the request still succeeds, the model still thinks, and only the bill
+  knows. Kimi and DeepSeek land in that branch because their default models never reason
+  in the first place. The host's panel and the startup line both show "不思考" when it is
+  actually off, since it changes speed, cost, and possibly play.
+
+  One preset serves both paths: the one-shot client spreads `noThinkBody` into its request
+  body, and the agent passes it as `providerOptions`, which `@ai-sdk/openai-compatible`
+  spreads into the body for keys it does not recognise.
+
+  Measured on the 46-spot bank, two passes each, one-shot: p50 5.7s → 1.9s, p95 27.6s →
+  4.0s, and the model answered 63/64 correctly with thinking on versus 46/46 with it off —
+  no difference this bank can see, on a bank far too small to call it a tie. The agent path
+  halves its output tokens per decision (1538 → 735). The default stays `on`: it is the
+  behaviour every existing deployment already has, and the evidence for flipping it is 46
+  spots deep.
+
+  Unrelated to the flag but visible while measuring it: this gateway returns intermittent
+  502 `上游模型服务报错`. Three windows measured 35%, 0% and 33%, in both settings, with no
+  correlation to prompt content — the second pass of a run would fail where the first
+  succeeded. Bots absorb it by falling back to the rule policy, which is what the fallback
+  is for, but it is worth knowing before reading a fallback rate as a model problem.
+
 - **A spot bank: measuring the model's judgement instead of its luck.** `npm run eval`
   answers "how much money does range modelling win"; that number is buried under variance
   and needs tens of thousands of hands. What we actually wanted to know — *does the model
@@ -210,6 +270,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ends, which is exactly when `#finishHand()` calls `observe()`.
 
 ### Fixed
+
+- **`POKER_BOT_TIMEOUT_MS` never reached a backend configured from the browser.**
+  `BotDriver#configure()` — the path the host uses when pasting a key under Settings — built
+  its client with `timeoutMs: this.timeoutMs`, and `this.timeoutMs` was never assigned
+  anywhere. Every browser-configured provider therefore ran on the hard-coded 8000
+  regardless of what the deployment had set, which is invisible until the model is slow
+  enough to need the setting, at which point the symptom is the bot playing by the rule
+  policy for reasons nothing on the page explains. The driver now keeps the value (env or
+  explicit) and passes it, and `undefined` means "use the provider's own preset".
+
+- **`POKER_BOT_MAX_TOKENS` was inert in Docker, and would have collapsed to the floor once
+  it wasn't.** The variable was never listed in `docker-compose.yml`, so editing it in
+  `.env` did nothing — the exact failure the file's own comment warns about. Adding the
+  line alone would have been worse than the bug: compose expands an unset `"${X:-}"` to an
+  empty string, `''` is not nullish, `Number('') === 0`, and the `??` chain in the
+  constructor would have clamped 4096 to the 64 floor — a cap that truncates every answer
+  mid-thought and drops every hand to the rule policy. The read is `||`-based now, the
+  variable is passed through, and a test pins the empty-string case. `POKER_BOT_TIMEOUT_MS`
+  in compose lost its hard-coded `8000` default for the same reason: it would have
+  overwritten the per-provider presets it is supposed to defer to.
 
 - **The eval runner scored the rule policy as if it were the model.** `BotDriver#decide`
   falls back to the rule policy whenever the provider call throws, leaving no trace but
