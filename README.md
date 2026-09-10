@@ -252,6 +252,7 @@ Two providers are supported out of the box. Both speak the OpenAI-compatible
 | `POKER_BOT_MODEL`      | per-provider     | Override the model name                        |
 | `POKER_BOT_BASE_URL`   | per-provider     | Override the endpoint (proxy, overseas region) |
 | `POKER_BOT_TIMEOUT_MS` | `8000`           | Per-request timeout before falling back        |
+| `POKER_BOT_MAX_TOKENS` | `4096`           | Cap on a single-shot reply. **Do not lower it for a reasoning model** — the chain of thought comes out of the same budget, and a short cap truncates the answer and drops the hand to the rule policy |
 
 Set both keys and bots alternate between providers by seat; if one starts
 failing it is benched for 60 seconds and the other takes over.

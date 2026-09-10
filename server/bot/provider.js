@@ -46,6 +46,32 @@ export function isRetryable(err) {
   return err.status >= 500;
 }
 
+/**
+ * 这次失败是不是被内容安全审查拦下来的。
+ *
+ * 值得单独认出来，因为它和别的失败**性质完全不同**，而且很隐蔽：上层老老实实
+ * 退回规则策略，牌桌照常进行，只有 fallback 率悄悄往上走，没人会去看日志。
+ *
+ * 两种都见过，处理方式相反：
+ *   常驻  我们自己的文本里有它不收的词，每次必拦。位置名里的「枪口位」就是这种
+ *         （见 decide.js#positionName），改词才能恢复。
+ *   偶发  多轮工具循环里，模型自己生成的思维链和工具参数会被原样发回去，
+ *         那些字也要过审。实测同一道题跑 4 次、3 次通过 1 次被拦，我们一个字没改。
+ *         这种只能退避重试。
+ *
+ * 各家网关的报法不一样：HTTP 451、或者 200 里塞一个 content_filter 的错误体。
+ * 所以状态码和文本两头都认。
+ *
+ * @param {unknown} err  ProviderError 或 AI SDK 的 APICallError，都能认
+ */
+export function isContentFilterError(err) {
+  if (!err || typeof err !== 'object') return false;
+  const status = err.status ?? err.statusCode ?? null;
+  if (status === 451) return true;
+  const text = `${err.message || ''} ${err.responseBody || ''}`;
+  return /content_filter|内容安全|安全审查/.test(text);
+}
+
 export class LLMClient {
   /**
    * @param {object} opts

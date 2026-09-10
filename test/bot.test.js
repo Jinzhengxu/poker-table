@@ -15,6 +15,7 @@ import { buildUser, buildSystem, coerceAction, sanitizeName, positionName } from
 import { parseJSONObject, ProviderError, isRetryable } from '../server/bot/provider.js';
 import { BotDriver, randomPersona, PERSONA_NAMES, PERSONA_DIMENSIONS } from '../server/bot/index.js';
 import { traitBias } from '../server/bot/persona.js';
+import { modelAnswered } from '../server/eval/spots.js';
 import { configFromEnv } from '../server/config.js';
 import { DEFAULT_CONFIG } from '../server/protocol.js';
 
@@ -597,7 +598,7 @@ test('positionName：6 人局的六个位置', () => {
   assert.equal(positionName(0, order, 0), '按钮');
   assert.equal(positionName(1, order, 0), '小盲');
   assert.equal(positionName(2, order, 0), '大盲');
-  assert.equal(positionName(3, order, 0), '枪口位');
+  assert.equal(positionName(3, order, 0), '前位');
   assert.equal(positionName(4, order, 0), '劫位');
   assert.equal(positionName(5, order, 0), '关煞位');
 });
@@ -607,7 +608,7 @@ test('positionName：按钮不在 0 号位时也正确（座位可以不连续�
   assert.equal(positionName(6, order, 6), '按钮');
   assert.equal(positionName(7, order, 6), '小盲');
   assert.equal(positionName(1, order, 6), '大盲');
-  assert.equal(positionName(3, order, 6), '枪口位');
+  assert.equal(positionName(3, order, 6), '前位');
 });
 
 test('提示词里 call 统一换算成「跟注到」，不再混用增量和总额', () => {
@@ -751,6 +752,34 @@ test('BotDriver：模型报错时静默退回规则策略，不抛异常', async
   const out = await driver.decide(fakeState(LEGAL_FACING_BET), P0);
   assert.equal(out.source, 'rule');
   assert.ok(['fold', 'check', 'call', 'bet', 'raise', 'allin'].includes(out.action.type));
+});
+
+test('跑分口径：单轮模式下模型报错退回的规则决策，不能算成"模型答的"', async () => {
+  // 这条测试盯的是一个**只会体现在报告数字上**的坑：`decide()` 调用失败时会静悄悄
+  // 改用规则策略，除了 source 没有别的痕迹。跑分脚本要是只把 agent 的兜底摘出去，
+  // 单轮那条线就会拿"模型 + 规则"的混合分去和别人比。v4 那轮 92 次决策里有 30 次
+  // 是这么混进去的。所以这里直接拿真实驱动的返回值去喂判据。
+  const okDriver = new BotDriver({
+    clients: [fakeClient([{ action: 'raise', amount: 80, say: '我加' }])],
+    minThinkMs: 0,
+    logger: { error() {} },
+  });
+  const ok = await okDriver.decide(fakeState(LEGAL_FACING_BET), P0);
+  assert.equal(modelAnswered('single', ok.source), true);
+
+  const badDriver = new BotDriver({
+    clients: [fakeClient([new ProviderError('炸了', 'timeout')])],
+    minThinkMs: 0,
+    logger: { error() {} },
+  });
+  const bad = await badDriver.decide(fakeState(LEGAL_FACING_BET), P0);
+  assert.equal(bad.source, 'rule');
+  assert.equal(modelAnswered('single', bad.source), false);
+
+  // agent 那条线的口径没变；纯规则线本来就没有模型，全算"答了"，否则基准线会变成空表
+  assert.equal(modelAnswered('agent', 'agent'), true);
+  assert.equal(modelAnswered('agent', 'fallback:rule'), false);
+  assert.equal(modelAnswered('rule', 'rule'), true);
 });
 
 test('BotDriver：没有任何客户端时也能工作（纯规则人机）', async () => {
@@ -1448,4 +1477,26 @@ test('clamp：取整并夹进区间', () => {
   assert.equal(clamp(50.9, 10, 100), 50);
   assert.equal(clamp(NaN, 10, 100), 10);
   assert.equal(clamp('37', 10, 100), 37);
+});
+
+// ==================== 单轮回答的 token 预算 ====================
+//
+// 带思维链的模型把「思考」和「正文」记在同一个预算里。预算给小了，
+// 正文会被 finish_reason=length 从中间截断，JSON 解析失败，于是每一手都
+// 悄悄退回规则策略 —— 日志上只有一行"输出无法解析成 JSON"，看起来像模型笨。
+//
+// 实测：接 deepseek-v4-flash 时，200 的预算里 176 个用在了思维链上，
+// 20 道题里 18 道是这么没的。这条测试守住那个默认值。
+
+test('BotDriver：单轮回答的 token 预算默认够装思维链，且能用环境变量调', () => {
+  const d = new BotDriver({ clients: [], logger: quietLogger() });
+  assert.ok(d.maxTokens >= 4096,
+    `默认 ${d.maxTokens} 太小 —— 实测思维链就要 572~3372 个 token，不够就静默退化成规则人机`);
+
+  assert.equal(new BotDriver({ clients: [], maxTokens: 4096, logger: quietLogger() }).maxTokens, 4096);
+  assert.equal(
+    new BotDriver({ clients: [], env: { POKER_BOT_MAX_TOKENS: '2048' }, logger: quietLogger() }).maxTokens,
+    2048, '环境变量该被读到');
+  // 别让人把它调成 0 —— 那等于把这条路关掉，而且是静默的
+  assert.ok(new BotDriver({ clients: [], maxTokens: 0, logger: quietLogger() }).maxTokens >= 64);
 });

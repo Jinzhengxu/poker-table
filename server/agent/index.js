@@ -27,6 +27,7 @@ import { generateText, stepCountIs, hasToolCall } from 'ai';
 
 import { BotDriver } from '../bot/index.js';
 import { buildUser, coerceAction, fallbackAction, sanitizeName } from '../bot/decide.js';
+import { isContentFilterError } from '../bot/provider.js';
 import { modelsFromEnv, buildModel } from './model.js';
 import { OpponentMemory } from './memory.js';
 import { buildTools } from './tools.js';
@@ -52,7 +53,37 @@ const COOLDOWN_MS = 60_000;
  * @param {object} persona {name, style}
  * @param {number} maxSteps
  */
-export function buildAgentSystem(persona, maxSteps) {
+export function buildAgentSystem(persona, maxSteps, toolNames = null) {
+  // 有哪些工具就写哪些步骤。**提示词和工具集必须一致** —— 少了工具却还留着
+  // "先调 plan_bet"，模型会去调一个不存在的东西，白烧一步；多了工具却不在
+  // 提示词里提，它基本不会想起来用。做消融（摘掉某个工具看它值多少）时，
+  // 这两边得一起动，所以这里按工具名生成步骤，不写死。
+  const has = (n) => !toolNames || toolNames.includes(n);
+
+  const steps = [
+    `先看行动序列。有人加注、而且是在后面的街加注，说明他范围很紧；
+   翻牌前就一堆人跟注，说明大家范围都很宽。`,
+  ];
+  if (has('read_opponents')) {
+    steps.push('拿不准对手是什么人，就调 read_opponents 看画像。');
+  }
+  if (has('estimate_equity')) {
+    steps.push(`调 estimate_equity 时，**你必须自己给出对手范围**。这是关键一步：
+   同样一手 AK，对随机两张牌有 66% 胜率，对「只玩前 5%」的人只有 47%。
+   范围估错，胜率就是错的，跟注就是亏的。`);
+    steps.push(`结论在临界点上（胜率和底池赔率差不多）时，用一个更紧和一个更松的范围
+   各算一次。如果两种假设下结论一致，就照做；如果会反转，说明这个决定
+   取决于你对这个人的判断${has('read_opponents') ? '——那就按 read_opponents 的画像来定' : ''}。`);
+  }
+  if (has('plan_bet')) {
+    steps.push(`**想下注或加注，先调 plan_bet。** 跟注和开火是两套算术：跟注比的是
+   「你的胜率」和「底池赔率」，开火比的是「他会弃多少牌」和「需要他弃多少牌」。
+   尺度不同、需要的弃牌率就不同，这个数不要心算。
+   拿不准下多大，就换两三个 amount 各调一次，挑 ev_chips 最大的那个。
+   记住尺度越大他继续得越少，所以大注要配更紧的 continue_range。`);
+  }
+  steps.push('想好了就调 act 提交。这是唯一的出口。');
+
   return `你是德州扑克牌桌上的一名玩家，昵称「${sanitizeName(persona.name)}」。
 你的风格：${persona.style}
 
@@ -63,21 +94,7 @@ export function buildAgentSystem(persona, maxSteps) {
 
 你有工具可以用。怎么用它们决定了你打得好不好：
 
-1. 先看行动序列。有人加注、而且是在后面的街加注，说明他范围很紧；
-   翻牌前就一堆人跟注，说明大家范围都很宽。
-2. 拿不准对手是什么人，就调 read_opponents 看画像。
-3. 调 estimate_equity 时，**你必须自己给出对手范围**。这是关键一步：
-   同样一手 AK，对随机两张牌有 66% 胜率，对「只玩前 5%」的人只有 47%。
-   范围估错，胜率就是错的，跟注就是亏的。
-4. 结论在临界点上（胜率和底池赔率差不多）时，用一个更紧和一个更松的范围
-   各算一次。如果两种假设下结论一致，就照做；如果会反转，说明这个决定
-   取决于你对这个人的判断——那就按 read_opponents 的画像来定。
-5. **想下注或加注，先调 plan_bet。** 跟注和开火是两套算术：跟注比的是
-   「你的胜率」和「底池赔率」，开火比的是「他会弃多少牌」和「需要他弃多少牌」。
-   尺度不同、需要的弃牌率就不同，这个数不要心算。
-   拿不准下多大，就换两三个 amount 各调一次，挑 ev_chips 最大的那个。
-   记住尺度越大他继续得越少，所以大注要配更紧的 continue_range。
-6. 想好了就调 act 提交。这是唯一的出口。
+${steps.map((t, i) => `${i + 1}. ${t}`).join('\n')}
 
 你最多只有 ${maxSteps} 步，别把步数浪费在重复调同一个范围上。
 不要输出任何解释性文字，思考通过调用工具体现，结论通过 act 提交。`;
@@ -91,6 +108,7 @@ export class PokerAgent {
    * @param {number} [opts.maxSteps]      循环最多几步，默认 4
    * @param {number} [opts.maxThinkMs]    整次决策的墙钟上限，默认 20000
    * @param {number} [opts.minThinkMs]    最短「思考」时间，默认 900
+   * @param {string[]} [opts.excludeTools] 摘掉这些工具（消融用），提示词会跟着变
    * @param {OpponentMemory} [opts.memory]
    * @param {object} [opts.logger]
    */
@@ -126,6 +144,10 @@ export class PokerAgent {
     this.equityMs = Math.max(1, Number(opts.equityMs ?? env.POKER_AGENT_EQUITY_MS ?? 1200));
     this.equityChunkMs = Math.max(1, Number(opts.equityChunkMs ?? env.POKER_BOT_EQUITY_CHUNK_MS ?? 8));
 
+    // 消融用：摘掉某个工具，看它到底值多少。提示词会跟着一起变
+    // （见 buildAgentSystem），所以不会出现"提示词让它调一个不存在的工具"。
+    this.excludeTools = Array.isArray(opts.excludeTools) ? opts.excludeTools : [];
+
     /** 每个模型的健康状态 */
     this.health = new Map();
     for (const m of this.models) this.health.set(m, { fails: 0, until: 0 });
@@ -137,6 +159,7 @@ export class PokerAgent {
       toolCalls: 0,    // 累计工具调用次数
       forcedAct: 0,    // 被 prepareStep 强制收尾的次数
       errors: 0,
+      filtered: 0,     // 其中被内容安全审查拦下的次数（确定性故障，见下面的分支）
       canceled: 0,     // 被外部取消的次数（手牌结束等，不算故障）
       inputTokens: 0,
       outputTokens: 0,
@@ -293,7 +316,8 @@ export class PokerAgent {
     const composed = signal ? AbortSignal.any([timeout, signal]) : timeout;
 
     const trace = { calls: [] };
-    const { tools, readAct } = buildTools({
+    const { tools, readAct, toolNames } = buildTools({
+      exclude: this.excludeTools,
       state,
       memory: this.memory,
       signal: composed,
@@ -307,7 +331,7 @@ export class PokerAgent {
     try {
       result = await generateText({
         model: model.languageModel,
-        system: buildAgentSystem(persona, this.maxSteps),
+        system: buildAgentSystem(persona, this.maxSteps, toolNames),
         // 不再预先注入胜率——那是工具的活。forTools 换掉收尾那句话：
         // 共用的 buildUser 默认要的是一个 JSON 对象，那是单轮那路的收尾方式，
         // 和这里"只准调 act"的系统提示词直接打架。
@@ -343,7 +367,26 @@ export class PokerAgent {
       }
       this.stats.errors++;
       this.#onFailure(model, err);
-      this.logger.error(`[agent] ${persona.name} 循环失败，退回单轮：${err.message}`);
+
+      // 被内容安全审查拦下来的要单独喊一嗓子。表面上它只是"人机今天有点笨"——
+      // 上层老老实实退回规则策略，牌桌照常进行，没人会去看日志。
+      //
+      // 它有两种，得分开处理，别一看见就去删提示词：
+      //   常驻  我们自己的文本里有网关不收的词。**每次必拦**，fallback 率直接 100%。
+      //         位置名里的「枪口位」就是这种，见 decide.js#positionName。
+      //   偶发  多轮循环里模型自己生成的思维链和工具参数会被原样发回去，
+      //         那些字也要过审。实测同一道题跑 4 次、3 次通过 1 次被拦（DeepSeek 网关），
+      //         我们这边一个字都没改。这种删提示词没用，只能靠退避重试。
+      // 分辨方法：同一个局面连跑几次，次次都拦就是常驻，偶尔才拦就是偶发。
+      if (isContentFilterError(err)) {
+        this.stats.filtered++;
+        this.logger.error(
+          `[agent] ${persona.name} 被${model.label}的内容安全审查拦下（${err.message}）。` +
+          '次次都拦 = 我们的提示词里有它不收的词；偶尔才拦 = 模型自己生成的字被拦了，删提示词没用。'
+        );
+      } else {
+        this.logger.error(`[agent] ${persona.name} 循环失败，退回单轮：${err.message}`);
+      }
       return this.#viaFallback(state, persona, signal, started);
     }
 

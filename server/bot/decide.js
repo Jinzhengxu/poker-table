@@ -77,8 +77,13 @@ export function positionName(seat, order, buttonSeat) {
   if (fromBtn === 0) return '按钮';
   if (fromBtn === 1) return '小盲';
   if (fromBtn === 2) return '大盲';
-  // 按钮左手第三位 = 大盲左手第一位 = 翻牌前第一个行动的人，人数多少都是枪口位
-  if (fromBtn === 3) return '枪口位';
+  // 按钮左手第三位 = 大盲左手第一位 = 翻牌前第一个行动的人，人数多少都是前位。
+  //
+  // **这里叫「前位」不叫「枪口位」，别改回去。** 国内不少 LLM 网关带内容安全审查，
+  // 「枪口」两个字会整条请求被拒（HTTP 451），于是那手牌的人机静默退回规则策略，
+  // 日志里只留一行"循环失败"。位置名是逐字进提示词的，这类词一个都不能留。
+  // 有回归测试盯着，见 test/agent.test.js 的「提示词表面不含敏感词」。
+  if (fromBtn === 3) return '前位';
   if (fromBtn === n - 1) return '关煞位';        // 按钮右手第一位
   if (fromBtn === n - 2) return '劫位';
   return '中位';

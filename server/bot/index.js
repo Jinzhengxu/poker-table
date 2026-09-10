@@ -28,12 +28,17 @@ export class BotDriver {
    * @param {import('./provider.js').LLMClient[]} [opts.clients] 不传则从环境变量装配
    * @param {number} [opts.minThinkMs] 最短"思考"时间，让人机不至于秒回，默认 900
    * @param {number} [opts.maxThinkMs] 最长等待，超过就用兜底，默认 9000
+   * @param {number} [opts.maxTokens]  单轮回答的 token 上限，默认 1024（要装得下思维链）
    * @param {object} [opts.logger]
    */
   constructor(opts = {}) {
     this.clients = opts.clients || clientsFromEnv();
     this.minThinkMs = opts.minThinkMs ?? 900;
     this.maxThinkMs = opts.maxThinkMs ?? 9000;
+    // 单轮回答的 token 上限。见 decide() 里那段：这个数要装得下「思维链 + 动作 JSON」。
+    // 4096 是量出来的：deepseek-v4-flash 在题库那 20 个局面上，思维链用掉
+    // 572 ~ 3372 个 token，而动作 JSON 本身只有二十来个。
+    this.maxTokens = Math.max(64, Number(opts.maxTokens ?? (opts.env || process.env).POKER_BOT_MAX_TOKENS ?? 4096));
     this.logger = opts.logger || console;
 
     // 胜率估算。分片计算，所以这里有两个不同性质的预算：
@@ -240,7 +245,16 @@ export class BotDriver {
         const raw = await client.completeJSON({
           system: buildSystem(persona),
           user: buildUser(state, { equity }),
-          maxTokens: 200,
+          // 动作 JSON 本身只有二十来个 token，但**带思维链的模型会先花掉一大截**，
+          // 而思维链和正文共用这一个预算。原来写死 200，接上 deepseek-v4-flash
+          // 这类推理模型必然翻车：token 全花在思考上，正文要么被
+          // finish_reason=length 从中间截断、JSON 解析失败，要么干脆是空的。
+          // 题库实测：200 的时候 20 题里 18 题这么没的，1024 还剩 12/40，
+          // 而日志上只有一行"输出无法解析成 JSON"或"返回内容为空"，看着像模型笨。
+          //
+          // **给大了不多花钱，给小了才是纯浪费**：思维链的 token 你照付不误，
+          // 上限只决定这笔钱换不换得回一个答案。不推理的模型答完就停，够不着这个数。
+          maxTokens: this.maxTokens,
           signal,
         });
         this.#onSuccess(client);

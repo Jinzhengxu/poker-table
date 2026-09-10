@@ -6,16 +6,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { MockLanguageModelV4 } from 'ai/test';
+import { z } from 'zod';
 
 import { Room } from '../server/room.js';
 import { BotDriver } from '../server/bot/index.js';
 import { estimateEquity, handPercentile } from '../server/bot/equity.js';
-import { buildUser } from '../server/bot/decide.js';
+import { buildUser, buildSystem, positionName } from '../server/bot/decide.js';
 import { PREFLOP_EQUITY, canonicalHand } from '../server/bot/data/preflop.js';
 import { PLAY_TIER, TIER_PCT, TIER_COUNT } from '../server/bot/data/ranges.js';
 import { inferOpponentRange } from '../server/bot/range.js';
 import { OpponentMemory, positionOf } from '../server/agent/memory.js';
 import { PokerAgent, buildAgentSystem } from '../server/agent/index.js';
+import { isContentFilterError } from '../server/bot/provider.js';
 import { buildTools } from '../server/agent/tools.js';
 import { buildModel, modelsFromEnv } from '../server/agent/model.js';
 
@@ -966,9 +968,10 @@ test('plan_bet：下不了注的局面直接说清楚，不浪费一整轮', asy
 test('plan_bet：ev_chips 能在尺度之间分出高下（needs_fold_pct 做不到这件事）', async () => {
   // 三条 A 的面上拿三条：needs_fold_pct 对任何尺度都是 0，看不出该下多大。
   // ev_chips 能 —— 尺度越大他继续得越少，所以模型要给不同的 continue_range。
+  // 两个尺度都在可定价区间内（底池 100，上限 1.5 倍）。
   const tools = planTools(betState({ hole: ['Ac', 'Ad'] }));
   const small = await tools.plan_bet.execute({ amount: 33, continue_range: 0.6, opponent_range: 0.6 });
-  const big = await tools.plan_bet.execute({ amount: 300, continue_range: 0.2, opponent_range: 0.6 });
+  const big = await tools.plan_bet.execute({ amount: 140, continue_range: 0.3, opponent_range: 0.6 });
 
   assert.equal(small.needs_fold_pct, 0);
   assert.equal(big.needs_fold_pct, 0, '两个尺度都是价值下注，这个数分不出高下');
@@ -976,13 +979,51 @@ test('plan_bet：ev_chips 能在尺度之间分出高下（needs_fold_pct 做不
     `拿着三条该下大：小注 ${small.ev_chips} vs 大注 ${big.ev_chips}`);
 });
 
+test('plan_bet：超池太多就不给 ev_chips —— 明知有偏的数不能递给模型', async () => {
+  // implied_fold 是按范围比例线性推的，超池尺度上系统性高估弃牌率。而提示词
+  // 让模型「挑 ev_chips 最大的」，所以把有偏的数递出去 = 让它照着偏差打。
+  // 实测就是这么来的：一手中对，30/60/120/300 四档的 ev 一路涨到超池 2.5 倍。
+  const tools = planTools(betState({ hole: ['Ac', 'Ad'] }));   // 底池 100
+  const inBand = await tools.plan_bet.execute({ amount: 140, continue_range: 0.3, opponent_range: 0.6 });
+  const huge = await tools.plan_bet.execute({ amount: 400, continue_range: 0.1, opponent_range: 0.6 });
+
+  assert.ok(Number.isFinite(inBand.ev_chips), '1.4 倍池还在可定价区间内');
+  assert.equal(huge.ev_chips, null, '4 倍池不该给 ev_chips');
+  assert.ok(/超出了这个工具能定价的范围/.test(huge.note || ''),
+    `要说清楚为什么没给：${huge.note}`);
+  // 原料照给，模型想自己判断仍然有依据
+  assert.ok(Number.isFinite(huge.needs_fold_pct) && Number.isFinite(huge.implied_fold_pct));
+});
+
 test('plan_bet：纯诈唬时，弃牌率一样则小注的期望收益更高', async () => {
   const tools = planTools(betState({ hole: ['3c', '2d'] }));
   // 同一个续注范围（也就是假设他弃牌率不随尺度变），此时多下的每一分都是白冒风险
   const small = await tools.plan_bet.execute({ amount: 33, continue_range: 0.1, opponent_range: 0.4 });
-  const big = await tools.plan_bet.execute({ amount: 200, continue_range: 0.1, opponent_range: 0.4 });
+  const big = await tools.plan_bet.execute({ amount: 150, continue_range: 0.1, opponent_range: 0.4 });
   assert.ok(small.ev_chips > big.ev_chips,
     `弃牌率不变时诈唬该下小：小注 ${small.ev_chips} vs 大注 ${big.ev_chips}`);
+});
+
+test('plan_bet：ev_chips 的基线是过牌 —— 拿一手好牌时它远小于「白赚整个底池」', async () => {
+  // 换基线要防的就是这个：把"打弃他"整个记成白赚的底池，可你本来就有很大
+  // 概率赢下这个底池。旧口径下任何过得去的牌都会显得下得越大越赚。
+  const tools = planTools(betState({ hole: ['Ac', 'Ad'] }));   // 底池 100，三条
+  const r = await tools.plan_bet.execute({ amount: 60, continue_range: 0.3, opponent_range: 0.6 });
+  assert.ok(r.ev_check_baseline > 60,
+    `拿着三条，过牌本身就值不少：基线 ${r.ev_check_baseline}`);
+  assert.ok(r.ev_chips < r.win_if_all_fold,
+    `ev_chips 该是「比过牌多赚多少」，不该接近整个底池：${r.ev_chips} vs 底池 ${r.win_if_all_fold}`);
+});
+
+test('plan_bet：被跟时只是刚好打平的半诈唬，不许被说成价值下注', async () => {
+  // 一手听牌在大底池里也能算出 loss<=0，但那是"被跟不亏"，不是价值。
+  // 说错了模型会按价值牌的思路一路加尺度。
+  const tools = planTools(betState({ hole: ['9h', '8h'], board: ['Ah', 'Kh', '2c'] }));
+  const r = await tools.plan_bet.execute({ amount: 100, continue_range: 0.15, opponent_range: 0.5 });
+  if (r.needs_fold_pct === 0) {
+    assert.ok(!/这是价值下注/.test(r.verdict),
+      `听牌被说成了价值下注：${r.verdict}`);
+  }
 });
 
 test('plan_bet：没给 opponent_range 就没有 ev_chips（推不出他会弃多少）', async () => {
@@ -1093,12 +1134,12 @@ function seatsWithPos(n, buttonSeat) {
 }
 
 test('positionOf：6 人桌按离庄位的距离分档', () => {
-  // 庄位 = 0，于是小盲 1、大盲 2、枪口 3、中间 4、CO 5
+  // 庄位 = 0，于是小盲 1、大盲 2、前位 3、中间 4、CO 5
   const st = { seats: seatsWithPos(6, 0) };
   assert.equal(positionOf(st, 0), 'late', '庄位是 late');
   assert.equal(positionOf(st, 5), 'late', '庄位前一个（CO）也是 late');
   assert.equal(positionOf(st, 4), 'middle');
-  assert.equal(positionOf(st, 3), 'early', '枪口位是 early');
+  assert.equal(positionOf(st, 3), 'early', '前位是 early');
   assert.equal(positionOf(st, 1), 'blinds');
   assert.equal(positionOf(st, 2), 'blinds');
 });
@@ -1149,7 +1190,7 @@ test('positionOf：没参与本手牌的座位不算在位置里', () => {
 
 test('memory：同一个人在不同位置的 VPIP 分开统计', () => {
   const m = new OpponentMemory();
-  // 座位 3 在庄位 0 的桌上是枪口(early)，在庄位 4 的桌上是庄位(late)。
+  // 座位 3 在庄位 0 的桌上是前位(early)，在庄位 4 的桌上是庄位(late)。
   // 让他 early 时全弃、late 时全加注 —— 总账会平均成 50%，分档才看得出真相。
   let hand = 0;
   const play = (buttonSeat, type) => {
@@ -1170,7 +1211,7 @@ test('memory：同一个人在不同位置的 VPIP 分开统计', () => {
   assert.equal(p.vpip, 50, '总账把两个位置平均了');
   assert.ok(p.byPos, '应该有分档数据');
   assert.equal(p.byPos.early.hands, 5);
-  assert.equal(p.byPos.early.vpip, 0, '枪口位从不入池');
+  assert.equal(p.byPos.early.vpip, 0, '前位从不入池');
   assert.equal(p.byPos.late.hands, 5);
   assert.equal(p.byPos.late.vpip, 100, '庄位每手都入池');
   assert.equal(p.byPos.late.pfr, 100);
@@ -1319,4 +1360,101 @@ test('range.js：单次加注推出来的范围落在标定过的带里', () => 
   });
   assert.ok(one >= 0.15 && one <= 0.30,
     `单次加注推出的范围 ${one} 掉出标定带 [0.15, 0.30]，需要重跑校准`);
+});
+
+// ==================== 提示词表面：网关内容审查 ====================
+//
+// 国内不少 LLM 网关在模型前面挂了一道内容安全审查，命中就整条请求被拒
+// （HTTP 451 / content_filter），**连工具描述一起审**。这类故障最难发现：
+// 上层老老实实退回规则策略，牌桌照常进行，只有 fallback 率悄悄变成 100%。
+//
+// 实测记录：位置名里的「枪口位」把这个项目的全部 agent 请求拦了下来
+// （deepseek 网关，451002）。同批测过没事的词：诈唬、半诈唬、全下、底池、
+// 弃牌、赌注、筹码、关煞位、劫位 —— 所以要拦的是**枪械词**，不是赌博词。
+//
+// 这条测试离线跑，不打网络：把所有会**逐字进请求体**的文本收集起来对着
+// 黑名单扫一遍。加新词的规矩是：真在某个网关上撞见了，才把它加进来。
+
+/** 撞见过的、会被网关拒掉的词 */
+const BLOCKED_WORDS = ['枪口'];
+
+/** 所有会逐字进请求体的文本：系统提示词 + 工具描述 + 参数描述 + 用户消息 */
+function promptSurface() {
+  const persona = { name: '老王', style: '紧凶' };
+  const parts = [buildAgentSystem(persona, 6), buildSystem(persona)];
+
+  const { tools } = buildTools({ state: agentState(), memory: new OpponentMemory() });
+  for (const [name, t] of Object.entries(tools)) {
+    parts.push(name, t.description || '');
+    // 参数描述也进请求体，别漏了 —— 范围档位那段长说明就在里面
+    if (t.inputSchema) parts.push(JSON.stringify(z.toJSONSchema(t.inputSchema)));
+  }
+
+  // 位置名是拼进用户消息的。每种人数、每个座位都过一遍，
+  // 保证没有哪个位置名躲过扫描（「枪口位」当初就只在 6 人桌才出现）。
+  const order = [];
+  for (let n = 2; n <= 9; n++) {
+    order.push(n - 1);
+    for (let seat = 0; seat < n; seat++) {
+      for (let btn = 0; btn < n; btn++) parts.push(positionName(seat, order, btn));
+    }
+  }
+
+  parts.push(buildUser(agentState(), { forTools: true }));
+  return parts.join('\n');
+}
+
+test('提示词表面不含敏感词（撞过网关内容审查的那些）', () => {
+  const text = promptSurface();
+  for (const w of BLOCKED_WORDS) {
+    assert.ok(!text.includes(w),
+      `提示词里出现了「${w}」——某些网关会整条请求拒掉（451），` +
+      '人机会静默退回规则策略。换个说法，别留在会进请求体的文本里。');
+  }
+});
+
+test('isContentFilterError：状态码和文本两头都能认出来', () => {
+  assert.ok(isContentFilterError({ statusCode: 451, message: 'x' }), 'HTTP 451');
+  assert.ok(isContentFilterError({ status: 451 }), 'ProviderError 用的是 status');
+  assert.ok(isContentFilterError({ message: '内容安全审查不通过' }), '中文报法');
+  assert.ok(isContentFilterError({ message: 'x', responseBody: '{"type":"content_filter_error"}' }),
+    '错误体里带 content_filter');
+  // 别把普通故障也算进去，否则「确定性故障」这个信号就没意义了
+  assert.ok(!isContentFilterError({ statusCode: 500, message: 'boom' }));
+  assert.ok(!isContentFilterError({ message: 'fetch failed' }));
+  assert.ok(!isContentFilterError(null));
+});
+
+// ==================== 工具消融 ====================
+//
+// 摘掉一个工具，是为了量它到底值多少（"加了 plan_bet 之后人机更爱开火，
+// 那到底是这个工具的功劳还是它的锅"这类问题，只有摘掉再跑一遍才有答案）。
+//
+// 这里守的是**提示词和工具集必须一致**这一条：少了工具却还留着"先调 plan_bet"，
+// 模型会去调一个不存在的东西，白烧一步还可能把整轮循环带崩。
+
+test('消融：摘掉 plan_bet，工具集和提示词要同时少掉它', () => {
+  const { tools } = buildTools({ state: agentState(), exclude: ['plan_bet'] });
+  assert.ok(!tools.plan_bet, '工具集里还留着 plan_bet');
+  assert.ok(tools.estimate_equity && tools.read_opponents && tools.act, '别的工具不该受影响');
+
+  const sys = buildAgentSystem(P0, 6, Object.keys(tools));
+  assert.ok(!sys.includes('plan_bet'),
+    '提示词里还在让它调 plan_bet —— 模型会去调一个不存在的工具，白烧一步');
+  assert.ok(sys.includes('estimate_equity'), '没摘的工具还该在提示词里');
+  // 步骤要重新编号，不能留一个空号
+  assert.ok(/\n5\. 想好了就调 act 提交/.test(sys), `步骤没有重新编号：\n${sys}`);
+});
+
+test('消融：act 摘不掉——它是循环唯一的出口', () => {
+  const { tools } = buildTools({ state: agentState(), exclude: ['act', 'read_opponents'] });
+  assert.ok(tools.act, 'act 被摘掉了，循环就永远停不下来');
+  assert.ok(!tools.read_opponents);
+});
+
+test('消融：不传 exclude 时行为和以前完全一样', () => {
+  const { tools } = buildTools({ state: agentState() });
+  assert.deepEqual(Object.keys(tools).sort(),
+    ['act', 'estimate_equity', 'plan_bet', 'read_opponents']);
+  assert.ok(buildAgentSystem(P0, 6).includes('plan_bet'));
 });

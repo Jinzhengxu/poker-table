@@ -9,6 +9,148 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A spot bank: measuring the model's judgement instead of its luck.** `npm run eval`
+  answers "how much money does range modelling win"; that number is buried under variance
+  and needs tens of thousands of hands. What we actually wanted to know — *does the model
+  judge well* — does not require playing at all. `server/eval/spots.js` freezes 20 board
+  states with a verdict attached, `scripts/agent-eval.mjs` puts a driver through them and
+  scores the answers. Zero variance, a conclusion in twenty calls.
+
+  The same bank runs against all three drivers — `--mode rule` (free, deterministic, the
+  floor), `--mode single` (the old one-shot path), `--mode agent` (the tool loop) — which
+  is the only way "what did this round of agent work buy" has an answer.
+
+  Verdicts are written wide on purpose: `forbid` ("holding a straight flush you may not
+  fold") rather than `allow`, because poker's *best* line is arguable while its *blunders*
+  are not. Write the verdict narrow and you measure the author's poker, not the model's.
+
+  The highest-signal entries are the **paired** ones: same hole cards, same board, same pot
+  odds, and the only variable is who the opponent is — one pair differs in the betting
+  line, the other only in a profile seeded from 12 prior hands (VPIP 8% vs 83%). If range
+  modelling is doing anything, the two answers must differ. A single spot can never show
+  this: watch it fold and you cannot tell "read the opponent as tight" from "folds a lot".
+
+  `test/spots.test.js` guards the bank itself — duplicate cards, board length against
+  street, that every "nuts" spot really is the nuts (checked through the real evaluator),
+  that paired spots vary in exactly one dimension, and that paired calling spots **can
+  actually flip**: equity below the break-even under a 5% range and above it under 35%.
+  A bank with a typo in it fails the model and reports it as the model's fault.
+
+  Three more guards came out of auditing the bank itself, and each one had already
+  cost a wrong conclusion:
+
+  **The pot may not be hand-written.** The engine's `totalPot` includes the opponent's
+  outstanding bet; the bank mixed both conventions, and 26 of 41 spots had a pot that
+  contradicted their own action history — one by a whole turn bet, so the verdict was
+  written for 33% while the model was shown 50%. The pot is now derived the way
+  `engine.js#totalPot` derives it, and a test reconciles pot, history and seat
+  contributions, all three of which go into the prompt verbatim.
+
+  **A trivial strategy must not score well.** Written mostly as "may not fold", the
+  verdicts let a bot that never looks at its cards and always min-bets score 75%, against
+  93–100% for the real drivers: all the discrimination lived in the top quarter, and rule,
+  single-shot and agent piled up together there. A whole category of spots where
+  *aggression* is the error now exists (check down bottom pair, don't raise second pair,
+  don't 4-bet AJo, don't bluff a station, don't fire into two players), the report prints
+  the five trivial baselines every run — without that floor the accuracy number cannot be
+  read — and a test caps the floor at 72% so the next batch of "may not fold" spots fails
+  loudly.
+
+  Both of the earlier guards were written after being caught out too. The profile pair was first
+  written with the opponent named "the rock" and "the maniac", and the memoryless
+  single-shot driver separated it too — it was reading the name, so that version measured
+  whether the model knows two Chinese words. And the first betting-line pair was top pair
+  AQ facing a river barrel, on the reasoning that a nit firing three streets beats top
+  pair — until the equity tool said AQ is 70% there even against a 5% range. There was no
+  fold in that spot at all: the model called both sides correctly and the report scored it
+  as failing to read the opponent. Every pair is now verified against the equity tool
+  before it goes in.
+
+  Results against `deepseek-v4-flash` (46 spots × 2, 33 of them scored), counting only
+  decisions the model actually answered — a fallback runs the rule policy, so mixing the
+  two reports neither one's score:
+
+  | | rule | single-shot | agent | agent, no `plan_bet` |
+  | --- | ---: | ---: | ---: | ---: |
+  | verdicts | 94% (31/33) | 98% (58/59) | 94% (58/62) | 97% (63/65) |
+  | per-spot, both passes | 94% | 97% | 88% | 97% |
+  | 95% interval | 80–98% | 84–99% | 73–95% | 85–99% |
+  | fires | 15% | 38% | 54% | 39% |
+  | shoves | 0% | 7% | 6% | 11% |
+  | paired spots separated | 0/4 | 0/8 | 3/8 | 5/8 |
+  | p50 latency | 0.1s | 6.0s | 35.0s | 25.0s |
+  | over the 30s gate | 0% | 0% | 77% | 28% |
+
+  **The accuracy row separates nothing.** With 33 scored spots one spot is three points and
+  every interval overlaps. That is a statement about the bank's resolution (±2 spots), not
+  about the models, and it is why the conclusions below rest on things that can be counted
+  without a verdict.
+
+  **This round of agent work still is not buying accuracy.** It costs 5–6× the latency and
+  an order of magnitude more tokens than the single-shot path and scores no better. The one
+  column where the loop clearly beats single-shot is the paired spots — 3/8 to 5/8 against
+  0/8 — so the tools do let it *see* the opponent difference; that has just not turned into
+  a better score yet.
+
+  Where it beats the rule policy is directional and worth keeping: both of the rule
+  policy's errors are in `size` (no c-bet on a dry board, no protection bet on a wet one) —
+  it never fires on its own, 15% fire rate and 0% shoves — and all three model lines get
+  the sizing spots right. The model's errors run the other way, toward firing too much.
+
+  An earlier draft of this entry reported the agent separating a profile pair 3/3. That
+  result is withdrawn: the pair was unflippable, and "separating" it meant folding a hand
+  that is a call against any range. The flippability check exists because of it.
+
+- **Tool ablation (`--exclude`), and what it says about `plan_bet`.** The bank makes a
+  question askable that could not be asked before: *is this tool worth having?*
+  `--exclude plan_bet` drops it from the tool set **and from the system prompt** — the
+  prompt is now generated from the tool names, so the two can no longer disagree and no
+  ablation can leave the model reaching for a tool that isn't there. `act` cannot be
+  dropped; it is the loop's only exit.
+
+  Counting only decisions that actually completed the agent loop (fallbacks run the rule
+  policy, which never shoves, so a higher fallback rate deflates the shove rate
+  mechanically), the tool costs 5.1 steps and 6.1 tool calls per decision against 3.6 and
+  3.8 without it, 18.1k input tokens against 8.2k, and a p50 of 35.0s against 25.0s — which
+  is the difference between 77% and 28% of decisions blowing through the 30s gate. Verdicts
+  are 94% with against 97% without, which given the bank's ±2-spot resolution says nothing.
+
+  What the ablation does establish is **direction**, and it is paired, not eyeballed. Across
+  the 82 decisions runnable on both legs: fires 43 vs 33, and split by pair, **14 decisions
+  fired only with `plan_bet` against 4 that fired only without it** (McNemar exact, two-sided
+  *p* = 0.031). Same spot, same pass, same model; the tool is the only variable.
+
+  The errors say the same thing in plain sight. With `plan_bet`, all four wrong answers are
+  over-firing — raising a gutshot, raising river air, 4-betting AJo, betting a river bottom
+  pair that should check down. Without it, both wrong answers are over-calling middle pair
+  in a three-way pot. The tool did not change whether the arithmetic came out right; it
+  changed which way the mistakes lean. And within the `plan_bet` leg, **calling the tool and
+  firing are nearly the same event**: 70% (45/64) of decisions that called it fired, against
+  0% (0/20) of those that did not. That correlation alone is causally ambiguous — it may
+  reach for the tool because it already wants to bet — but the paired ablation settles the
+  direction.
+
+  The paired-spot column falls from 5/8 to 3/8 with the tool present, which says the cost is
+  also a **budget fight**: with five tool calls available, three spent ranking bet sizes
+  leave none for "price it against a tighter and a looser range", which is what the prompt
+  asks for two steps earlier. Those two instructions compete for the same budget and
+  nothing had ever measured which one pays better.
+
+  Boundary on this result, and it matters: **no spot in the bank punishes a bad bet size.**
+  The sizing verdicts check whether it fired at all and clamp the amount to a wide band;
+  none of them check that it picked the EV-maximising size, which is the thing `plan_bet`
+  exists to do. So the ablation measures the tool's cost cleanly and mostly cannot see its
+  benefit. Spots that punish sizing come first; deleting anything comes after.
+
+  One operational finding with no code change behind it: `POKER_AGENT_MAX_MS` defaults to
+  30s against a 45s action deadline, budgeted for a model that answers in a second or two.
+  With a reasoning model the measured p50 is 35s and p95 56s (33s p50 run serially, so not
+  a concurrency artifact) — 77% of decisions would be cut off mid-loop, having paid for
+  every step. The budget is also divisible: dropping one tool takes p50 to 25s and the
+  over-gate share to 28%, so the latency is per tool call, not a fixed cost of the loop.
+  Raise both budgets, drop `POKER_AGENT_MAX_STEPS` to 3–4, cut tools, or run the agent path
+  on a non-reasoning model.
+
 - **`plan_bet`: the agent's tool set now speaks the other half of poker.** The first
   version spoke only one language — calling. `estimate_equity` returns equity and a
   break-even percentage for a call; every number was a calling number. But roughly half
@@ -68,6 +210,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ends, which is exactly when `#finishHand()` calls `observe()`.
 
 ### Fixed
+
+- **The eval runner scored the rule policy as if it were the model.** `BotDriver#decide`
+  falls back to the rule policy whenever the provider call throws, leaving no trace but
+  `source: 'rule'` — and the runner silences the driver's logger, so even that one log line
+  went nowhere. The runner discounted fallbacks in `agent` mode only, so in `single` mode
+  the rule policy's answers were folded into "the single-shot accuracy". One run had 30 of
+  92 decisions answered that way: a third of a reported 98%. Worse than the accuracy, it
+  moves the aggression columns in a direction that looks like good news — the rule policy
+  never shoves, so every hidden fallback deflates the shove rate.
+
+  `modelAnswered(mode, source)` now defines the rule once for all three modes, the report
+  always prints a "model's own answers only" row when anything fell back, and the runner
+  captures the driver's error lines so a fallback says why (the eight in the re-run were
+  all `fetch failed` — gateway flakiness, not content filtering). `test/bot.test.js` feeds
+  a real driver's return value through the predicate in both the success and the
+  provider-error case, so the two cannot drift apart again.
+
+- **The single-shot path silently degraded to the rule bot on any reasoning model.** Its
+  token budget was hard-coded to 200 — plenty for the twenty-token action JSON, and
+  nowhere near enough once a model thinks first, because the chain of thought is drawn
+  from the same budget. What comes back is either JSON truncated mid-string or an empty
+  `content`, both of which throw, and every hand quietly falls back to the rule policy.
+  The log line reads "could not parse JSON": it looks like a dim model, not a
+  configuration bug. The spot bank put a number on it — 18 of 20 spots lost this way at
+  200, still 12 of 40 at 1024. Measured against `deepseek-v4-flash`, reasoning alone runs
+  572–3372 tokens on these spots, so the default is now 4096 and `POKER_BOT_MAX_TOKENS`
+  overrides it. Raising the cap costs nothing: you pay for the thinking tokens either way,
+  and the cap only decides whether that spend buys an answer.
+
+- **"Under the gun" is now called `前位`, because the old name got every agent request
+  rejected.** Chinese LLM gateways run a content filter in front of the model, and it
+  scans the tool definitions too. The two characters in the old term read as a firearm
+  word, so `positionName()` — whose output goes verbatim into the prompt — returned an
+  HTTP 451 for any six-handed table where somebody sat there. The failure is the quiet
+  kind: the table plays on, the bot just turns into the rule bot, and the fallback rate
+  climbs where nobody is looking. `isContentFilterError()` now names this class of failure
+  separately (`stats.filtered`), and a test scans the whole prompt surface — system
+  prompts, tool descriptions, parameter descriptions, every position name at every table
+  size — against the words we have actually been rejected for.
+
+  Worth knowing before deleting words in a panic: there is a second, intermittent kind.
+  In a multi-step loop the model's own chain of thought and tool arguments are sent back
+  up, and those get scanned as well — the same spot passed three times and was rejected
+  once with nothing changed on our side. Rejected every time means our text; rejected
+  occasionally means the model's, and editing our prompt will not help.
 
 - **The agent's prompt no longer asks for JSON and tool calls at the same time.** Both
   paths share `buildUser`, whose closing line was "output your decision (json)" — correct

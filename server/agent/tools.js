@@ -18,7 +18,7 @@
 //
 //   read_opponents   跨手牌的对手画像（VPIP / PFR / 激进度 / 弃牌率 / 最近摊牌）。
 //                    做成工具而不是无脑塞进提示词，是因为大部分决策用不上它
-//                    （拿到 72o 在枪口位，看谁都一样要弃），省下的 token 和延迟
+//                    （拿到 72o 在前位，看谁都一样要弃），省下的 token 和延迟
 //                    留给真正难的那几个决策。
 //
 //   plan_bet         按**你自己给的尺度**算这个注划不划算。跟注决策有底池赔率这把
@@ -76,6 +76,7 @@ const RANGE_HINT = [
  * @param {number} [ctx.equityMs]   单次蒙特卡洛的墙钟上限（estimate_equity / plan_bet 各算一次）
  * @param {number} [ctx.equityChunkMs]
  * @param {object} [ctx.trace]      调用记录会 push 进 trace.calls，用于日志与测试
+ * @param {string[]} [ctx.exclude]  摘掉这些工具（消融用）。act 摘不掉
  * @returns {{tools:object, readAct:() => object|null}}
  */
 export function buildTools(ctx) {
@@ -85,6 +86,28 @@ export function buildTools(ctx) {
   const sims = Math.max(0, Number(ctx.equitySims ?? 20000));
   const budgetMs = Math.max(1, Number(ctx.equityMs ?? 1200));
   const chunkMs = Math.max(1, Number(ctx.equityChunkMs ?? 8));
+
+  // 一次决策里，同一个对手范围只跑一次蒙特卡洛。
+  //
+  // 不只是省时间：ev_chips 现在要同时用到「对他当前范围的胜率」和
+  // 「对他续注范围的胜率」，没有这个备忘录，模型每比一个尺度就要跑两次
+  // 20000 局模拟。而模型比三个尺度是提示词教它的常规动作。
+  const equityMemo = new Map();
+  function equityFor(range, opponents) {
+    // 对手数必须进键：estimate_equity 按真实人数算，plan_bet 固定按 1 个人跟算
+    // （它的底池那边也是这么推的，两边必须同一个假设）。混用会算出假胜率。
+    const key = `${range >= 1 ? 'any' : range}|${opponents}`;
+    if (!equityMemo.has(key)) {
+      equityMemo.set(key, estimateEquityAsync({
+        hole: state?.you?.cards,
+        board: state.table?.board || [],
+        opponents,
+        sims, budgetMs, chunkMs, signal,
+        opponentRange: range >= 1 ? null : range,
+      }));
+    }
+    return equityMemo.get(key);
+  }
 
   const tools = {
     estimate_equity: tool({
@@ -120,16 +143,7 @@ export function buildTools(ctx) {
 
         let out;
         try {
-          out = await estimateEquityAsync({
-            hole,
-            board: state.table?.board || [],
-            opponents,
-            sims,
-            budgetMs,
-            chunkMs,
-            signal,
-            opponentRange: f >= 1 ? null : f,
-          });
+          out = await equityFor(f, opponents);
         } catch (e) {
           return { error: `估算失败：${e.message}` };
         }
@@ -166,8 +180,8 @@ export function buildTools(ctx) {
         '样本不足的人不会有数据。用它来校准你对 estimate_equity 的范围估计：' +
         'VPIP 低的人范围窄，弃牌率高的人可以诈唬，AF 高的人加注不一定有牌。' +
         '**优先看 here 而不是总账**：here 是这个人这手牌所在的位置档' +
-        '（early 枪口 / middle 中间 / late 庄位附近 / blinds 盲位）以及他在这一档的历史数据。' +
-        '同一个人在枪口位和按钮位的入池率能差一倍还多，总账把两者平均了。' +
+        '（early 前位 / middle 中间 / late 庄位附近 / blinds 盲位）以及他在这一档的历史数据。' +
+        '同一个人在前位和按钮位的入池率能差一倍还多，总账把两者平均了。' +
         '每档都带 hands（样本量），样本少的自己打折看。',
       inputSchema: z.object({}),
       execute: async () => {
@@ -199,9 +213,12 @@ export function buildTools(ctx) {
         'needs_fold_pct = 这个注需要他弃多少牌才不亏（已经把「被跟时你还能赢回来的部分」扣掉了，' +
         '所以有听牌的半诈唬需要的弃牌率远低于纯诈唬）；' +
         'implied_fold_pct = 按你给的两个范围推出来他实际会弃多少。后者明显大于前者才值得开火。' +
-        '给了 opponent_range 还会回 ev_chips（这个尺度的期望收益，筹码）：' +
+        '给了 opponent_range 还会回 ev_chips = **这个尺度比过牌多赚多少筹码**：' +
+        '大于 0 才值得开火，小于 0 就该过牌；' +
         '**换几个 amount 各调一次、挑 ev_chips 最大的，就是选尺度的办法**。' +
-        '注意 ev_chips 的基线是「不下注就拿 0」，只能用来横向比尺度，不能拿它和过牌比。' +
+        '注意它只在「不超过底池 1.5 倍」的尺度上才给——再大的注这个工具定不了价' +
+        '（弃牌率是按范围比例线性推的，超池会系统性高估），那时 ev_chips 是 null，' +
+        '想开那么大得靠对手画像说话，不能靠这里的数字。' +
         'continue_range 怎么估：尺度越大他继续得越少；read_opponents 的 foldToBet 是现成的依据，' +
         '弃牌率高的人 continue_range 要给得更小。' +
         `范围档位参考同 estimate_equity：${RANGE_HINT}。`,
@@ -264,17 +281,7 @@ export function buildTools(ctx) {
 
         let eq;
         try {
-          // 对手数固定按 1 算：底池那边也是按「只有一个人跟」推的，两边必须同一个假设。
-          eq = await estimateEquityAsync({
-            hole,
-            board: state.table?.board || [],
-            opponents: 1,
-            sims,
-            budgetMs,
-            chunkMs,
-            signal,
-            opponentRange: f >= 1 ? null : f,
-          });
+          eq = await equityFor(f, 1);
         } catch (e) {
           return { error: `估算失败：${e.message}` };
         }
@@ -302,28 +309,70 @@ export function buildTools(ctx) {
           }
         }
 
-        // 这个尺度的期望收益（筹码）。只有给了 opponent_range 才算得出来，
-        // 因为它要用到「他会弃多少」。
+        // 这个尺度**比过牌多赚多少**（筹码）。只有给了 opponent_range 才算得出来。
         //
-        // **基线是「不下注就拿 0」**，所以这个数只能用来在几个尺度之间挑，
-        // 不能拿来和过牌比 —— 过牌也能赢钱，那部分不在这个模型里。
-        // 但恰恰是"挑尺度"这件事 needs_fold_pct 答不了：牌很强的时候它对
-        // 任何尺度都是 0，看不出该下 1/3 池还是全下。ev_chips 能。
+        // 基线从「不下注就拿 0」换成了「过牌」，因为原来那个基线有个具体的害处：
+        // 它把"把他打弃"整个记成白赚的底池，可你本来就有一部分概率能赢下这个底池。
+        // 于是任何一手过得去的牌，下得越大看起来越赚 —— 实测一手中对，
+        // 30/60/120/300 四个尺度的 ev 是 99/108/110/122，一路往上推到超池 2.5 倍。
+        //
+        // 换了基线之后 ev_chips 有了确定的含义：**大于 0 才值得开火，小于 0 就该过牌**。
+        // 这是原来那个数答不了的问题（老注释里明写着"不能拿它和过牌比"）。
+        //
+        // 过牌那边按「不再有钱进池、按当前范围摊牌」估：evCheck = 胜率 × 底池。
+        // 这是个下界 —— 真过牌了后面还可能赢到更多，也可能被诈唬走。
+        // 但它至少把"打弃他"那部分虚高的收益扣掉了。
+        // implied_fold 是拿范围比例线性推的：他弃掉 (1 − 续注范围/当前范围)。
+        // 这个模型在正常尺度上够用，在超池尺度上系统性高估 —— 它认为你从
+        // 1 倍池加到 3 倍池，他就会多弃一大截牌，而真人不会。
+        //
+        // 后果不是"有个数不太准"，而是**提示词让模型挑 ev_chips 最大的那个**，
+        // 于是这个偏差被直接翻译成打法：实测一手中对，30/60/120/300 四档的 ev
+        // 一路涨到超池 2.5 倍。所以超过这个界就**不给 ev_chips**——
+        // 明知有偏还递出去，等于让它照着偏差打。needs_fold / implied_fold 照给，
+        // 附一句提醒，模型想自己判断仍然有原料。
+        const EV_MAX_POT_RATIO = 1.5;
+        const tooBigToPrice = pot > 0 && to > pot * EV_MAX_POT_RATIO;
+
         let evChips = null;
-        if (impliedFold !== null) {
+        let evCheck = null;
+        if (impliedFold !== null && Number.isFinite(cur) && !tooBigToPrice) {
           const pf = impliedFold / 100;
-          evChips = Math.round(pf * pot + (1 - pf) * ((eq.pct / 100) * potWhenCalled - matched));
+          const evBet = pf * pot + (1 - pf) * ((eq.pct / 100) * potWhenCalled - matched);
+          try {
+            const now = await equityFor(Math.max(0.02, Math.min(1, cur)), 1);
+            evCheck = (now.pct / 100) * pot;
+            evChips = Math.round(evBet - evCheck);
+          } catch {
+            evChips = null;                       // 算不出基线就不给这个数，别给个含义不明的
+          }
         }
 
+        // 被跟时不亏（loss<=0）分两种，原来混成了一句「这是价值下注」。
+        // 那句话在半诈唬上是错的：一手 36% 胜率的听牌在大底池里也能算出 loss<=0
+        // ——它只是**刚好打平**，不是价值。两者该下的尺度完全不同，说错了会让
+        // 模型按价值牌的思路一路加尺度。用「胜率比这个价格高出多少」把它们分开。
+        const needEqPct = potWhenCalled > 0 ? (matched / potWhenCalled) * 100 : 100;
+        const surplus = eq.pct - needEqPct;
+        const evTail = evChips !== null
+          ? '；下多大看 ev_chips：它是**比过牌多赚多少**，小于 0 就该过牌'
+          : '';
+
         let verdict = null;
-        if (loss <= 0) {
-          verdict = '被跟你也不亏，这是价值下注，不依赖他弃牌'
-            + (evChips !== null ? '；想挑尺度就换几个 amount 比 ev_chips' : '');
+        if (loss <= 0 && surplus >= 10) {
+          verdict = `被跟你也不亏，这是价值下注，不依赖他弃牌（胜率 ${eq.pct}%，` +
+            `这个价格只要 ${needEqPct.toFixed(0)}%）${evTail}`;
+        } else if (loss <= 0) {
+          verdict = `被跟时刚好打平（胜率 ${eq.pct}%，这个价格要 ${needEqPct.toFixed(0)}%），` +
+            `**这不是价值下注**，赚的钱全部来自他弃牌${evTail}`;
         } else if (impliedFold !== null) {
           const edge = impliedFold - needsFold;
           verdict = edge > 5 ? '按你估的范围，这个注划算'
             : edge < -5 ? '按你估的范围，这个注不划算——他弃得不够多'
             : '临界，差距在估计误差里，按对手画像定';
+          if (evChips !== null && evChips < 0) {
+            verdict += '；但 ev_chips 是负的，过牌比下注更赚';
+          }
         }
 
         const notes = [];
@@ -337,10 +386,19 @@ export function buildTools(ctx) {
           notes.push(`${sanitizeName(caller.name)} 只跟得起 ${callerAdds}，多出来的 ${risk - callerAdds} 会退给你`);
         }
         if (!caller) notes.push('没有还能行动的对手了，下注没有弃牌收益');
+        if (tooBigToPrice) {
+          notes.push(`这个注是底池的 ${(to / pot).toFixed(1)} 倍，超出了这个工具能定价的范围，` +
+            `所以没有给 ev_chips。implied_fold_pct 是按范围比例线性推的，` +
+            `在超池尺度上会系统性高估他的弃牌率——想开这么大，理由得来自` +
+            `对手画像（他真的会对超池弃这么多牌吗），不能来自这里的数字。` +
+            `要比尺度就在 ${Math.round(pot * EV_MAX_POT_RATIO)} 以内比。`);
+        }
 
         trace.calls.push({
           tool: 'plan_bet', amount: to, risk, continueRange: f,
-          needsFold, impliedFold, ev: evChips, reason: reason || null,
+          needsFold, impliedFold, ev: evChips,
+          evCheck: evCheck === null ? null : Math.round(evCheck),
+          reason: reason || null,
         });
 
         return {
@@ -352,6 +410,7 @@ export function buildTools(ctx) {
           implied_fold_pct: impliedFold,
           equity_when_called_pct: eq.pct,
           ev_chips: evChips,
+          ev_check_baseline: evCheck === null ? null : Math.round(evCheck),
           margin: eq.margin,
           pot_when_called: potWhenCalled,
           allin: to >= max,
@@ -383,7 +442,12 @@ export function buildTools(ctx) {
     return null;
   }
 
-  return { tools, readAct, trace };
+  // 消融用：按名字摘掉工具。act 摘不掉 —— 它是循环唯一的出口，没有它
+  // stopWhen 永远不触发，模型会一直转到步数耗尽。
+  const exclude = new Set((ctx.exclude || []).filter((n) => n !== 'act'));
+  for (const n of exclude) delete tools[n];
+
+  return { tools, readAct, trace, toolNames: Object.keys(tools) };
 }
 
 export default buildTools;
