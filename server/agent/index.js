@@ -173,7 +173,10 @@ export class PokerAgent {
 
   describe() {
     if (!this.models.length) return `${this.fallback.describe()}（agent 未配置，走单轮）`;
-    const names = this.models.map((m) => `${m.label}(${m.model})`).join(' + ');
+    // 和 BotDriver.describe() 一个口径：关掉思维链要能从启动日志一眼看出来
+    const names = this.models
+      .map((m) => `${m.label}(${m.model}${m.thinking === 'off' ? '，不思考' : ''})`)
+      .join(' + ');
     return `agent × ${names}，最多 ${this.maxSteps} 步`;
   }
 
