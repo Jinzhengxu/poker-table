@@ -225,7 +225,7 @@
             <select id="botProvider">
               <option value="deepseek" data-model="deepseek-chat" data-key="sk-...">DeepSeek</option>
               <option value="kimi" data-model="moonshot-v1-8k" data-key="sk-...">Kimi（月之暗面）</option>
-              <option value="yinlianyun" data-model="deepseek-v4-flash"
+              <option value="yinlianyun" data-model="deepseek-v4-flash" data-nothink="1"
                 data-key="网关 token（uuid 形式）">银联云（deepseek-v4-flash）</option>
             </select>
           </label>
@@ -233,6 +233,10 @@
             spellcheck="false" placeholder="sk-..."></label>
           <label>模型（留空用默认）<input id="botModel" type="text" autocomplete="off"
             spellcheck="false" placeholder="deepseek-chat"></label>
+          <!-- 提示语两种情况不一样，由 app.js 按供应商换：能关的说关了会怎样，
+               关不掉的说为什么灰着。标签本身要短，不然在窄面板上会折成两行。 -->
+          <label class="chk"><input id="botNoThink" type="checkbox"><span>不思考</span></label>
+          <p id="botNoThinkHint" class="cfg-hint">关掉思维链，出手快得多，也更省 token。</p>
           <div class="cfg-actions">
             <button type="submit" class="act act-start">保存后端</button>
             <label class="chk"><input id="botRemember" type="checkbox" checked><span>记住 key</span></label>

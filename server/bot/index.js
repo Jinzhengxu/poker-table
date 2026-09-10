@@ -105,19 +105,30 @@ export class BotDriver {
    * @param {string} [patch.apiKey]  留空表示保留原有 key
    * @param {string} [patch.model]
    * @param {string} [patch.baseUrl]
+   * @param {'on'|'off'} [patch.thinking] 不给表示沿用这一家原来的设置
    * @returns {{ok:true}|{ok:false,msg:string}}
    */
   configure(patch) {
     const provider = String(patch?.provider || '').toLowerCase();
     if (!PROVIDERS[provider]) return { ok: false, msg: '不支持的供应商' };
 
+    const existing = this.clients.find((c) => c.provider === provider);
+
     // 没给新 key 就沿用同一供应商已有的那个，方便只改模型名
     let apiKey = typeof patch.apiKey === 'string' ? patch.apiKey.trim() : '';
-    if (!apiKey) {
-      const existing = this.clients.find((c) => c.provider === provider);
-      apiKey = existing?.apiKey || '';
-    }
+    if (!apiKey) apiKey = existing?.apiKey || '';
     if (!apiKey) return { ok: false, msg: '缺少 API key' };
+
+    // 思考开关同理：不给就沿用这一家原来的设置，再退回环境变量给的默认。
+    // 【不能】直接退回默认值——那样"只改个模型名"会把关掉的思维链悄悄打开，
+    // 而这件事只体现在延迟和账单上，页面上看不出来。
+    let thinking = existing?.thinking ?? this.thinking;
+    if (patch.thinking !== undefined && patch.thinking !== null) {
+      thinking = String(patch.thinking).toLowerCase();
+      if (thinking !== 'on' && thinking !== 'off') {
+        return { ok: false, msg: '思考开关只能是 on 或 off' };
+      }
+    }
 
     let client;
     try {
@@ -127,7 +138,7 @@ export class BotDriver {
         model: patch.model ? String(patch.model).trim() : undefined,
         baseUrl: patch.baseUrl ? String(patch.baseUrl).trim() : undefined,
         timeoutMs: this.timeoutMs,
-        thinking: this.thinking,
+        thinking,
       });
     } catch (e) {
       return { ok: false, msg: e.message || '配置无效' };
@@ -163,6 +174,7 @@ export class BotDriver {
         label: c.label,
         model: c.model,
         thinking: c.thinking,
+        canDisableThinking: c.canDisableThinking,
         maskedKey: maskKey(c.apiKey),
         cooling: (this.health.get(c)?.until ?? 0) > now,
       })),

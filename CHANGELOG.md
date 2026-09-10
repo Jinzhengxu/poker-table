@@ -34,6 +34,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   want the tool loop on this provider, raise `POKER_ACTION_TIMEOUT` to ~90s and the gate to
   70000; otherwise leave `POKER_AGENT` off here. `.env.example` says so at the knob.
 
+- **The host can turn thinking off from the settings panel.** `POKER_BOT_THINKING` alone
+  was a poor fit for how this table is actually run: providers are configured in the
+  browser, so flipping one bot setting meant SSHing in, editing `.env`, and redeploying
+  while everything adjacent to it was two clicks away. The panel now has a 不思考 checkbox
+  that rides the existing `botConfig` message.
+
+  Three details that decide whether a checkbox like this is trustworthy. It is **disabled
+  for providers that have no switch** (driven by `canDisableThinking` in the status
+  snapshot, with a line saying why) — a checkbox you can tick that does nothing is worse
+  than no checkbox. It **shows what is actually configured**, re-syncing from the server
+  whenever the panel re-renders or the provider dropdown changes, because after a restart
+  or a second host's edit the local guess and the truth diverge silently. And a patch that
+  omits `thinking` **inherits the provider's current setting** rather than the env default,
+  so changing only the model name cannot quietly switch thinking back on — the same rule
+  `apiKey` already followed. `POKER_BOT_THINKING` remains the default for providers that
+  have not been set either way, and the browser remembers the flag alongside the key, so
+  the auto-push after a restart restores it.
+
+  Verified in a real browser: DeepSeek selected leaves the box disabled with the "this
+  model does not think anyway" line; switching to 银联云 enables it and swaps both
+  placeholders; ticking it and saving yields
+  `已启用：银联云（deepseek-v4-flash，不思考，tes…1234）`; a reload re-checks the box from
+  the server; no console errors.
+
 - **`POKER_BOT_THINKING=off` — telling a reasoning model not to think.** The chain of
   thought is where this provider's latency and most of its token bill go, so whether it can
   be turned off is worth knowing rather than assuming. It can: both `deepseek-v4-*` models

@@ -344,6 +344,8 @@
     D.botProvider = $('#botProvider');
     D.botKey = $('#botKey');
     D.botModel = $('#botModel');
+    D.botNoThink = $('#botNoThink');
+    D.botNoThinkHint = $('#botNoThinkHint');
     D.botRemember = $('#botRemember');
     D.seatAdmin = $('#seatAdmin');
 
@@ -1927,6 +1929,8 @@
       D.botStatus.className = 'bot-status';
       return;
     }
+    syncBotThinkingFromServer(st);
+
     var parts = info.providers.map(function (p) {
       // 「不思考」要露出来：它同时影响快慢、花多少钱和答得对不对
       var how = p.model + (p.thinking === 'off' ? '，不思考' : '') + '，' + p.maskedKey;
@@ -1936,12 +1940,46 @@
     D.botStatus.className = 'bot-status ok';
   }
 
-  /** 供应商下拉框的占位符：默认模型名和 key 形状都写在 <option> 的 data-* 上 */
-  function syncBotPlaceholders() {
+  /**
+   * 跟着供应商变的那几样：占位符（默认模型名、key 的形状）和「不思考」开关。
+   * 这些都写在 <option> 的 data-* 上，免得默认模型名在两个文件里各存一份。
+   */
+  function syncBotProviderUI() {
     var opt = D.botProvider.options[D.botProvider.selectedIndex];
     if (!opt) return;
     D.botModel.placeholder = opt.getAttribute('data-model') || '';
     D.botKey.placeholder = opt.getAttribute('data-key') || 'sk-...';
+
+    // 关不掉的家就别给勾了：勾上又不生效，比没有这个勾选框更糟
+    var canDisable = opt.getAttribute('data-nothink') === '1';
+    D.botNoThink.disabled = !canDisable;
+    if (!canDisable) D.botNoThink.checked = false;
+    D.botNoThinkHint.textContent = canDisable
+      ? '关掉思维链，出手快得多，也更省 token。'
+      : '这家的模型本来就不思考，这个开关对它没有意义。';
+  }
+
+  /**
+   * 把勾选框对回服务端的实际状态。
+   *
+   * 显示的是【实际生效的】而不是【上次勾的】：服务重启过、别的房主改过、
+   * 或者这家压根关不掉，都会让两者不一样，而这个勾选框要是会骗人，
+   * 那它比没有还糟——延迟和账单上的差别没人会去对。
+   * 正在动这个表单时不覆盖，免得手指头和渲染打架 —— 但【下拉框本身不算】：
+   * 换供应商的那一刻焦点正好在它上面，把它算进去的话，切回一家已经配好的
+   * 供应商时勾选框会停在上一家的状态，正好在最该对齐的时候不对齐。
+   */
+  function syncBotThinkingFromServer(st) {
+    if (!D.botNoThink || D.botNoThink.disabled) return;
+    var focus = document.activeElement;
+    if (focus && focus !== D.botProvider && D.botForm.contains(focus)) return;
+    var list = (st && st.bot && st.bot.providers) || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].provider === D.botProvider.value) {
+        D.botNoThink.checked = list[i].thinking === 'off';
+        return;
+      }
+    }
   }
 
   /** 服务端还没有 LLM 时，把本机记住的配置推上去（重启后自动恢复） */
@@ -2567,8 +2605,11 @@
     if (D.botForm) {
       // 换供应商时把两个占位符跟着换掉：默认模型名各家不同，key 的形状也不同
       // （银联云给的是网关签发的 uuid，不是 sk- 开头的上游 key）。
-      D.botProvider.addEventListener('change', syncBotPlaceholders);
-      syncBotPlaceholders();
+      D.botProvider.addEventListener('change', function () {
+        syncBotProviderUI();
+        syncBotThinkingFromServer(S.state);
+      });
+      syncBotProviderUI();
 
       D.botForm.addEventListener('submit', function (e) {
         e.preventDefault();
@@ -2579,6 +2620,7 @@
         var patch = {
           provider: D.botProvider.value,
           model: D.botModel.value.trim(),
+          thinking: D.botNoThink.checked ? 'off' : 'on',
         };
         // 留空表示"沿用已有 key，只改模型"
         if (key) patch.apiKey = key;

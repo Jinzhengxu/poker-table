@@ -1648,3 +1648,55 @@ test('clientsFromEnv / BotDriver：POKER_BOT_THINKING 一路传到前端配的�
   assert.match(d.describe(), /不思考/);
   assert.equal(d.status().providers[0].thinking, 'off', '房主要能在页面上看见');
 });
+
+// ==================== 房主在页面上开关思维链 ====================
+
+test('setBotConfig：房主能从页面上把思维链关掉，快照里看得见', () => {
+  const driver = new BotDriver({ clients: [], minThinkMs: 0, env: {}, logger: quietLogger() });
+  const room = new Room({ botDriver: driver });
+  const host = stubClient();
+  room.attach(host);
+  room.hello(host, null);
+  room.sit(host, 0, '房主');
+
+  const res = room.setBotConfig(host, {
+    provider: 'yinlianyun', apiKey: 'tok-aaaa1111', thinking: 'off',
+  });
+  assert.equal(res.ok, true);
+  assert.equal(driver.clients[0].thinking, 'off');
+
+  const snap = room.buildStateFor(host.playerId);
+  const p = snap.bot.providers[0];
+  assert.equal(p.thinking, 'off', '房主要能看见它到底关没关');
+  assert.equal(p.canDisableThinking, true, '前端靠这个决定勾选框能不能点');
+
+  // 再取消勾选
+  assert.equal(room.setBotConfig(host, { provider: 'yinlianyun', thinking: 'on' }).ok, true);
+  assert.equal(driver.clients[0].thinking, 'on');
+});
+
+test('configure：只改模型名时，不能把关掉的思维链悄悄打开', () => {
+  // 这是最容易出的那种回归：patch 里没有 thinking，就退回环境变量的默认值，
+  // 于是房主改了个模型名，思维链自己开了回来，只有账单和延迟知道。
+  const d = new BotDriver({ clients: [], env: {}, logger: quietLogger() });
+  d.configure({ provider: 'yinlianyun', apiKey: 'tok', thinking: 'off' });
+  d.configure({ provider: 'yinlianyun', model: 'deepseek-v4-pro' });
+  assert.equal(d.clients[0].thinking, 'off', '没提到的设置就该保持原样');
+  assert.equal(d.clients[0].model, 'deepseek-v4-pro');
+});
+
+test('configure：思考开关只收 on / off', () => {
+  const d = new BotDriver({ clients: [], env: {}, logger: quietLogger() });
+  const bad = d.configure({ provider: 'yinlianyun', apiKey: 'tok', thinking: 'maybe' });
+  assert.equal(bad.ok, false);
+  assert.match(bad.msg, /on|off/);
+  assert.equal(d.hasLLM, false, '配置被拒就不该留下半个后端');
+});
+
+test('status：关不掉的家要如实报 canDisableThinking=false', () => {
+  const d = new BotDriver({ clients: [], env: {}, logger: quietLogger() });
+  d.configure({ provider: 'deepseek', apiKey: 'sk-x', thinking: 'off' });
+  const p = d.status().providers[0];
+  assert.equal(p.canDisableThinking, false);
+  assert.equal(p.thinking, 'on', '关不掉就得说关不掉，不能顺着勾选框撒谎');
+});
