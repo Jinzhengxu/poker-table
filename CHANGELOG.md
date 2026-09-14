@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Bots decide in one model round trip instead of three or four, and skip the model
+  entirely on obvious spots.** Two changes aimed at the same complaint — the bot takes
+  too long to act — after measuring where the time actually goes: a 20,000-trial Monte
+  Carlo estimate is 20–60 ms, a model round trip is 2–3 s without a chain of thought and
+  5–8 s with one. Monte Carlo was never the bottleneck; round trips were.
+
+  *The five-row equity table* (`POKER_AGENT_TABLE`, on by default). Agent mode made
+  equity a tool so the model could choose the opponent's range, and every range it tried
+  cost a full round trip — a typical decision ran three or four (p50 24 s measured on
+  `yinlianyun`). `bot/table.js#equityTable` now computes equity against any two / top 70%
+  / 35% / 15% / 5% before the model is called (100–300 ms, one shared budget), and
+  `buildUser` writes the rows into the prompt with a per-row pot-odds verdict
+  ("profitable if you read them as top 35% or looser, not if top 15% or tighter"). The
+  opponent profiles go inline the same way, so `estimate_equity` and `read_opponents` are
+  dropped from the tool set whenever the table is present; `plan_bet` stays and is seeded
+  from the same rows. The model still picks the range — it reports the row it used as
+  `act.assumed_range`, which lands in the trace as `read_range` so the spot bank's pair
+  check keeps working. A fold/call decision is now one round trip, a bet decision two.
+
+  *Obvious spots* (`POKER_BOT_OBVIOUS`, on by default, honoured by both the single-shot
+  driver and the agent). `bot/table.js#classifyObvious` catches three cases whose answer
+  does not depend on the opponent's range: a preflop hand in the bottom 30% of the
+  playability ordering facing a raise (bottom 20% unraised; a small-blind complete is never
+  judged), a postflop call that loses *even against two random cards* with a margin that
+  grows per extra opponent, and a call-only spot (facing a shove) that wins even against
+  the tightest range. Those act by rule after the minimum think time, zero model calls.
+  Any spot where checking is legal is never judged — betting, sizing and bluffing are the
+  model's job — and persona traits shift the thresholds the same way they shift the rule
+  policy's. The classifier is built to under-trigger: a missed spot costs one model call,
+  a wrong one auto-folds a hand. Measured share of decisions it takes: 4/46 on the spot
+  bank (all four correct: the two `obvious-fold-*` spots and the two call-only traps), and
+  9% of self-play decisions in both a tight-passive and a loose-aggressive rule population
+  (12–17% of preflop decisions) — an underestimate for a human table, where raised pots are
+  far more common than the rule policy produces.
+
+  *Agent mode is now the default.* It was off by default for three reasons — 2–6 model
+  calls per decision, 3–4× the tokens, and reasoning models tripping the 30 s wall clock
+  on `yinlianyun` — and the equity table removes all three: a decision is one or two
+  round trips, and the tokens are roughly single-shot's plus the table. What agent mode
+  adds over single-shot (the model choosing the opponent's range, cross-hand profiles,
+  bet-sizing arithmetic) is exactly what makes the bot play well, so it should not need
+  opting into. `POKER_AGENT=off` restores single-shot; a missing `ai` package still falls
+  back to single-shot with a log line, as before.
+
+  Both are switches, so the spot bank can ablate them: `scripts/agent-eval.mjs --table off`
+  and `--obvious off`. The report counts obvious decisions separately from fallbacks (they
+  are deliberate, not failures) and prints their own accuracy line — that line is expected
+  to be perfect, and a miss there is a bug to chase. `source: 'obvious'` carries its
+  reason in `why`, not `note`; `note` still means "the action was clamped", which the
+  spot bank's `mustNotAdjust` check reads.
+
 - **A third bot provider: UnionPay Cloud (`yinlianyun`), reached through the code-tool
   gateway.** `YINLIANYUN_API_KEY` holds a token the *gateway* issues (a UUID), not the
   upstream vendor's key, and the default model is `deepseek-v4-flash`. It is the same

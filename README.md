@@ -258,9 +258,26 @@ them and no SDK dependency:
 | `POKER_BOT_TIMEOUT_MS` | per-provider     | Per-request timeout before falling back. Unset means each provider's own preset: 8000 for most, 30000 for `yinlianyun`, whose default model reasons before it answers |
 | `POKER_BOT_THINKING`   | `on`             | `off` tells a reasoning model not to think first. Only providers that declare a switch can do it (today: `yinlianyun`); asking the others to turn it off logs a line and changes nothing, because their default models do not reason at all |
 | `POKER_BOT_MAX_TOKENS` | `4096`           | Cap on a single-shot reply. **Do not lower it for a reasoning model** — the chain of thought comes out of the same budget, and a short cap truncates the answer and drops the hand to the rule policy |
+| `POKER_BOT_OBVIOUS`    | `on`             | Skip the model on spots where the answer does not depend on the opponent's range — trash preflop facing a raise, or a postflop call that loses even against two random cards. Those fold by rule in under a second instead of after a 5–20s model call. `off` sends every spot to the model (ablation) |
 
 Set several keys and bots alternate between providers by seat; if one starts
 failing it is benched for 60 seconds and another takes over.
+
+**Obvious spots never reach the model.** A reasoning model takes 5–8 seconds per
+call, and a good share of poker decisions do not need one: 72o facing a raise
+folds under every assumption about the opponent. `bot/table.js#classifyObvious`
+catches three cases, each with a reason that does not depend on the opponent's
+range — a preflop hand in the bottom 30% of the playability ordering facing a
+raise (bottom 20% unraised; a small-blind complete is never judged), a postflop
+call that is unprofitable *even against
+two random cards* with a safety margin that grows with the number of opponents,
+and a call-only spot (facing a shove) that is profitable even against the
+tightest range. Everything else, and every spot where checking is an option, goes
+to the model: whether to bet, how much, and whether to bluff are its job. The
+classifier is built to under-trigger — a missed spot costs one model call, a
+wrong one auto-folds a hand — and persona traits move its thresholds the same
+way they move the rule policy's, so the bot that "doesn't fold to pressure"
+folds less here too. `status()` reports the count as `stats.obvious`.
 
 **Keys can also be entered in the browser** instead of the environment — the
 host picks a provider and pastes a key under Settings → bot backend. It travels
@@ -317,9 +334,12 @@ the **identical scoring formula**, with a test asserting bit-for-bit agreement a
 > still a long way from a solver: it cuts a static starting-hand ordering that does not
 > vary with the board, position or stack depth, and has no notion of equilibrium.
 
-### Agent mode (`POKER_AGENT=on`)
+### Agent mode (the default; `POKER_AGENT=off` for single-shot)
 
-Off by default. Turned on, the bot goes from one model call to a multi-step tool loop.
+On by default. It used to be opt-in because a decision cost 2–6 model calls and 3–4× the
+tokens; the equity table below brought that down to one or two calls, and what agent mode
+adds — the model choosing the opponent's range, cross-hand profiles, bet-sizing arithmetic
+— is what makes the bot play well. `POKER_AGENT=off` restores the single-shot driver.
 
 **It exists to fix the optimistic equity above.** In single-shot mode we compute equity
 for the model and paste it into the prompt, with the assumption hard-coded to "opponents
@@ -486,14 +506,30 @@ what it was before.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `POKER_AGENT` | off | Set to `on` to enable |
+| `POKER_AGENT` | on | Set to `off` to fall back to the single-shot driver |
 | `POKER_AGENT_MODEL` | same as `POKER_BOT_MODEL` | Agent-specific model; **must support function calling** |
 | `POKER_AGENT_MAX_STEPS` | `6` | Max steps per decision. Each step is a model call, so this sets the bill. Tool calls available are `steps − 1`, since the last step is forced to `act`: five, enough for read → equity → three bet sizes → act. A ceiling, not a cost — the loop stops the moment `act` is called |
 | `POKER_AGENT_MAX_MS` | `30000` | Wall-clock cap per decision; over it, fall back to single-shot. Has to move with the step budget, or the extra steps are unusable. 30s gate + 1.5s fallback equity + 8s fallback model call ≈ 40s, inside the 45s action timeout with 5s to spare |
-| `POKER_AGENT_EQUITY_MS` | `1200` | Budget per Monte Carlo call (`estimate_equity` and `plan_bet` each run one) |
+| `POKER_AGENT_EQUITY_MS` | `1200` | Wall-clock budget for the five-row equity table (or, with the table off, per `estimate_equity` / `plan_bet` call) |
+| `POKER_AGENT_TABLE` | `on` | Put a five-row equity table (opponent range: any two / top 70% / 35% / 15% / 5%) and the opponent profiles straight into the prompt, and drop the `estimate_equity` and `read_opponents` tools. `off` restores the tool loop (ablation) |
 
-The costs, stated plainly: 2–6 model calls per decision, **roughly 3–4× the tokens** of
-single-shot mode, and a few seconds more latency. This path also needs `ai`,
+**The equity table exists because Monte Carlo is not the slow part.** One 20,000-trial
+estimate takes 20–60 ms; one model round trip takes 2–3 s without a chain of thought and
+5–8 s with one. The original agent made equity a tool so the model could pick the range,
+which is the right idea — but it meant every range the model wanted to try cost a full
+round trip, and a typical decision ran three or four of them (measured p50 24 s on
+`yinlianyun`). With `POKER_AGENT_TABLE=on` the server computes all five rows before
+calling the model (100–300 ms total, one shared budget), writes them into the prompt with
+the pot-odds verdict per row ("profitable if you read them as top 35% or looser, not if
+top 15% or tighter"), and inlines the opponent profiles the same way. The model still
+picks the range — it reports which row it used in `act.assumed_range`, which the spot
+bank reads for its pair check — but a fold/call decision is now one round trip and a bet
+decision two (`plan_bet` stays a tool, seeded from the same table). Obvious spots (above)
+are zero.
+
+The costs, stated plainly: with the table on, 1–2 model calls per decision and about the
+tokens of single-shot mode plus a few hundred for the table and profiles; with it off,
+2–6 calls and **roughly 3–4× the tokens**. This path also needs `ai`,
 `@ai-sdk/openai-compatible` and `zod` (~21 MB). The table itself still depends only on
 `ws` — those three are pulled in via a dynamic `import()`, and if they are missing the
 server logs it and falls back to single-shot.

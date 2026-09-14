@@ -480,11 +480,14 @@ test('agent：act 里那句话在亮牌，话丢掉，动作照常', async () =>
   assert.equal(out.say, null, '这句在亮牌，不许进聊天区');
 });
 
+// 下面三条测的是**工具模式**（胜率、画像由模型调工具去要），所以显式关掉胜率表。
+// 默认（表开着）那条路的测试在 test/table.test.js。
+
 test('agent：先调胜率工具、再提交动作，走的是 agent 这条路', async () => {
   const agent = makeAgent([
     { tool: 'estimate_equity', args: { opponent_range: 0.15, reason: '他翻牌圈继续开火' } },
     { tool: 'act', args: { action: 'call', say: '跟一手' } },
-  ]);
+  ], null, { table: false });
 
   const out = await agent.decide(agentState(), P0);
   assert.equal(out.source, 'agent');
@@ -505,7 +508,7 @@ test('agent：可以用两个不同范围各算一次', async () => {
     { tool: 'estimate_equity', args: { opponent_range: 0.1 } },
     { tool: 'estimate_equity', args: { opponent_range: 0.6 } },
     { tool: 'act', args: { action: 'fold' } },
-  ], null, { maxSteps: 5 });
+  ], null, { maxSteps: 5, table: false });
 
   const out = await agent.decide(agentState(), P0);
   assert.equal(out.action.type, 'fold');
@@ -519,7 +522,7 @@ test('agent：读对手画像的工具能用，没样本时给出说明而不是
   const agent = makeAgent([
     { tool: 'read_opponents', args: {} },
     { tool: 'act', args: { action: 'fold' } },
-  ]);
+  ], null, { table: false });
   const out = await agent.decide(agentState(), P0);
   assert.equal(out.action.type, 'fold');
   const rd = out.trace.find((c) => c.tool === 'read_opponents');

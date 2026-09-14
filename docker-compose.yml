@@ -50,8 +50,10 @@ services:
       POKER_BOT_EQUITY_SIMS: "${POKER_BOT_EQUITY_SIMS:-20000}"
       POKER_BOT_EQUITY_MS: "${POKER_BOT_EQUITY_MS:-1500}"
       POKER_BOT_EQUITY_CHUNK_MS: "${POKER_BOT_EQUITY_CHUNK_MS:-8}"
+      # 明显局面不问模型（on/off）。留空 = on：代码读的是 `env.X || 'on'`，空串会落回默认。
+      POKER_BOT_OBVIOUS: "${POKER_BOT_OBVIOUS:-}"
 
-      # agent 版人机（多轮工具调用）。默认关闭；POKER_AGENT=on 才启用。
+      # agent 版人机。默认开着；POKER_AGENT=off 才退回单轮。留空 = 默认（on）。
       # 这几行必须在这里显式透传——compose 不会把宿主 .env 里的变量自动
       # 塞进容器，漏一行的后果就是 .env 改了却毫无效果（语音那次就是这么坏的）。
       POKER_AGENT: "${POKER_AGENT:-}"
@@ -62,6 +64,8 @@ services:
       POKER_AGENT_MAX_STEPS: "${POKER_AGENT_MAX_STEPS:-6}"
       POKER_AGENT_MAX_MS: "${POKER_AGENT_MAX_MS:-30000}"
       POKER_AGENT_EQUITY_MS: "${POKER_AGENT_EQUITY_MS:-1200}"
+      # 五档胜率表进提示词（on/off）。留空 = on，同上。
+      POKER_AGENT_TABLE: "${POKER_AGENT_TABLE:-}"
 
       # 牌桌初始设置。不填就用代码默认值（盲注 5/10、起始筹码 1000）。
       # 填了以后每次重启都是这个配置，不用再手工点一遍设置页。见 .env.example。

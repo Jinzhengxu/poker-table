@@ -69,6 +69,10 @@ const maxThinkMs = Number(arg('max-ms', 60_000));
 // 消融：--exclude plan_bet 把某个工具从工具集和提示词里一起摘掉，
 // 跑同一套题看差多少。这是回答"这个工具值不值"的唯一办法。
 const excludeTools = String(arg('exclude', '')).split(',').map((x) => x.trim()).filter(Boolean);
+// --table off：胜率回到工具模式（模型自己调 estimate_equity），对照新版「五档表进提示词」。
+// --obvious off：明显局面也照常问模型。两个都是延迟改动，关掉才能量出它们各值多少。
+const useTable = String(arg('table', 'on')).toLowerCase() !== 'off';
+const useObvious = String(arg('obvious', 'on')).toLowerCase() !== 'off';
 
 if (!['agent', 'single', 'rule'].includes(mode)) {
   console.error(`--mode 只能是 agent / single / rule，收到 ${mode}`);
@@ -112,7 +116,8 @@ function recorder() {
  * 真正贵的（模型对象）是共享的。
  */
 function makeDriver(sharedModel, logger = quiet) {
-  const rule = new BotDriver({ clients: [], minThinkMs: 0, logger: quiet });
+  // 纯规则那路不判「明显」：它本来就不花时间，判了只会把 source 从 rule 换成 obvious
+  const rule = new BotDriver({ clients: [], minThinkMs: 0, logger: quiet, obvious: false });
   if (mode === 'rule') return rule;
 
   if (mode === 'single') {
@@ -122,12 +127,14 @@ function makeDriver(sharedModel, logger = quiet) {
       // 那测的就不是模型而是超时。
       timeoutMs: maxThinkMs,
     });
-    return new BotDriver({ clients: [client], minThinkMs: 0, maxThinkMs, logger });
+    return new BotDriver({ clients: [client], minThinkMs: 0, maxThinkMs, logger, obvious: useObvious });
   }
 
   return new PokerAgent({
     models: [sharedModel],
     excludeTools,
+    table: useTable,
+    obvious: useObvious,
     fallback: rule,          // 兜底走纯规则：这样 fallback 一眼可见，不会又偷偷打一次模型
     minThinkMs: 0,
     maxThinkMs,
@@ -217,16 +224,24 @@ async function runOnce(spot, iter) {
 
   const g = grade(spot, out);
   const st = driver.stats || {};
+  // 明显局面是**故意**不问模型，和「模型挂了退回规则」是两回事，报告里分开数
+  const obvious = out.source === 'obvious';
   return {
     id: spot.id, tag: spot.tag, iter, ms,
     action: g.type,
     amount: out.action?.amount ?? null,
     source: out.source || null,
-    fellBack: !modelAnswered(mode, out.source),
+    obvious,
+    why: out.why || null,
+    fellBack: !obvious && !modelAnswered(mode, out.source),
     fallbackReason: log.lines.find((l) => /调用失败|内容审查|兜底/.test(l)) || null,
     ok: g.ok, toolOk: g.toolOk, notes: g.notes, adjusted: g.adjusted,
     tools: g.tools,
-    ranges: (out.trace || []).filter((c) => c.tool === 'estimate_equity').map((c) => c.range),
+    // 模型把对手读成了哪一档：工具模式来自 estimate_equity 的参数，
+    // 表模式来自 act 的 assumed_range（trace 里记成 read_range）
+    ranges: (out.trace || [])
+      .filter((c) => c.tool === 'estimate_equity' || c.tool === 'read_range')
+      .map((c) => c.range),
     steps: st.steps ?? null,
     toolCalls: st.toolCalls ?? null,
     filtered: st.filtered ?? (log.lines.some((l) => /内容审查|content_filter|451/.test(l)) ? 1 : 0),
@@ -258,9 +273,16 @@ for (let it = 0; it < repeat; it++) {
   for (const s of spots) jobs.push(() => runOnce(s, it));
 }
 
+/** 报告头和进度行共用的模式说明 */
+const variant = [
+  excludeTools.length ? `摘掉 ${excludeTools.join('/')}` : '',
+  mode === 'agent' && !useTable ? '胜率走工具' : '',
+  mode !== 'rule' && !useObvious ? '明显局面也问模型' : '',
+].filter(Boolean);
+
 if (!asJson) {
   console.error(`模式 ${mode}${mode === 'rule' ? '' : ` × ${modelName}`}` +
-                `${excludeTools.length ? `（摘掉 ${excludeTools.join('/')}）` : ''}，` +
+                `${variant.length ? `（${variant.join('，')}）` : ''}，` +
                 `${spots.length} 题 × ${repeat} 遍 = ${jobs.length} 次决策，并发 ${concurrency}`);
 }
 
@@ -326,9 +348,12 @@ const summary = {
   thinking: mode === 'rule' ? null : thinking,
   model: mode === 'rule' ? null : modelName, baseUrl: baseUrl || null,
   excludeTools,
+  table: mode === 'agent' ? useTable : null,
+  obviousEnabled: mode === 'rule' ? null : useObvious,
   spots: spots.length, repeat, decisions: runs.length, seconds,
   correct, scored: scored.length,
   accuracy: scored.length ? Number((correct / scored.length).toFixed(3)) : null,
+  obvious: runs.filter((r) => r.obvious).length,
   fellBack: runs.filter((r) => r.fellBack).length,
   filtered: runs.filter((r) => r.filtered > 0).length,
   adjusted: runs.filter((r) => r.adjusted).length,
@@ -354,15 +379,24 @@ if (asJson) {
 // 两份跑分贴在一起时得能认出哪份是哪份。
 console.log(`## ${mode}${mode === 'rule' ? '' : ` · ${preset.label} · ${modelName}` +
               (thinking === 'off' ? ' · 不思考' : '')}` +
-            `${excludeTools.length ? ` · 摘掉 ${excludeTools.join('/')}` : ''}\n`);
+            `${variant.length ? ` · ${variant.join(' · ')}` : ''}\n`);
 console.log(`| 指标 | 值 |`);
 console.log(`| --- | --- |`);
 console.log(`| 正确率 | **${pct(correct, scored.length)}**（${correct}/${scored.length}，另有 ${runs.length - scored.length} 题不判对错） |`);
+// 明显局面没问模型，是故意的：这一行说的是**省了多少次模型调用**。
+// 它们的正确率单独给 —— 这层判错一次，就是把一手该打的牌自动弃掉了。
+if (summary.obvious) {
+  const o = runs.filter((r) => r.obvious);
+  const os = o.filter((r) => r.ok !== null);
+  const oc = os.filter((r) => r.ok).length;
+  console.log(`| 明显局面，没问模型 | ${summary.obvious} 次（${pct(summary.obvious, runs.length)}），` +
+              `其中判对错的 ${oc}/${os.length} 对 —— 这一行错一道都要查 |`);
+}
 // 兜底走的是规则策略。混在一起算出来的正确率既不是模型的也不是规则的，
 // 而兜底率一高，开火率、全下率还会被规则策略（它从不全下）机械地稀释。
 // 所以只要有兜底，就把「模型自己答的那部分」单独列一行。
-if (summary.fellBack) {
-  const m = runs.filter((r) => !r.fellBack);
+if (summary.fellBack || summary.obvious) {
+  const m = runs.filter((r) => !r.fellBack && !r.obvious);
   const ms = m.filter((r) => r.ok !== null);
   const mc = ms.filter((r) => r.ok).length;
   const mf = m.filter((r) => ['bet', 'raise', 'allin'].includes(r.action)).length;
@@ -439,6 +473,7 @@ if (wrong.length) {
     console.log(`- **${r.id}**（第 ${r.iter + 1} 遍）：${r.notes.join('；')}` +
                 `${r.source && r.source !== 'agent' ? `　[${r.source}]` : ''}`);
     console.log(`  - 题意：${s.why}`);
+    if (r.why) console.log(`  - 明显局面的判定理由：${r.why}`);
     if (r.ranges.length) console.log(`  - 它估的对手范围：${r.ranges.join(' / ')}`);
   }
 }

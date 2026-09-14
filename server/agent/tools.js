@@ -54,16 +54,33 @@ import { z } from 'zod';
 import { tool } from 'ai';
 import { estimateEquityAsync, countLiveOpponents } from '../bot/equity.js';
 import { sanitizeName } from '../bot/decide.js';
+import { RANGE_HINT } from '../bot/table.js';
 import { positionOf } from './memory.js';
 
-/** 范围档位的中文说明，写进工具描述里让模型有个锚 */
-const RANGE_HINT = [
-  '0.05 ≈ 只玩 AA-TT / AK / AQs 这类（极紧，比如一个石头在河牌加注）',
-  '0.15 ≈ 大对子 + 强 A + 同花大牌（典型紧凶玩家的开池范围）',
-  '0.35 ≈ 任意对子 + 任意 A + 同花连张（普通人的开池范围）',
-  '0.70 ≈ 除了纯垃圾牌都玩（松散玩家 / 大盲位跟注范围）',
-  '1.00 = 任意两张（完全不做假设；对手越松、越是翻牌前，这个越接近真相）',
-].join('；');
+/**
+ * 还在这手牌里的对手的画像。read_opponents 工具和提示词共用这一份：
+ * 胜率表模式下画像直接写进提示词（省一趟往返），工具模式下由模型来调。
+ *
+ * @param {object} state  脱敏快照
+ * @param {import('./memory.js').OpponentMemory|null} memory
+ * @returns {object[]} 没记忆或没样本时是空数组
+ */
+export function collectProfiles(state, memory) {
+  if (!memory) return [];
+  const seats = Array.isArray(state?.seats) ? state.seats : [];
+  const mySeat = state?.you?.seat;
+  const out = [];
+  for (const s of seats) {
+    if (!s || s.seat === mySeat) continue;
+    if (s.state !== 'in' && s.state !== 'allin') continue;
+    const p = memory.profile(s.name);
+    if (!p) continue;
+    // 这手牌他坐在哪一档，以及他在这一档的历史。没攒够样本就只有档名。
+    const here = positionOf(state, s.seat);
+    out.push({ ...p, here, hereStats: (here && p.byPos?.[here]) || null });
+  }
+  return out;
+}
 
 /**
  * 造这一次决策能用的工具集。
@@ -77,6 +94,8 @@ const RANGE_HINT = [
  * @param {number} [ctx.equityChunkMs]
  * @param {object} [ctx.trace]      调用记录会 push 进 trace.calls，用于日志与测试
  * @param {string[]} [ctx.exclude]  摘掉这些工具（消融用）。act 摘不掉
+ * @param {object[]} [ctx.rows]     已经算好的五档胜率表（table.js#equityTable），
+ *                                  用来预填备忘录，plan_bet 撞上同一档就不用再算
  * @returns {{tools:object, readAct:() => object|null}}
  */
 export function buildTools(ctx) {
@@ -93,6 +112,15 @@ export function buildTools(ctx) {
   // 「对他续注范围的胜率」，没有这个备忘录，模型每比一个尺度就要跑两次
   // 20000 局模拟。而模型比三个尺度是提示词教它的常规动作。
   const equityMemo = new Map();
+  // 提示词里那张五档表是同一份数据，先填进来
+  for (const r of Array.isArray(ctx.rows) ? ctx.rows : []) {
+    if (!r || !Number.isFinite(r.pct)) continue;
+    equityMemo.set(`${r.range >= 1 ? 'any' : r.range}|${r.opponents}`, Promise.resolve({
+      pct: r.pct, margin: r.margin, sims: r.sims, opponents: r.opponents,
+      truncated: !!r.truncated, range: r.range >= 1 ? null : r.range,
+      rangeExhausted: r.rangeExhausted || 0,
+    }));
+  }
   function equityFor(range, opponents) {
     // 对手数必须进键：estimate_equity 按真实人数算，plan_bet 固定按 1 个人跟算
     // （它的底池那边也是这么推的，两边必须同一个假设）。混用会算出假胜率。
@@ -186,18 +214,7 @@ export function buildTools(ctx) {
       inputSchema: z.object({}),
       execute: async () => {
         if (!memory) return { players: [], note: '没有开启对手记忆' };
-        const seats = Array.isArray(state?.seats) ? state.seats : [];
-        const mySeat = state?.you?.seat;
-        const out = [];
-        for (const s of seats) {
-          if (!s || s.seat === mySeat) continue;
-          if (s.state !== 'in' && s.state !== 'allin') continue;
-          const p = memory.profile(s.name);
-          if (!p) continue;
-          // 这手牌他坐在哪一档，以及他在这一档的历史。没攒够样本就只有档名。
-          const here = positionOf(state, s.seat);
-          out.push({ ...p, here, hereStats: (here && p.byPos?.[here]) || null });
-        }
+        const out = collectProfiles(state, memory);
         trace.calls.push({ tool: 'read_opponents', found: out.length });
         return {
           players: out,
@@ -427,6 +444,9 @@ export function buildTools(ctx) {
       inputSchema: z.object({
         action: z.enum(['fold', 'check', 'call', 'bet', 'raise', 'allin']),
         amount: z.number().optional().describe('只有 bet / raise 需要'),
+        assumed_range: z.number().optional().describe(
+          '你把对手读成了哪一档范围（0~1，比如 0.15）。只进日志，不影响动作；' +
+          '提示词里有胜率表时请填，这样能看出你是不是真的按表读的。'),
         say: z.string().optional().describe(
           '说给牌桌听的一句话，最多 20 字，可以不说。'
           + '**不许提你自己的牌**：底牌、牌型、听牌、胜率、是不是在诈唬，'

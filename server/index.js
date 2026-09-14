@@ -60,11 +60,18 @@ const MIME = {
 
 // 人机驱动：没配任何 LLM key 也能构造成功，只是所有人机退化成规则策略。
 //
-// POKER_AGENT=on 时在外面再套一层 agent（多轮工具调用：自己判断对手范围 ->
-// 按那个范围算胜率 -> 提交动作）。agent 那一路需要 ai / @ai-sdk 这几个包，
-// 所以用动态 import 引：**装不上就自动退回单轮**，牌桌本身仍然只依赖 ws。
+// 默认在外面套一层 agent（模型自己判断对手范围、读五档胜率表、按需算下注尺度，
+// 再提交动作），POKER_AGENT=off 才退回单轮。
+//
+// 以前默认是关的，理由是 agent 一次决策要 2~6 趟模型往返、token 是单轮的 3~4 倍，
+// 带思维链的模型还会撞上 30 秒的墙钟闸门。胜率表进提示词之后（见 bot/table.js），
+// 一次决策只剩 1~2 趟往返，这些理由都不成立了；而它比单轮多出来的东西 —— 模型
+// 自己挑对手范围、跨手牌的对手画像、下注尺度的算术 —— 正是人机打得好不好的关键。
+//
+// agent 那一路需要 ai / @ai-sdk 这几个包，所以用动态 import 引：
+// **装不上就自动退回单轮**，牌桌本身仍然只依赖 ws。
 let botDriver = new BotDriver();
-if (String(process.env.POKER_AGENT || '').toLowerCase() === 'on') {
+if (String(process.env.POKER_AGENT || 'on').toLowerCase() !== 'off') {
   try {
     const { PokerAgent } = await import('./agent/index.js');
     botDriver = new PokerAgent({ fallback: botDriver });

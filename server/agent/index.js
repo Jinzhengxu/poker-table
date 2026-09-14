@@ -28,9 +28,10 @@ import { generateText, stepCountIs, hasToolCall } from 'ai';
 import { BotDriver } from '../bot/index.js';
 import { buildUser, coerceAction, fallbackAction, sanitizeName } from '../bot/decide.js';
 import { isContentFilterError } from '../bot/provider.js';
+import { equityTable, classifyObvious, rangesForObvious } from '../bot/table.js';
 import { modelsFromEnv, buildModel } from './model.js';
 import { OpponentMemory } from './memory.js';
-import { buildTools } from './tools.js';
+import { buildTools, collectProfiles } from './tools.js';
 
 export { OpponentMemory } from './memory.js';
 export { randomPersona, PERSONA_NAMES, PERSONA_DIMENSIONS } from '../bot/persona.js';
@@ -52,18 +53,31 @@ const COOLDOWN_MS = 60_000;
  *
  * @param {object} persona {name, style}
  * @param {number} maxSteps
+ * @param {string[]|null} [toolNames]
+ * @param {object} [opts]
+ * @param {boolean} [opts.table] 提示词里已经有五档胜率表（和画像）。这时胜率不是
+ *                               工具而是现成的数，步骤要教它「读表」而不是「调工具」
  */
-export function buildAgentSystem(persona, maxSteps, toolNames = null) {
+export function buildAgentSystem(persona, maxSteps, toolNames = null, opts = {}) {
   // 有哪些工具就写哪些步骤。**提示词和工具集必须一致** —— 少了工具却还留着
   // "先调 plan_bet"，模型会去调一个不存在的东西，白烧一步；多了工具却不在
   // 提示词里提，它基本不会想起来用。做消融（摘掉某个工具看它值多少）时，
   // 这两边得一起动，所以这里按工具名生成步骤，不写死。
   const has = (n) => !toolNames || toolNames.includes(n);
+  const table = !!opts.table;
 
   const steps = [
     `先看行动序列。有人加注、而且是在后面的街加注，说明他范围很紧；
    翻牌前就一堆人跟注，说明大家范围都很宽。`,
   ];
+  if (table) {
+    steps.push(`胜率表已经按五档对手范围算好写在下面了。**你要做的判断是对手落在哪一档**：
+   同样一手 AK，对任意两张牌有 66% 胜率，对「只玩前 5%」的人只有 47%。
+   范围估错，读的那一行就是错的，跟注就是亏的。`);
+    steps.push(`结论在临界点上（相邻两档一档划算一档不划算）时，说明这个决定取决于
+   你对这个人的判断——按对手画像来定：入池率低的人范围窄，弃牌率高的人可以诈唬，
+   激进度高的人加注不一定有牌。`);
+  }
   if (has('read_opponents')) {
     steps.push('拿不准对手是什么人，就调 read_opponents 看画像。');
   }
@@ -82,7 +96,9 @@ export function buildAgentSystem(persona, maxSteps, toolNames = null) {
    拿不准下多大，就换两三个 amount 各调一次，挑 ev_chips 最大的那个。
    记住尺度越大他继续得越少，所以大注要配更紧的 continue_range。`);
   }
-  steps.push('想好了就调 act 提交。这是唯一的出口。');
+  steps.push(table
+    ? '想好了就调 act 提交，assumed_range 填你把对手读成了哪一档。这是唯一的出口。'
+    : '想好了就调 act 提交。这是唯一的出口。');
 
   return `你是德州扑克牌桌上的一名玩家，昵称「${sanitizeName(persona.name)}」。
 你的风格：${persona.style}
@@ -109,6 +125,11 @@ export class PokerAgent {
    * @param {number} [opts.maxThinkMs]    整次决策的墙钟上限，默认 20000
    * @param {number} [opts.minThinkMs]    最短「思考」时间，默认 900
    * @param {string[]} [opts.excludeTools] 摘掉这些工具（消融用），提示词会跟着变
+   * @param {boolean} [opts.table]        五档胜率表直接进提示词（默认开，POKER_AGENT_TABLE=off 关）。
+   *                                      开着时 estimate_equity / read_opponents 两个工具
+   *                                      从工具集里摘掉：它们的答案已经在提示词里了
+   * @param {boolean} [opts.obvious]      明显局面不问模型（默认跟 fallback 一致，
+   *                                      POKER_BOT_OBVIOUS=off 关）
    * @param {OpponentMemory} [opts.memory]
    * @param {object} [opts.logger]
    */
@@ -119,6 +140,16 @@ export class PokerAgent {
     this.models = opts.models || modelsFromEnv(env);
     this.memory = opts.memory || new OpponentMemory();
     this.logger = opts.logger || console;
+
+    // 五档胜率表进提示词，代替 estimate_equity / read_opponents 两趟往返。
+    // 这是这一版最大的延迟改动，理由见 bot/table.js 顶上：一格蒙特卡洛几十毫秒，
+    // 一趟模型往返几秒；原来让模型花往返去要一个几十毫秒就能算好的数。
+    this.table = opts.table !== undefined
+      ? !!opts.table
+      : String(env.POKER_AGENT_TABLE || 'on').toLowerCase() !== 'off';
+    // 明显局面（垃圾牌面对加注、对任意两张都跟不起价）直接走规则，0 趟往返。
+    // 默认跟兜底那层同一个开关，两层口径一致。
+    this.obvious = opts.obvious !== undefined ? !!opts.obvious : this.fallback.obvious !== false;
 
     // 步数上限。**能用来调工具的是 maxSteps - 1 次** —— 最后一步被 prepareStep
     // 锁成 act 了。6 步给出 5 次工具调用，够走完整的一条线：
@@ -154,6 +185,7 @@ export class PokerAgent {
 
     this.stats = {
       agent: 0,        // 走通 agent 循环的次数
+      obvious: 0,      // 明显局面，没问模型直接按规则出手的次数
       fallback: 0,     // 退回 BotDriver 的次数
       steps: 0,        // 累计步数
       toolCalls: 0,    // 累计工具调用次数
@@ -177,7 +209,10 @@ export class PokerAgent {
     const names = this.models
       .map((m) => `${m.label}(${m.model}${m.thinking === 'off' ? '，不思考' : ''})`)
       .join(' + ');
-    return `agent × ${names}，最多 ${this.maxSteps} 步`;
+    // 这两个开关直接决定一次决策要几趟往返，出了延迟问题第一眼要看的就是这里
+    return `agent × ${names}，最多 ${this.maxSteps} 步` +
+      `${this.table ? '，胜率表进提示词' : '，胜率走工具'}` +
+      `${this.obvious ? '，明显局面不问模型' : ''}`;
   }
 
   /**
@@ -228,6 +263,8 @@ export class PokerAgent {
       agent: {
         enabled: this.models.length > 0,
         maxSteps: this.maxSteps,
+        table: this.table,
+        obvious: this.obvious,
         memory: this.memory.size,
         stats: { ...this.stats },
       },
@@ -319,15 +356,63 @@ export class PokerAgent {
     const timeout = AbortSignal.timeout(this.maxThinkMs);
     const composed = signal ? AbortSignal.any([timeout, signal]) : timeout;
 
+    // 五档胜率表。先算它再决定要不要问模型：明显局面靠它判，问模型时它进提示词。
+    // 整张表 100~300ms，墙钟上限 equityMs，算不出来（被取消、没底牌）就退回
+    // 原来的工具模式，什么都不少。
+    let rows = null;
+    if (this.table && this.equitySims > 0) {
+      try {
+        rows = await equityTable({
+          state,
+          sims: this.equitySims,
+          budgetMs: this.equityMs,
+          chunkMs: this.equityChunkMs,
+          signal: composed,
+        });
+      } catch (e) {
+        this.logger.error(`[agent] 胜率表算失败，这次走工具模式：${e.message}`);
+        rows = null;
+      }
+    }
+
+    // 明显局面：不管把对手读成什么范围结论都一样，模型的判断力在这里没有用处，
+    // 等它几秒到二十几秒纯属浪费。规则见 bot/table.js#classifyObvious。
+    //
+    // 两个开关互相独立：表关着的时候，只补算判定用得上的那一两档（翻牌前一格都不用）。
+    if (this.obvious && !signal?.aborted) {
+      let obRows = rows;
+      if (!obRows && this.equitySims > 0) {
+        const ranges = rangesForObvious(state);
+        try {
+          obRows = ranges.length
+            ? await equityTable({ state, ranges, sims: this.equitySims, budgetMs: this.equityMs,
+                                  chunkMs: this.equityChunkMs, signal: composed })
+            : [];
+        } catch {
+          obRows = null;
+        }
+      }
+      const ob = obRows ? classifyObvious({ state, rows: obRows, traits: persona?.traits }) : null;
+      if (ob) {
+        this.stats.obvious++;
+        await this.#pace(started, signal);
+        // note 是「动作被修正了」的标记（题库拿它判 mustNotAdjust），理由另放 why
+        return { action: ob.action, say: null, source: 'obvious', note: null, why: ob.why, trace: [] };
+      }
+    }
+
     const trace = { calls: [] };
     const { tools, readAct, toolNames } = buildTools({
-      exclude: this.excludeTools,
+      // 表在提示词里了，要胜率、要画像的两个工具就没有存在的理由：
+      // 留着模型还会去调，一调就是一趟往返。
+      exclude: rows ? [...this.excludeTools, 'estimate_equity', 'read_opponents'] : this.excludeTools,
       state,
       memory: this.memory,
       signal: composed,
       equitySims: this.equitySims,
       equityMs: this.equityMs,
       equityChunkMs: this.equityChunkMs,
+      rows,
       trace,
     });
 
@@ -338,11 +423,15 @@ export class PokerAgent {
         // 关思维链的那个字段（如果这家支持、而且要求关了）。
         // openai-compatible 会把这里不认识的键原样摊进请求体，见 model.js。
         ...(model.providerOptions ? { providerOptions: model.providerOptions } : {}),
-        system: buildAgentSystem(persona, this.maxSteps, toolNames),
-        // 不再预先注入胜率——那是工具的活。forTools 换掉收尾那句话：
-        // 共用的 buildUser 默认要的是一个 JSON 对象，那是单轮那路的收尾方式，
-        // 和这里"只准调 act"的系统提示词直接打架。
-        prompt: buildUser(state, { forTools: true }),
+        system: buildAgentSystem(persona, this.maxSteps, toolNames, { table: !!rows }),
+        // 表模式：五档胜率和对手画像都写进提示词；工具模式：什么都不注入，那是工具的活。
+        // forTools 换掉收尾那句话：共用的 buildUser 默认要的是一个 JSON 对象，
+        // 那是单轮那路的收尾方式，和这里"只准调 act"的系统提示词直接打架。
+        prompt: buildUser(state, {
+          forTools: true,
+          table: rows || undefined,
+          profiles: rows ? collectProfiles(state, this.memory) : undefined,
+        }),
         tools,
         stopWhen: [hasToolCall('act'), stepCountIs(this.maxSteps)],
         abortSignal: composed,
@@ -406,6 +495,12 @@ export class PokerAgent {
     if (!raw) {
       this.logger.error(`[agent] ${persona.name} 没有提交动作，退回单轮`);
       return this.#viaFallback(state, persona, signal, started);
+    }
+    // 表模式下它把对手读成了哪一档。进 trace 是为了题库能继续做「成对题的范围
+    // 方向对不对」那项检查 —— 原来这个数来自 estimate_equity 的参数，现在没有那个工具了。
+    const assumed = Number(raw.assumed_range);
+    if (rows && Number.isFinite(assumed)) {
+      trace.calls.push({ tool: 'read_range', range: Math.max(0.02, Math.min(1, assumed)) });
     }
 
     // 最后一道关，和旧版是同一个函数：到这里为止都不相信模型输出。

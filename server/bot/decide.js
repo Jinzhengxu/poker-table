@@ -20,6 +20,7 @@
 //      cleanSay()，命中就把整句话丢掉。两头都得留着。
 
 import { decideByRule, clamp } from './policy.js';
+import { RANGE_HINT, rangeLabel } from './table.js';
 
 /** 引擎认识的动作类型 */
 const ACTION_TYPES = new Set(['fold', 'check', 'call', 'bet', 'raise', 'allin']);
@@ -132,13 +133,18 @@ export function buildSystem(persona) {
  *
  * @param {object} state  Room#buildStateFor(botPlayerId) 的返回值
  * @param {object} [opts]
- * @param {object} [opts.equity]   胜率估算，写进提示词（agent 那路不传，那是工具的活）
+ * @param {object} [opts.equity]   胜率估算，写进提示词（单轮那路：一个数，按推断范围算的）
+ * @param {object[]} [opts.table]  五档胜率表（table.js#equityTable 的输出）。agent 那路用：
+ *                                 模型自己判断对手在哪一档，读那一行。和 equity 二选一
+ * @param {object[]} [opts.profiles] 对手画像（agent/tools.js#collectProfiles 的输出）。
+ *                                 给了就写进提示词，模型不用再花一趟往返去读
  * @param {boolean} [opts.forTools] true = 收尾改成"调 act 提交"，给 agent 那路用
  * @returns {string}
  */
 export function buildUser(state, opts = {}) {
   const { table, seats, you, config } = state;
   const equity = opts.equity || null;
+  const rows = Array.isArray(opts.table) && opts.table.length ? opts.table : null;
   const forTools = !!opts.forTools;
   const legal = you.legal;
   const mySeat = you.seat;
@@ -187,6 +193,26 @@ export function buildUser(state, opts = {}) {
       );
     }
   }
+
+  // 五档胜率表（agent 那路）。原来这是一个工具，模型想按哪个范围算就调一次，
+  // 每调一次就是一整趟模型往返（2~8 秒）；而一格蒙特卡洛只要几十毫秒。
+  // 所以改成轮到它时把五档全算好写在这里，它只需要判断对手在哪一档。
+  if (rows) {
+    const n = rows[0].opponents;
+    const sims = Math.min(...rows.map((r) => r.sims));
+    const margin = Math.max(...rows.map((r) => r.margin));
+    lines.push(
+      `你的胜率（蒙特卡洛，对 ${n} 个对手，每档约 ${sims} 次模拟，误差约 ±${margin}）` +
+      '—— 按对手范围有多紧分五档，**你自己判断他在哪一档，读那一行**：'
+    );
+    // 从松到紧写：先看「不做假设」是多少，再看收紧之后掉多少
+    for (const r of [...rows].sort((a, b) => b.range - a.range)) {
+      const warn = r.rangeExhausted > r.sims * 0.1 ? '（范围窄到采不出样，打问号）' : '';
+      lines.push(`  对手${rangeLabel(r.range)}：${r.pct}%${warn}`);
+    }
+    lines.push(`  档位参考：${RANGE_HINT}。`);
+    lines.push('  判断依据是本手的行动序列和对手画像：加注越多、街数越靠后，范围越紧。');
+  }
   lines.push('');
 
   lines.push('牌桌上的其他人：');
@@ -201,6 +227,19 @@ export function buildUser(state, opts = {}) {
     );
   }
   lines.push('');
+
+  // 对手画像（agent 那路）。原来是 read_opponents 工具，理由是大部分决策用不上，
+  // 省 token；但用得上的那次要多花一整趟往返，比省下的 token 贵得多。
+  // 现在直接写进来，几百个 token 换掉一趟 2~8 秒的往返。
+  if (Array.isArray(opts.profiles)) {
+    if (opts.profiles.length) {
+      lines.push('对手画像（跨手牌统计，只列还在牌里、样本够的人；样本少的自己打折看）：');
+      for (const p of opts.profiles) lines.push(`- ${renderProfile(p)}`);
+    } else {
+      lines.push('对手画像：这些对手都还没打够手数，没有可靠画像——按默认假设打。');
+    }
+    lines.push('');
+  }
 
   // 本手行动序列：让模型能看出对手这一手打得凶不凶，
   // 而不是只知道他最近一个动作。
@@ -246,6 +285,8 @@ export function buildUser(state, opts = {}) {
         : edge < -equity.margin ? '按上面的胜率，这个跟注不划算'
         : '这是个临界决定，胜率误差范围盖过了差距，得靠你对对手的判断';
       line += `（${verdict}）`;
+    } else if (rows) {
+      line += `（${tableVerdict(rows, need)}）`;
     }
     lines.push(line);
   }
@@ -262,6 +303,59 @@ export function buildUser(state, opts = {}) {
     : '轮到你了，输出你的决定（json）。');
 
   return lines.join('\n');
+}
+
+/**
+ * 五档表对着底池赔率的结论。模型算数不可靠，这一步替它做：
+ * 要么五档一致（结论不取决于范围），要么给出翻转点在哪一档。
+ *
+ * @param {Array<{range:number,pct:number,margin:number}>} rows 从紧到松
+ * @param {number} need 跟注需要的胜率（百分比）
+ */
+function tableVerdict(rows, need) {
+  const ok = rows.filter((r) => r.pct - need > r.margin);
+  const bad = rows.filter((r) => need - r.pct > r.margin);
+  if (ok.length === rows.length) return '按上表，不管把他读成哪一档，这个跟注都划算';
+  if (bad.length === rows.length) return '按上表，不管把他读成哪一档，这个跟注都不划算';
+  if (!ok.length || !bad.length) return '按上表，这是个临界决定，得靠你对对手的判断';
+  // rows 从紧到松：划算的在松的那头，不划算的在紧的那头
+  const tightestOk = ok[0];
+  const loosestBad = bad[bad.length - 1];
+  return `按上表，把他读成${rangeLabel(tightestOk.range)}或更松才划算，` +
+    `读成${rangeLabel(loosestBad.range)}或更紧就不划算——这个决定取决于你对他范围的判断`;
+}
+
+const POS_CN = { early: '前位', middle: '中位', late: '庄位附近', blinds: '盲位' };
+
+/** 一个对手画像压成一行。输入是 memory.js#profile 加上 here / hereStats */
+function renderProfile(p) {
+  const pct = (v) => (v === null || v === undefined ? '—' : `${v}%`);
+  const parts = [
+    `${p.hands} 手`,
+    `入池 ${pct(p.vpip)}`,
+    `翻前加注 ${pct(p.pfr)}`,
+    `翻后激进度 ${p.af === null || p.af === undefined ? '—' : p.af}`,
+    `面对下注弃牌 ${pct(p.foldToBet)}`,
+  ];
+  let line = `${sanitizeName(p.name)}：${parts.join('，')}`;
+  if (p.here) {
+    line += `；本手在${POS_CN[p.here] || p.here}`;
+    if (p.hereStats) {
+      line += `，他在这一档 ${p.hereStats.hands} 手：入池 ${pct(p.hereStats.vpip)}，加注 ${pct(p.hereStats.pfr)}`;
+    }
+  }
+  if (Array.isArray(p.shown) && p.shown.length) {
+    const shows = p.shown.map((s) => {
+      const cards = String(s.hand || '').split(' ').map(prettyCard).join('');
+      const tags = [];
+      if (s.handName) tags.push(s.handName);
+      tags.push(s.won ? '赢' : '输');
+      if (s.wasAggressor) tags.push(`${PHASE_CN[s.wasAggressor] || s.wasAggressor}开火`);
+      return `${cards}（${tags.join('，')}）`;
+    });
+    line += `；最近摊牌：${shows.join('、')}`;
+  }
+  return line;
 }
 
 /**

@@ -12,6 +12,7 @@ import { clientsFromEnv, isRetryable, LLMClient, PROVIDERS } from './provider.js
 import { buildSystem, buildUser, coerceAction, fallbackAction } from './decide.js';
 import { estimateEquityAsync, countLiveOpponents } from './equity.js';
 import { inferOpponentRange } from './range.js';
+import { equityTable, classifyObvious, rangesForObvious } from './table.js';
 
 // 人格改成随机组合生成，见 persona.js。每个人机在加入时抽一次，
 // 之后整个生命周期不变（所以它的打法是一致的，不会一手紧一手松）。
@@ -32,6 +33,7 @@ export class BotDriver {
    * @param {number} [opts.minThinkMs] 最短"思考"时间，让人机不至于秒回，默认 900
    * @param {number} [opts.maxThinkMs] 最长等待，超过就用兜底，默认 9000
    * @param {number} [opts.maxTokens]  单轮回答的 token 上限，默认 1024（要装得下思维链）
+   * @param {boolean} [opts.obvious]   明显局面不问模型（默认开；POKER_BOT_OBVIOUS=off 关）
    * @param {object} [opts.logger]
    */
   constructor(opts = {}) {
@@ -40,6 +42,13 @@ export class BotDriver {
     this.clients = opts.clients || clientsFromEnv(env);
     this.minThinkMs = opts.minThinkMs ?? 900;
     this.maxThinkMs = opts.maxThinkMs ?? 9000;
+
+    // 明显局面（翻牌前垃圾牌面对加注、翻牌后对任意两张都跟不起价）直接按规则弃，
+    // 不打模型。一趟带思维链的调用 5~8 秒，而这类决策不管把对手读成什么结论都一样。
+    // 规则和余量见 table.js#classifyObvious。
+    this.obvious = opts.obvious !== undefined
+      ? !!opts.obvious
+      : String(env.POKER_BOT_OBVIOUS || 'on').toLowerCase() !== 'off';
     // 单轮回答的 token 上限。见 decide() 里那段：这个数要装得下「思维链 + 动作 JSON」。
     // 4096 是量出来的：deepseek-v4-flash 在题库那 20 个局面上，思维链用掉
     // 572 ~ 3372 个 token，而动作 JSON 本身只有二十来个。
@@ -76,7 +85,7 @@ export class BotDriver {
     for (const c of this.clients) this.health.set(c, { fails: 0, until: 0 });
 
     /** 简单统计，运维时能看出人机到底在走 LLM 还是兜底 */
-    this.stats = { llm: 0, rule: 0, adjusted: 0, sayDropped: 0, errors: 0 };
+    this.stats = { llm: 0, rule: 0, obvious: 0, adjusted: 0, sayDropped: 0, errors: 0 };
   }
 
   /** 有没有可用的 LLM（没有就是纯规则人机，也能玩） */
@@ -91,7 +100,7 @@ export class BotDriver {
     // 而这三样出问题的时候，第一眼要看的就是启动日志这一行。
     return this.clients
       .map((c) => `${c.label}(${c.model}${c.thinking === 'off' ? '，不思考' : ''})`)
-      .join(' + ');
+      .join(' + ') + (this.obvious ? '，明显局面不问模型' : '');
   }
 
   /**
@@ -169,6 +178,7 @@ export class BotDriver {
     const now = Date.now();
     return {
       hasLLM: this.hasLLM,
+      obvious: this.obvious,
       providers: this.clients.map((c) => ({
         provider: c.provider,
         label: c.label,
@@ -229,6 +239,33 @@ export class BotDriver {
     }
   }
 
+  /**
+   * 明显局面判定。任何异常都吞掉返回 null —— 判不出来就照常问模型，
+   * 绝不能因为这个加速层让人机卡住或出错。
+   *
+   * 只算判定用得上的那一两档（翻牌前一格都不用算），不算整张五档表。
+   */
+  async #obvious(state, persona, signal) {
+    try {
+      const ranges = rangesForObvious(state);
+      let rows = [];
+      if (ranges.length && this.equitySims > 0) {
+        rows = await equityTable({
+          state, ranges,
+          sims: this.equitySims,
+          budgetMs: this.equityMs,
+          chunkMs: this.equityChunkMs,
+          signal,
+        });
+        if (!rows) return null;                       // 被取消或算不了，交给正常路径
+      }
+      return classifyObvious({ state, rows, traits: persona?.traits });
+    } catch (e) {
+      this.logger.error(`[bot] 明显局面判定失败，照常问模型：${e.message}`);
+      return null;
+    }
+  }
+
   /** 挑一个当前没在冷却里的客户端；全在冷却就返回 null */
   #pick(seed) {
     if (!this.clients.length) return null;
@@ -269,6 +306,19 @@ export class BotDriver {
     const seat = state?.you?.seat ?? 0;
     const handNo = state?.table?.handNo ?? 0;
     const seed = handNo * 8 + seat;
+
+    // 明显局面先判：需要的那一两档胜率几十毫秒就算完，判成明显就不打模型了。
+    // 只有真人机（配了 LLM）才值得判 —— 纯规则人机本来就不花时间。
+    if (this.obvious && this.hasLLM && state?.you?.legal) {
+      const ob = await this.#obvious(state, persona, signal);
+      if (ob) {
+        this.stats.obvious++;
+        const elapsed = Date.now() - started;
+        if (elapsed < this.minThinkMs) await sleep(this.minThinkMs - elapsed, signal);
+        // note 是「动作被修正了」的标记，理由另放 why
+        return { action: ob.action, say: null, source: 'obvious', note: null, why: ob.why };
+      }
+    }
 
     // 先算胜率：LLM 和规则兜底都要用，同一次决策只算一次。
     // 分片计算，中途会让出事件循环，所以别人的动作照常被处理。
