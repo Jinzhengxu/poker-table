@@ -18,6 +18,19 @@ const MAX_CHAT = 50;
 /** 断线玩家保留座位的时长：超过之后自动站起，避免死人占座 */
 const DISCONNECT_GRACE_MS = 15 * 60 * 1000;
 
+/** 真人连续几手一个动作都没做（全靠超时代打）就自动坐出：人多半已经不在了 */
+const IDLE_HANDS_TO_SIT_OUT = 2;
+
+/**
+ * 网页开着、但多久没人碰过，就不再算「有人在看」。
+ *
+ * 连接还在不等于人还在：手机锁屏、切到别的 App、电脑上切去别的标签页，
+ * 浏览器都会把 WebSocket 留着，心跳 ping/pong 是浏览器网络层自己应答的，
+ * 不需要页面活着。所以判断有没有观众不能只看连接数，还要看前端汇报的
+ * 页面可见性和最近一次用户操作的时间（见 presence()）。
+ */
+const AUDIENCE_IDLE_MS = 10 * 60 * 1000;
+
 /** 头像底色调色板（深色系，配白色文字） */
 const AVATAR_BG = [
   '#b91c1c', '#c2410c', '#b45309', '#4d7c0f',
@@ -86,10 +99,12 @@ export class Room {
    * @param {object} [opts]
    * @param {object} [opts.config] 覆盖 DEFAULT_CONFIG 的初始配置
    * @param {import('./bot/index.js').BotDriver} [opts.botDriver] 人机驱动，不传则不能加人机
+   * @param {number} [opts.audienceIdleMs] 多久没人操作就当没人在看（测试用，默认 10 分钟）
    */
   constructor(opts = {}) {
     /** @type {typeof DEFAULT_CONFIG} */
     this.config = { ...DEFAULT_CONFIG, ...(opts.config || {}) };
+    this.audienceIdleMs = Number.isFinite(opts.audienceIdleMs) ? opts.audienceIdleMs : AUDIENCE_IDLE_MS;
 
     /** @type {import('./bot/index.js').BotDriver|null} */
     this.botDriver = opts.botDriver || null;
@@ -144,7 +159,27 @@ export class Room {
   /** 新连接接入（此时还没有身份，等 hello） */
   attach(client) {
     client.playerId = null;
+    // 页面可见性与最近一次操作时间，由 index.js 在收到消息时维护；
+    // 没汇报过的连接（旧版前端、测试桩）按「看得见、刚操作过」处理。
+    if (client.visible === undefined) client.visible = true;
+    if (!Number.isFinite(client.lastInput)) client.lastInput = Date.now();
     this.clients.add(client);
+  }
+
+  /**
+   * 前端汇报页面状态：标签页在不在前台（visible）、用户刚才有没有动（active）。
+   * 回到前台就顺手看看能不能续上被暂停的牌局。
+   */
+  presence(client, visible, active) {
+    client.visible = !!visible;
+    if (active) client.lastInput = Date.now();
+    if (client.visible) {
+      // 真的续上了才广播（把「牌桌先歇着」换成倒计时）；切个标签页不值得刷全桌
+      const before = this.nextHandTimer;
+      this.#maybeAutoStart();
+      if (this.nextHandTimer !== before) this.broadcast();
+    }
+    return { ok: true };
   }
 
   /** 连接断开：保留座位与筹码，只把 connected 置 false */
@@ -214,6 +249,9 @@ export class Room {
       sittingOut: false,
       isHost: false,
       dropTimer: null,
+      /** 连续几手全靠超时代打（见 #noteTimeout） */
+      idleHands: 0,
+      idleHandNo: 0,
     };
     this.players.set(id, p);
     this.tokens.set(token, id);
@@ -287,6 +325,7 @@ export class Room {
     p.chips = this.config.startingStack;
     p.sittingOut = false;
     p.connected = true;
+    p.idleHands = 0;
     this.seats[s] = p.id;
     this.#ensureHost();
     this.#pushLog(`${p.name} 坐到 ${s + 1} 号座位`);
@@ -379,7 +418,10 @@ export class Room {
     if (p.sittingOut !== v) {
       p.sittingOut = v;
       this.#pushLog(`${p.name} ${v ? '暂时离开' : '回到牌局'}`);
-      if (!v) this.#maybeAutoStart();
+      if (!v) {
+        p.idleHands = 0;
+        this.#maybeAutoStart();
+      }
     }
     this.broadcast();
     return { ok: true };
@@ -851,14 +893,20 @@ export class Room {
     return !!this.hand && !this.hand.isComplete;
   }
 
-  /** 有筹码且未坐出的在座玩家（下一手的参与者），按座位号排序 */
+  /**
+   * 有筹码、未坐出、且连着的在座玩家（下一手的参与者），按座位号排序。
+   *
+   * 掉线的人不发牌：座位和筹码在保护期内照样留着，但没必要每手都发给他、
+   * 等他超时弃牌——其他人白等，他白交盲注，人机还要为一个不存在的对手多想几轮。
+   * 他连回来（hello）就自动回到下一手。
+   */
   #eligiblePlayers() {
     const out = [];
     for (let s = 0; s < MAX_SEATS; s++) {
       const id = this.seats[s];
       if (!id) continue;
       const p = this.players.get(id);
-      if (p && p.chips > 0 && !p.sittingOut) out.push(p);
+      if (p && p.chips > 0 && !p.sittingOut && p.connected) out.push(p);
     }
     return out;
   }
@@ -964,6 +1012,7 @@ export class Room {
     if (!res || res.ok !== true) {
       return { ok: false, code: 'ILLEGAL_ACTION', msg: (res && res.error) || '这个动作不合法' };
     }
+    p.idleHands = 0;
     this.#pump();
     return { ok: true };
   }
@@ -1072,14 +1121,30 @@ export class Room {
   }
 
   /**
-   * 牌桌前面还有没有人。
+   * 牌桌前面还有没有人在看。
    *
    * 人机没有连接，所以 clients 里全是真人（在座的或纯观战的）。
-   * 一个连接都没有 = 没有任何人在看，这时候还继续自动开局的话，
-   * 一桌人机会自己打到进程重启为止——接了 LLM 就是持续烧钱。
+   * 没人看还继续自动开局的话，一桌人机会自己打到进程重启为止——接了 LLM 就是持续烧钱。
+   *
+   * 「在看」要同时满足：连接还在、页面在前台、AUDIENCE_IDLE_MS 内碰过页面。
+   * 光有连接不够——关掉浏览器连接会断，但锁屏、切 App、切标签页都不会断，
+   * 而那三种情况恰恰是「人走了、桌子还在烧钱」的常态。
+   *
+   * @returns {null|'nobody'|'idle'} null 表示有人在看；否则给出暂停原因（快照里下发给前端）
    */
+  #pauseReason() {
+    const now = Date.now();
+    let anyoneVisible = false;
+    for (const c of this.clients) {
+      if (c.visible === false) continue;
+      anyoneVisible = true;
+      if (now - (c.lastInput || 0) <= this.audienceIdleMs) return null;
+    }
+    return anyoneVisible ? 'idle' : 'nobody';
+  }
+
   #hasAudience() {
-    return this.clients.size > 0;
+    return this.#pauseReason() === null;
   }
 
   #scheduleNextHand() {
@@ -1166,7 +1231,25 @@ export class Room {
     } catch (e) {
       console.error('[room] 超时动作抛错', e);
     }
+    const owner = this.players.get(this.handSeatOwners.get(seat));
+    if (owner && !owner.bot) this.#noteTimeout(owner, handNo);
     this.#pump();
+  }
+
+  /**
+   * 真人一手牌里全靠超时代打，记一次；连续 IDLE_HANDS_TO_SIT_OUT 手就自动坐出。
+   * 人机不算——它超时是模型慢，不是人不在。
+   * 同一手里超时几次（大盲一路过牌到河）只算一手；他主动做任何动作都会清零。
+   */
+  #noteTimeout(p, handNo) {
+    if (p.idleHandNo === handNo) return;
+    p.idleHandNo = handNo;
+    p.idleHands = (p.idleHands || 0) + 1;
+    if (p.idleHands >= IDLE_HANDS_TO_SIT_OUT && !p.sittingOut) {
+      p.sittingOut = true;
+      p.idleHands = 0;
+      this.#pushLog(`${p.name} 连续 ${IDLE_HANDS_TO_SIT_OUT} 手没有操作，已自动坐出`);
+    }
   }
 
   // ==================== 日志 / 广播 ====================
@@ -1246,7 +1329,8 @@ export class Room {
         if (hp.folded) state = SEAT_STATE.FOLDED;
         else if (hp.allIn) state = SEAT_STATE.ALLIN;
         else state = SEAT_STATE.IN;
-      } else if (p.sittingOut) {
+      } else if (p.sittingOut || !p.connected) {
+        // 掉线的人下一手不发牌（见 #eligiblePlayers），桌面上也照坐出画
         state = SEAT_STATE.SITTING_OUT;
       } else {
         state = SEAT_STATE.SITTING;
@@ -1338,6 +1422,7 @@ export class Room {
 
     let seatedCount = 0;
     for (const id of this.seats) if (id) seatedCount++;
+    const canStart = !live && this.#eligiblePlayers().length >= 2;
 
     const table = {
       phase: this.phase,
@@ -1358,7 +1443,10 @@ export class Room {
       history: this.#actionHistory(),
       actionDeadline: live ? this.actionDeadline : null,
       nextHandAt: this.nextHandAt,
-      canStart: !live && this.#eligiblePlayers().length >= 2,
+      canStart,
+      // 人够了、本该自动开下一手却没开：告诉前端是因为没人在看（'nobody'）
+      // 还是太久没人碰页面（'idle'）。有人动一下就会续上。
+      paused: (canStart && this.config.autoNextHand && !this.nextHandTimer) ? this.#pauseReason() : null,
       seatedCount,
     };
 

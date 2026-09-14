@@ -894,6 +894,7 @@
       S.botPushed = false;
       send({ t: 'hello', token: lsGet(LS_TOKEN) || null });
       startPing();
+      sendPresence(true);
     };
 
     ws.onmessage = function (ev) {
@@ -940,6 +941,23 @@
   }
   function stopPing() {
     if (S.pingTimer) { clearInterval(S.pingTimer); S.pingTimer = null; }
+  }
+
+  // ---- 在场汇报 ----
+  // 连接还在不等于人还在：锁屏、切 App、切标签页都不会断开 WebSocket，
+  // 服务端要是只看连接数，一桌人机就会对着一个没人看的页面一直打下去（烧 token）。
+  // 所以把「页面在不在前台」和「用户刚碰过页面」汇报给服务端；
+  // 后者节流到 30 秒一次，光是看着不动的观众也不会刷屏。
+  var lastActivitySent = 0;
+  function sendPresence(active) {
+    var visible = document.visibilityState !== 'hidden';
+    if (active) lastActivitySent = Date.now();
+    send({ t: 'presence', visible: visible, active: !!(active && visible) });
+  }
+  function noteActivity() {
+    if (document.visibilityState === 'hidden') return;
+    if (Date.now() - lastActivitySent < 30000) return;
+    sendPresence(true);
   }
 
   function showFatal(title, text) {
@@ -1777,7 +1795,7 @@
       if (table.canStart) statusText = you.isHost ? '人数够了，可以开始' : '等待房主开始';
       else statusText = '等待更多玩家入座（至少 2 人）';
     } else if (you.sittingOut) {
-      statusText = '你暂时离开了，下一手不参与';
+      statusText = '你暂时离开了，下一手不参与 · 点「回到牌桌」继续';
     } else {
       statusText = '牌局进行中';
     }
@@ -2411,7 +2429,7 @@
         }
       }
 
-      // 下一手倒计时
+      // 下一手倒计时；没倒计时但服务端说暂停了，就把原因摆在同一个位置
       var nh = Number(table.nextHandAt) || 0;
       if (nh > 0) {
         var leftN = Math.max(0, Math.ceil((nh - now) / 1000));
@@ -2419,6 +2437,14 @@
           lastNextSec = leftN;
           D.nextHandTip.hidden = false;
           D.nextHandTip.textContent = leftN + ' 秒后开始下一手';
+        }
+      } else if (table.paused) {
+        if (lastNextSec !== -2) {
+          lastNextSec = -2;
+          D.nextHandTip.hidden = false;
+          D.nextHandTip.textContent = table.paused === 'idle'
+            ? '太久没人操作，牌桌先歇着 · 动一下就继续'
+            : '没人在看，牌桌先歇着';
         }
       } else if (!D.nextHandTip.hidden) {
         D.nextHandTip.hidden = true;
@@ -2719,12 +2745,23 @@
       try { new window.ResizeObserver(layout).observe(D.tableWrap); } catch (e) { /* 忽略 */ }
     }
 
-    // 回到前台立刻重连
+    // 回到前台立刻重连；前后台切换都汇报给服务端（切回来算一次操作）
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'visible' && !S.ws && !S.fatal) {
+      var visible = document.visibilityState === 'visible';
+      if (visible && !S.ws && !S.fatal) {
         S.backoff = 500;
-        connect();
+        connect();   // onopen 里会汇报 presence
+        return;
       }
+      sendPresence(visible);
+    });
+    // 页面被关掉 / 切走时尽量补一句「我不在了」；连接真断了服务端也会自己发现
+    window.addEventListener('pagehide', function () {
+      send({ t: 'presence', visible: false, active: false });
+    });
+    // 用户碰页面就说明人在（点、按键、滚动），节流后汇报
+    ['pointerdown', 'keydown', 'touchstart', 'wheel'].forEach(function (evt) {
+      document.addEventListener(evt, noteActivity, { passive: true });
     });
 
     // 首次交互解锁音频。浏览器的自动播放策略要求必须有用户手势，

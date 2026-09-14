@@ -278,6 +278,8 @@ const ACTION_TYPES = new Set(['fold', 'check', 'call', 'bet', 'raise', 'allin'])
 
 /** 走"语音大桶"的消息类型（见上面的限流说明） */
 const VOICE_TYPES = new Set(['voiceJoin', 'voiceLeave', 'voiceMute', 'voiceSignal']);
+/** 不算「人在操作」的消息：定时心跳、页面状态汇报、WebRTC 信令都是脚本自己发的 */
+const PASSIVE_TYPES = new Set(['ping', 'presence', ...VOICE_TYPES]);
 
 /** playerId 的形状，room.js 里是 'p_' + 6 位十六进制 */
 const PLAYER_ID_RE = /^[pb]_[0-9a-f]{6}$/;
@@ -369,6 +371,10 @@ function attachConnection(ws, targetRoom, dispatch, tag) {
     ws,
     playerId: null,
     lastSeen: Date.now(),
+    // 页面在不在前台、最近一次用户操作——房间靠这两个判断「有没有人在看」，
+    // 决定一桌人机该不该继续开下一手（见 room.js #pauseReason）
+    visible: true,
+    lastInput: Date.now(),
     rateStart: Date.now(),
     rateCount: 0,
     gameCount: 0,
@@ -436,6 +442,9 @@ function attachConnection(ws, targetRoom, dispatch, tag) {
       return;
     }
 
+    // 除了脚本自动发的那几种，收到任何消息都说明有人在操作页面
+    if (!PASSIVE_TYPES.has(msg.t)) client.lastInput = now;
+
     // 限流第二道：牌桌动作仍然守着每秒 20 条这条线，语音信令不算在内
     if (!VOICE_TYPES.has(msg.t)) {
       client.gameCount = (client.gameCount || 0) + 1;
@@ -488,6 +497,9 @@ function handleMessage(client, msg, fail) {
       client.send({ t: 'pong' });
       return;
     }
+    case 'presence':
+      // visible：标签页在不在前台；active：用户刚才碰过页面
+      return reply(client, room.presence(client, !!msg.visible, !!msg.active));
     case 'sit': {
       if (!validSeat(msg.seat)) return fail('ILLEGAL_ACTION', '座位号不合法');
       const name = normalizeName(msg.name);

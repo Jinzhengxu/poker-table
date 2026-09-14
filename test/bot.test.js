@@ -1321,6 +1321,172 @@ test('有人连回来后自动恢复开局', async () => {
   room.shutdown();
 });
 
+// ==================== 人还在不在看：页面可见性与空闲 ====================
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 等当前这手打完（人机 minThinkMs 为 0，一手很快） */
+async function settleHand(room, timeoutMs = 2000) {
+  const t0 = Date.now();
+  while (room.hand && !room.hand.isComplete) {
+    if (Date.now() - t0 > timeoutMs) throw new Error('等手牌结束超时');
+    await sleep(5);
+  }
+}
+
+test('标签页切到后台就不算有人在看：人机停牌，切回来自动续上', async () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({
+    botDriver: d,
+    config: { autoNextHand: true, autoNextHandMs: 10, actionTimeoutMs: 60000 },
+  });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  room.sitOut(host, true);                 // 自己坐出，看人机打
+  room.addBot(host, 1);
+  room.addBot(host, 2);
+  await sleep(200);
+  assert.ok(room.handNo > 0, '有人看着，人机应该在打');
+
+  // 锁屏 / 切 App：连接还在（clients 里还有他），但页面不可见
+  room.presence(host, false, false);
+  assert.equal(room.clients.size, 1);
+  await settleHand(room);
+  const frozen = room.handNo;
+  const decisions = d.stats.rule + d.stats.llm;
+  await sleep(300);
+  assert.equal(room.handNo, frozen, '页面在后台时不该再开新手牌');
+  assert.equal(d.stats.rule + d.stats.llm, decisions, '页面在后台时不该再调用人机');
+  assert.equal(room.buildStateFor(null).table.paused, 'nobody');
+
+  room.presence(host, true, true);         // 切回前台
+  await sleep(300);
+  assert.ok(room.handNo > frozen, '切回前台后应该自动续上');
+  room.shutdown();
+});
+
+test('页面开着但太久没人碰：人机停牌，动一下就续上', async () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({
+    botDriver: d,
+    audienceIdleMs: 80,
+    config: { autoNextHand: true, autoNextHandMs: 10, actionTimeoutMs: 60000 },
+  });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  room.sitOut(host, true);
+  room.addBot(host, 1);
+  room.addBot(host, 2);
+
+  await sleep(400);                        // 80ms 后就算空闲，进行中的那手打完即停
+  await settleHand(room);
+  const frozen = room.handNo;
+  assert.ok(frozen > 0, '刚开始那会儿人机应该打过几手');
+  await sleep(300);
+  assert.equal(room.handNo, frozen, '没人碰页面之后不该再开新手牌');
+  assert.equal(room.buildStateFor(null).table.paused, 'idle');
+
+  room.presence(host, true, true);         // 用户动了一下
+  assert.equal(room.buildStateFor(null).table.paused, null, '有人操作就立刻安排下一手');
+  await sleep(200);
+  assert.ok(room.handNo > frozen, '有人操作后应该自动续上');
+  room.shutdown();
+});
+
+test('掉线的人下一手不发牌：座位留着，连回来自动归队', () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: d, config: { autoNextHand: false, actionTimeoutMs: 60000 } });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  const guest = stubClient(); room.attach(guest); room.hello(guest, null); room.sit(guest, 1, '客人');
+  const guestId = room.seats[1];
+  const token = guest.sent.find((m) => m.t === 'welcome').token;
+
+  room.detach(guest);                      // 关浏览器，没点离开
+  assert.equal(room.seats[1], guestId, '保护期内座位还在');
+  let snap = room.buildStateFor(room.seats[0]);
+  assert.equal(snap.table.canStart, false, '只剩一个连着的人，开不了局');
+  assert.equal(snap.seats[1].state, 'sittingOut', '掉线的人画成坐出');
+  assert.equal(snap.seats[1].connected, false);
+
+  room.addBot(host, 2);
+  assert.equal(room.startHand().ok, true, '房主和人机两个人够开');
+  assert.equal(room.hand.players.has(1), false, '掉线的客人不在这手牌里');
+  assert.equal(room.hand.players.has(0) && room.hand.players.has(2), true);
+  room.hand.forceFold(2);                  // 让这手快点结束
+  assert.equal(room.hand.isComplete, true);
+
+  const back = stubClient(); room.attach(back); room.hello(back, token);
+  assert.equal(room.seats[1], guestId);
+  snap = room.buildStateFor(guestId);
+  assert.equal(snap.seats[1].state, 'sitting', '连回来就恢复正常');
+  assert.equal(room.startHand().ok, true);
+  assert.equal(room.hand.players.has(1), true, '连回来的客人下一手就发牌');
+  room.shutdown();
+});
+
+test('真人连续两手没操作就自动坐出，人机不用陪一个空座位打下去', async () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({
+    botDriver: d,
+    config: { autoNextHand: true, autoNextHandMs: 10, actionTimeoutMs: 30 },
+  });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  room.addBot(host, 1);
+  room.addBot(host, 2);
+  const me = room.players.get(room.seats[0]);
+
+  const t0 = Date.now();
+  while (!me.sittingOut) {
+    if (Date.now() - t0 > 3000) throw new Error('等了 3 秒还没被自动坐出');
+    await sleep(10);
+  }
+  assert.ok(room.log.some((l) => l.text.includes('自动坐出')), '日志里要说清楚是自动坐出');
+  assert.equal(me.idleHands, 0, '坐出后计数归零');
+
+  // 回来一按「回到牌桌」，下一手照常发牌
+  assert.equal(room.sitOut(host, false).ok, true);
+  assert.equal(me.sittingOut, false);
+  room.shutdown();
+});
+
+test('真人自己动过手，超时计数就清零', async () => {
+  const d = new BotDriver({ clients: [], minThinkMs: 0, logger: { error() {} } });
+  const room = new Room({ botDriver: d, config: { autoNextHand: false, actionTimeoutMs: 30 } });
+  const host = stubClient(); room.attach(host); room.hello(host, null); room.sit(host, 0, '房主');
+  room.addBot(host, 1);
+  room.addBot(host, 2);
+  const me = room.players.get(room.seats[0]);
+
+  // 第一手：什么都不做，靠超时
+  let tries = 0;
+  while (me.idleHands === 0) {
+    if (++tries > 20) throw new Error('20 手里居然一次都没轮到房主超时');
+    room.startHand();
+    await settleHand(room);
+  }
+  assert.equal(me.idleHands, 1);
+  assert.equal(me.sittingOut, false, '一手还不到坐出的线');
+
+  // 第二手：轮到自己就弃牌（主动动作），计数应清零
+  tries = 0;
+  for (;;) {
+    if (++tries > 20) throw new Error('20 手里居然一次都没轮到房主行动');
+    room.startHand();
+    const t0 = Date.now();
+    while (room.hand && !room.hand.isComplete && room.hand.actingSeat !== 0) {
+      if (Date.now() - t0 > 1000) throw new Error('等轮到房主超时');
+      await sleep(1);
+    }
+    if (room.hand.actingSeat === 0) {
+      assert.equal(room.action(host, { type: 'fold', handNo: room.hand.handNo }).ok, true);
+      break;
+    }
+    await settleHand(room);
+    if (me.sittingOut) throw new Error('还没到两手就被坐出了');
+  }
+  assert.equal(me.idleHands, 0, '主动弃牌也算动过手，计数清零');
+  await settleHand(room);
+  room.shutdown();
+});
+
 // ==================== 只剩人机时自动清场 ====================
 
 test('最后一个真人离座后，人机全部被请下桌，牌桌清空', () => {

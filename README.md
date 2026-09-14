@@ -296,6 +296,19 @@ last human out would leave a table of robots nobody has the authority to remove.
 A player who merely drops offline still holds their seat: the bots wait for them,
 and the sweep happens when the disconnect grace period runs out.
 
+**No audience, no deal.** Two bots can play each other forever, and with an LLM
+behind them that is a steady stream of paid API calls. So before every automatic
+next hand the server checks that somebody is actually watching: a connection
+that is open, **in the foreground**, and has been touched within the last ten
+minutes. Counting open connections is not enough — closing the browser drops
+the socket, but locking a phone, switching apps or switching tabs does not, and
+the bots would happily keep dealing to a page nobody is looking at. When the
+page goes to the background, or stays open untouched for too long, the table
+pauses at the end of the current hand and says why; coming back or touching
+the page resumes it. Players who drop offline are not dealt in until they
+reconnect, and anyone who lets two hands in a row time out is sat out
+automatically, so the bots never spend a decision on an empty chair.
+
 ### Equity
 
 Before every decision the server runs a Monte Carlo equity estimate and puts it in
