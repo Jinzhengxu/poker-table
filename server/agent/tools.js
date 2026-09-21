@@ -273,8 +273,6 @@ export function buildTools(ctx) {
         const me = state.seats?.[state.you.seat];
         const myCommitted = Number(me?.committedRound) || 0;
         const pot = Number(state.table?.totalPot) || 0;
-        // 这个注真正多掏的钱。本轮已经投进去的是死钱，已经算在 pot 里了。
-        const risk = Math.max(0, to - myCommitted);
 
         // 「只有一个人跟」的假设：取本轮投入最多的那个还能行动的对手（多半就是
         // 开火的人）。全下的人跟不了，不算。多人底池里这个假设偏乐观，下面会提醒。
@@ -287,10 +285,18 @@ export function buildTools(ctx) {
         }
         const callerCommitted = caller ? Number(caller.committedRound) || 0 : 0;
         const callerMax = caller ? callerCommitted + (Number(caller.chips) || 0) : Infinity;
-        // 他要跟到 to，但最多只拿得出自己剩的筹码
-        const callerAdds = Math.max(0, Math.min(to, callerMax) - callerCommitted);
-        // 他跟不满的那部分会退还给你，所以真正有风险的只有被跟上的部分
-        const matched = Math.min(risk, callerAdds);
+        // 他最多只能跟到自己筹码的上限；你超出那部分会退还，所以下面的账都按这个数算
+        const toEff = Math.min(to, callerMax);
+        // 被跟时你真正押进去、输了就没了的钱：从你本轮已投入的位置到 toEff 的全部。
+        // 本轮已经投进去的是死钱，已经算在 pot 里了。
+        //
+        // 以前这里写的是 min(你多掏的, 他多掏的)，在**加注**场景下会漏掉补齐他当前下注
+        // 的那一段：他下了 100、你加到 300，你押进去的是 300，而「他多掏的」只有 200。
+        // 少算了一个跟注额，加注的风险就被系统性低估，算出来的需要弃牌率偏低。
+        // 下注场景两者相等，所以那时看不出来。
+        const matched = Math.max(0, toEff - myCommitted);
+        // 他要跟到 toEff，多掏的是从他已投入的位置算起
+        const callerAdds = Math.max(0, toEff - callerCommitted);
 
         let f = Number(cont);
         if (!Number.isFinite(f)) f = 1;
@@ -399,8 +405,8 @@ export function buildTools(ctx) {
           notes.push(`还有 ${opponents} 个活对手，这里按「只有一个人跟」估算；` +
             '真被两个人跟的话你的胜率会明显更低，需要的弃牌率也更高');
         }
-        if (caller && callerAdds < risk) {
-          notes.push(`${sanitizeName(caller.name)} 只跟得起 ${callerAdds}，多出来的 ${risk - callerAdds} 会退给你`);
+        if (caller && toEff < to) {
+          notes.push(`${sanitizeName(caller.name)} 只跟得起 ${callerAdds}，多出来的 ${to - toEff} 会退给你`);
         }
         if (!caller) notes.push('没有还能行动的对手了，下注没有弃牌收益');
         if (tooBigToPrice) {
@@ -412,7 +418,7 @@ export function buildTools(ctx) {
         }
 
         trace.calls.push({
-          tool: 'plan_bet', amount: to, risk, continueRange: f,
+          tool: 'plan_bet', amount: to, risk: matched, continueRange: f,
           needsFold, impliedFold, ev: evChips,
           evCheck: evCheck === null ? null : Math.round(evCheck),
           reason: reason || null,
@@ -421,7 +427,8 @@ export function buildTools(ctx) {
         return {
           action: isRaise ? 'raise' : 'bet',
           amount: to,
-          risk,
+          // 被跟时真正会输掉的钱（超出他筹码的部分已经扣掉）
+          risk: matched,
           win_if_all_fold: pot,
           needs_fold_pct: needsFold,
           implied_fold_pct: impliedFold,

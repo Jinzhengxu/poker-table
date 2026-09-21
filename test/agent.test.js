@@ -997,6 +997,48 @@ test('plan_bet：对手跟不满你这个注时，多出来的会退给你', asy
   assert.ok(r.note.includes('退给你'), `该说明会退钱，note 是「${r.note}」`);
 });
 
+test('plan_bet：加注时押进去的钱包含补齐他当前下注的那一段', async () => {
+  // 底池 200 = 前面街 100 + 他这条街下的 100。我加注到 300：被跟时我押进去的是 300，
+  // 不是「他多掏的」200 —— 以前就是这么漏算的，加注的需要弃牌率被系统性压低。
+  const tools = planTools(betState({
+    pot: 200,
+    legal: {
+      canFold: true, canCheck: false, canCall: true, callAmount: 100,
+      canBet: false, minBet: 0, canRaise: true, minRaiseTo: 200, maxRaiseTo: 500,
+      isAllInCall: false,
+    },
+    seats: [
+      { seat: 0, name: '我', chips: 500, committedRound: 0, state: 'in', cards: ['Qs', 'Qd'] },
+      { seat: 1, name: '老陈', chips: 400, committedRound: 100, state: 'in', cards: ['??', '??'] },
+    ],
+  }));
+  const r = await tools.plan_bet.execute({ amount: 300, continue_range: 0.2 });
+  assert.equal(r.action, 'raise');
+  assert.equal(r.risk, 300, '加注到 300 就是押 300');
+  assert.equal(r.pot_when_called, 700, '原来 200 + 我 300 + 他再跟 200');
+  // 需要的弃牌率和它自己给的数自洽（同上面那条，但这次是加注）
+  const loss = Math.max(0, r.risk - (r.equity_when_called_pct / 100) * r.pot_when_called);
+  const expect = loss > 0 ? Math.round((loss / (r.win_if_all_fold + loss)) * 100) : 0;
+  assert.equal(r.needs_fold_pct, expect);
+
+  // 他筹码不够跟满：我加到 450，他最多跟到 100 + 300 = 400，多出的 50 退我
+  const short = await planTools(betState({
+    pot: 200,
+    legal: {
+      canFold: true, canCheck: false, canCall: true, callAmount: 100,
+      canBet: false, minBet: 0, canRaise: true, minRaiseTo: 200, maxRaiseTo: 500,
+      isAllInCall: false,
+    },
+    seats: [
+      { seat: 0, name: '我', chips: 500, committedRound: 0, state: 'in', cards: ['Qs', 'Qd'] },
+      { seat: 1, name: '老陈', chips: 300, committedRound: 100, state: 'in', cards: ['??', '??'] },
+    ],
+  })).plan_bet.execute({ amount: 450, continue_range: 0.2 });
+  assert.equal(short.risk, 400);
+  assert.equal(short.pot_when_called, 900, '200 + 我 400 + 他 300');
+  assert.ok(short.note.includes('多出来的 50 会退给你'), short.note);
+});
+
 test('plan_bet：下不了注的局面直接说清楚，不浪费一整轮', async () => {
   const r = await planTools(snap({ legal: LEGAL_FACING_BET_NO_RAISE }))
     .plan_bet.execute({ amount: 100, continue_range: 0.2 });
