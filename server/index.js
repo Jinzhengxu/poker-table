@@ -79,6 +79,17 @@ if (String(process.env.POKER_AGENT || 'on').toLowerCase() !== 'off') {
     console.error(`[agent] 启用失败，退回单轮人机：${e.message}`);
   }
 }
+// 最外面再套一层 Jev（决策模型，见 agent/jev.js）：动作由它判、代码算；闲聊和读人
+// 笔记交给下面那层的大模型；它挂了也退回下面那层。启动时没配 key 也照样套 ——
+// 房主之后可以在「设置 → Jev 决策模型」里填。POKER_JEV=off 彻底不套。
+if (String(process.env.POKER_JEV || 'on').toLowerCase() !== 'off') {
+  try {
+    const { JevDriver, jevFromEnv } = await import('./agent/jev.js');
+    botDriver = new JevDriver({ client: jevFromEnv(process.env), fallback: botDriver, memory: botDriver.memory });
+  } catch (e) {
+    console.error(`[jev] 启用失败，人机走原来的链：${e.message}`);
+  }
+}
 console.log(`[bot] 人机后端：${botDriver.describe()}`);
 
 // 牌桌初始配置：代码默认值 -> 环境变量覆盖。房主之后仍可在设置页改，

@@ -779,7 +779,7 @@ export class Room {
 
     this.botDriver
       .decide(state, p.persona, ac.signal)
-      .then((out) => this.#applyBotAction(key, p, out))
+      .then((out) => this.#applyBotAction(key, p, out, state))
       .catch((e) => {
         console.error('[room] 人机决策异常', e);
         this.botPending = null;
@@ -787,7 +787,7 @@ export class Room {
   }
 
   /** 把人机的决策落到引擎上。到这一步局面可能已经变了，所以要重新校验。 */
-  #applyBotAction(key, p, out) {
+  #applyBotAction(key, p, out, state) {
     if (this.botPending !== key) return; // 已经被取消或局面变了
     this.botPending = null;
     this.botAbort = null;
@@ -818,6 +818,19 @@ export class Room {
 
     if (out.say) this.#botSay(p, out.say);
     this.#pump();
+
+    // 走 Jev 的人机不带话（决策模型不生成文字）：动作先落地，再异步问一次大模型，
+    // 话晚几秒进聊天区，牌桌不等它。人机已经离座就不发了。
+    if (!out.say && state && typeof this.botDriver.talk === 'function') {
+      this.botDriver
+        .talk(state, p.persona, out)
+        .then((text) => {
+          if (!text || !this.players.has(p.id)) return;
+          this.#botSay(p, text);
+          this.broadcast();
+        })
+        .catch((e) => console.error('[room] 人机闲聊失败', e));
+    }
   }
 
   /**

@@ -67,6 +67,22 @@ services:
       # 五档胜率表进提示词（on/off）。留空 = on，同上。
       POKER_AGENT_TABLE: "${POKER_AGENT_TABLE:-}"
 
+      # Jev 决策模型（server/agent/jev.js）。留空 = 默认。一把 OpenRouter key 同时给
+      # 上面的大模型（deepseek 走 openrouter 预设）和这里的 Jev 用。
+      POKER_JEV: "${POKER_JEV:-}"
+      POKER_JEV_PROVIDER: "${POKER_JEV_PROVIDER:-}"
+      TYPESAFE_API_KEY: "${TYPESAFE_API_KEY:-}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      POKER_JEV_MODEL: "${POKER_JEV_MODEL:-}"
+      POKER_JEV_URL: "${POKER_JEV_URL:-}"
+      POKER_JEV_TIMEOUT_MS: "${POKER_JEV_TIMEOUT_MS:-}"
+      POKER_JEV_RAISE_TIGHTER: "${POKER_JEV_RAISE_TIGHTER:-}"
+      POKER_JEV_STRENGTH: "${POKER_JEV_STRENGTH:-}"
+      POKER_JEV_ESCALATE: "${POKER_JEV_ESCALATE:-}"
+      POKER_JEV_MIN_TOP_PROB: "${POKER_JEV_MIN_TOP_PROB:-}"
+      POKER_JEV_TALK: "${POKER_JEV_TALK:-}"
+      POKER_JEV_NOTES: "${POKER_JEV_NOTES:-}"
+
       # 牌桌初始设置。不填就用代码默认值（盲注 5/10、起始筹码 1000）。
       # 填了以后每次重启都是这个配置，不用再手工点一遍设置页。见 .env.example。
       POKER_BLINDS: "${POKER_BLINDS:-}"

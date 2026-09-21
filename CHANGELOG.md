@@ -9,6 +9,184 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Jev is wired into the live bot, with the language model kept for what Jev cannot do.**
+  With a key configured — `TYPESAFE_API_KEY` / `OPENROUTER_API_KEY` in the environment, or
+  the new "Jev 决策模型" panel under 设置 — `JevDriver` now wraps the agent chain in
+  `server/index.js` (`POKER_JEV=off` leaves the chain as it was). The division of labour
+  follows the bank results in the entry below: Jev's reads were as accurate as the
+  reasoning model's and 6–40× faster, while a chain-of-thought answer takes 6–40 s
+  through the same route and cannot sit on the decision path under a 45 s action clock.
+
+  So Jev decides, and the language model does three things Jev cannot, none of them on
+  the decision path:
+
+  - **Table talk.** Jev generates no text. The room now applies the action first and then
+    calls `botDriver.talk()`, which asks the LLM for one line and posts it a few seconds
+    later (`server/agent/talk.js`). Whether to speak follows the persona's `talk` trait
+    (quiet 12%, normal 30%, chatty 55%, doubled when firing). The prompt contains no hole
+    cards at all — the old path had them and relied on `cleanSay` to catch "我这对 8 稳了";
+    this one structurally cannot leak, and `cleanSay` still runs as a second guard.
+  - **Coach notes.** After a hand, for each human opponent with a new showdown (and at
+    most every 4 hands), the LLM writes one English sentence on how that player plays,
+    from the public profile and shown-down hands (`server/agent/notes.js`). The next hand
+    it goes into Jev's state as `coach_note`. Synthesis across hands is what a language
+    model is good at and a System One model is not; between hands there is no latency
+    budget to blow.
+  - **Fallback.** Jev errors, timeouts, malformed answers, or a fragile read with
+    `POKER_JEV_ESCALATE=on` go to the existing chain: agent → single-shot → rule.
+
+  Runtime configuration goes through the same `botConfig` message: a patch with
+  `jev: true` configures Jev (provider, key, model, `remove` to disable), anything else is
+  passed down to the LLM layer unchanged. A Jev patch with no key reuses the LLM's key for
+  the same provider, so one OpenRouter key drives both. `status()` reports a `jev` block
+  with the masked key; the raw key never leaves the process.
+
+  **OpenRouter is also an LLM provider preset now** (`openrouter`, default
+  `deepseek/deepseek-v4-flash`, key `OPENROUTER_API_KEY`), so the same key serves the
+  DeepSeek side. Its no-thinking switch is `reasoning: {enabled: false}`, verified on
+  2026-09-21: `reasoning_tokens` went from 17 to 0 on the same prompt and the response lost
+  its `reasoning` field. Compose passes the Jev variables through; the last time an env
+  block was added without that step the voice settings silently did nothing.
+
+- **A `jev` mode for the spot bank: TypeSafe's Jev decision model answers the two
+  judgments, the code does the rest.** `npm run eval:spots -- --mode jev`, with either
+  `TYPESAFE_API_KEY` (direct, early access) or `OPENROUTER_API_KEY` (OpenRouter's alpha
+  `/api/alpha/decisions` route, model `typesafe/jev-1.13`, same three-field request and the
+  same answer shape, plus a `cost` in `usage` that the report now prints); `--provider`
+  picks one, `auto` takes whichever has a key. Jev is a System One model: it generates no text, takes a state and
+  typed questions, and returns calibrated probabilities in one parallel pass — official
+  latency 70–500 ms, $0.042 per million input tokens, output free. That is the shape the
+  agent path had already converged on: with the five-row equity table in the prompt, the
+  model's job was reduced to "which range bucket is the opponent in" and "will he fold to
+  this bet", with the arithmetic in code. `server/agent/jev.js` asks exactly those two
+  things — one Choice over the five buckets, one Noul per candidate bet size — and then
+  reads the table row, compares it with pot odds, prices each size against a check/call
+  baseline with the `plan_bet` formula, applies the persona's `traitBias`, and acts. Two
+  deliberate departures from `plan_bet`, both conservative: equity when called is taken
+  against every live opponent rather than one (a fake-server dry run raised a middle pair
+  into a bet and a raise four-handed with the one-opponent assumption), and it is capped
+  at the equity against the current range, since a tighter continuing range cannot raise
+  our equity — when two Monte Carlo runs say otherwise, that is noise. Firing needs an edge
+  of 5% of the pot over the baseline; both inputs are estimates and thin edges are not real.
+
+  Jev never sees the bot's hole cards or the chat: both questions are about the opponent,
+  and TypeSafe's own jaggedness notes say unrelated state costs accuracy. The state and
+  questions are in English (their primary training language; CJK is "handled but not
+  equally well"); nicknames go through as opaque strings. `say` is not possible on this
+  path — a bot driven by Jev does not talk.
+
+  The driver takes a pluggable `fallback` and a `minConfidence` floor: a range read whose
+  confidence is below the floor goes to the fallback instead (the rule policy in the bank,
+  so it stays visible; in production it can be the DeepSeek agent — Jev for the routine
+  reads, a reasoning model for the spots Jev itself flags as unsure). The report gains a
+  confidence row (p50, p10, mean on right vs wrong answers) so that floor can be chosen
+  from data rather than guessed. `modelAnswered('jev', …)` counts only `source === 'jev'`;
+  escalated and failed decisions are fallbacks and are kept out of the model's score.
+
+  Not wired into the live bot yet.
+
+  First results, `typesafe/jev-1.13` through OpenRouter, 46 spots × 3, counting only the
+  decisions Jev answered (12 obvious spots went to the rule policy by design, all 12
+  right). The three left-hand columns are the `deepseek-v4-flash` run recorded above, on
+  an earlier day; the bank's resolution is ±2 spots, so the verdict row separates nothing:
+
+  | | rule | single-shot | agent | jev |
+  | --- | ---: | ---: | ---: | ---: |
+  | verdicts, model's own answers | 94% (31/33) | 98% (58/59) | 94% (58/62) | 92% (80/87) |
+  | fires | 15% | 38% | 54% | 68% |
+  | shoves | 0% | 7% | 6% | 2% |
+  | paired spots separated (action) | 0/4 | 0/8 | 3/8 | 2/12 |
+  | paired spots, range read in the right direction | — | — | — | 9/12 |
+  | p50 latency, whole decision | 0.1s | 6.0s | 35.0s | 0.9s |
+  | cost for the run | 0 | — | — | $0.007 |
+
+  **The reads are fine; the arithmetic over-fires.** Jev put the tight profile opponents
+  at top 5–15% and the loose ones at top 70% in all six pair runs; it did not separate the
+  `mp-river` line pair (top 15% both ways). 8 of 46 spots changed bucket across the three
+  runs, none by more than one tier except two multiway spots. The two stable errors,
+  `disc-no-raise-second-pair` and `disc-no-4bet-ajo` (0/3 each), are both "raise where only
+  call or fold is right", and they are not Jev's: 65 of the 126 answered decisions were
+  "the table says call, the code raised". Equity against the continuing range — the
+  static preflop order cut to the top (1 − fold) of the current bucket — lands within a few
+  points of the current equity, so putting more chips in at 50%+ always looks profitable.
+  On a K-high board a bettor's continuing range is K-x and better, not "the top 65% of
+  the top 15% of starting hands"; that is the README's static-range limitation, now with a
+  mechanical trigger instead of a model's discretion. Confidence ran 0.17–0.61 (p50 0.35)
+  and was no lower on the wrong answers (0.43) than the right ones (0.35), so a confidence
+  gate would not have caught these — they are downstream of the read.
+
+  Both fixes are in, as switches, and the bank was run with each (46 × 3, same day, same
+  key; the first column is the run above):
+
+  | | neither | raise tighter | strength question | both (default) |
+  | --- | ---: | ---: | ---: | ---: |
+  | verdicts, Jev's own answers | 92% (80/87) | 100% (87/87) | 97% (84/87) | 100% (87/87) |
+  | fires | 68% | 51% | 52% | 49% |
+  | stable errors | 2 spots × 3 | 0 | second pair × 3 | 0 |
+  | pair reads in the right direction | 9/12 | 9/12 | 9/12 | 9/12 |
+  | "table says call, code raised" | 65/126 | — | — | 30/126 |
+  | cost | $0.007 | $0.007 | $0.007 | $0.007 |
+
+  `POKER_JEV_RAISE_TIGHTER` is the one that matters: pricing a raise against a continuing
+  range one tier tighter than the read clears both stable errors on its own. The
+  `continue_strength` Noul (`POKER_JEV_STRENGTH`) does not clear the second-pair spot by
+  itself, but on top of the tighter range it turns two over-aggressive soft-spot plays
+  into the standard ones — 88 and 99 facing a loose opponent's third barrel now call
+  instead of raising to 400 — at no cost the bank can see, so both stay on. One pattern
+  worth knowing about, not a bug: against the *tight* profile the code raises 88 as a
+  bluff (Jev puts the nit's fold-to-raise near 57%) while it calls the fish with the same
+  hand. That is exploitative and internally consistent; the pair table scores it as "not
+  separated" because the aggression runs the other way from the table's expectation.
+
+  **When to hand off to DeepSeek.** The driver already falls back on any hard failure
+  (HTTP error, timeout, malformed answer, no equity table). The question was whether there
+  is a *soft* signal for "Jev is unsure and it matters". Confidence is not it (above). The
+  signal that is: `fragile` — the top range bucket has probability below
+  `POKER_JEV_MIN_TOP_PROB` (0.5) **and** re-running the arithmetic with the runner-up bucket
+  changes the action. Both conditions, because an uncertain read that leads to the same
+  action either way does not need a reasoning model. On the bank that flags 4–7% of
+  decisions (a flush draw facing a bet, an overpair facing a half-pot bet, AJo facing a
+  3-bet), and Jev answered every one of them correctly, so on this bank the hand-off buys
+  nothing measurable. It is left in as `POKER_JEV_ESCALATE` (default off, the report counts
+  the fragile share either way) for a table that wants "when in doubt, let DeepSeek think"
+  at roughly one decision in twenty. What still needs a language model regardless: `say`.
+
+  Then the hand-off was actually exercised, with `deepseek-v4-flash` behind OpenRouter's
+  OpenAI-compatible route as the fallback (`--escalate on --fallback agent`; the eval
+  builds the agent from the same env vars the server reads). 4 of 138 decisions were
+  handed off. All 4 came back right, and Jev's own answer — carried along as `jevWould` —
+  was right on all 4 too, so the hand-off changed nothing on the bank. It did cost time:
+  the agent loop took 46–60 s per hand-off through OpenRouter, and 2 of the 4 hit the
+  eval's 60 s wall clock and fell through to the rule policy. Under the live 30 s gate all
+  four would have.
+
+  For a same-day, same-route comparison, single-shot and agent mode were then run on
+  `deepseek/deepseek-v4-flash` through OpenRouter (46 × 3 each, reasoning at the route's
+  default). Model's own answers only; fallbacks run the rule policy and are excluded:
+
+  | | jev (both fixes) | single-shot DeepSeek | agent DeepSeek |
+  | --- | ---: | ---: | ---: |
+  | answered by the model | 126/138 | 123/138 | 81/138 |
+  | verdicts on those | 100% (87/87) | 96% (81/84) | 95% (54/57) |
+  | fires / shoves | 49% / 2% | 38% / 9% | 58% / 7% |
+  | pair reads in the right direction | 9/12 | — | 4/5 |
+  | p50 / p95 latency | 1.0 s / 1.6 s | 6.4 s / 33 s | 41 s / 58 s |
+  | tokens per decision (in / out) | 1.3k / 0.1k | — | 6.1k / 0.9k |
+  | cost for the run | $0.007 | ≈ $0.01 | ≈ $0.09 |
+
+  The agent column is mostly a latency statement: 45 of 138 decisions hit the 60 s wall
+  clock and fell through, so its 57 scored answers are the ones that finished. The three
+  lines are within the bank's resolution on verdicts; where they differ is that Jev
+  answers every spot in about a second, and the model lines shove 3–4× as often. Total
+  OpenRouter spend for everything in this entry: $0.13.
+
+  **Routing, as it stands.** Jev decides. Hard failures fall through the existing chain.
+  The fragile-read hand-off exists, is measured, and is off by default: on this bank it
+  fires on 3–7% of decisions, Jev is right on all of them, and the reasoning model behind
+  it needs 40–60 s per answer through this route, which the live 30 s gate does not allow.
+  Turn it on only with a fast non-reasoning fallback, or after raising `POKER_AGENT_MAX_MS`
+  and the action clock. Table talk stays with the language model either way.
+
 - **Bots decide in one model round trip instead of three or four, and skip the model
   entirely on obvious spots.** Two changes aimed at the same complaint — the bot takes
   too long to act — after measuring where the time actually goes: a 20,000-trial Monte
@@ -345,6 +523,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ends, which is exactly when `#finishHand()` calls `observe()`.
 
 ### Fixed
+
+- **`plan_bet` under-counted the money at risk on a raise by one call amount.** It took the
+  hero's stake when called as `min(what the hero adds, what the caller adds)`. On a bet
+  those are equal. On a raise they are not: the opponent bet 100, the hero raises to 300,
+  the hero has 300 in the middle if called, but "what the caller adds" is 200, so the loss
+  side of the needed-fold-rate formula was short by the 100 that matched the bet. The
+  needed fold rate for raises came out too low, and the prompt tells the model to fire when
+  the implied fold rate clears it. The stake is now everything from the hero's committed
+  amount up to what the caller can cover; the refund note and `risk` field follow the same
+  number. Surfaced while building the `jev` path, which prices raises with the same formula.
 
 - **Bots were narrating their own hole cards into the table chat.** Observed verbatim at
   the table: 「顶对，该打点价值」, 「河牌听顺子成花了，看你怎么走」. The `say` field is

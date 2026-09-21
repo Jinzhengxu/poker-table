@@ -185,8 +185,8 @@ node scripts/build-hotword-data.mjs /tmp/tencent.bin
 底池赔率）。**兜底不只是给"没配 key"用的**——超时、限流、返回内容解析不了，全都落到这里，
 所以外部 API 抽风不会拖慢牌桌。一个 key 都不配也能用，只是人机按规则打、不说话。
 
-内置支持三家：Kimi（月之暗面）、DeepSeek、银联云（走 code-tool 网关，填的是网关签发的
-token，不是上游真 key）。三家都是 OpenAI 兼容的 `/chat/completions`，所以只有一个客户端实现，
+内置支持四家：Kimi（月之暗面）、DeepSeek、银联云（走 code-tool 网关，填的是网关签发的
+token，不是上游真 key）、OpenRouter（默认 DeepSeek v4 flash）。都是 OpenAI 兼容的 `/chat/completions`，所以只有一个客户端实现，
 也不需要引入任何 SDK：
 
 | 变量                   | 默认值       | 含义                                       |
@@ -194,7 +194,7 @@ token，不是上游真 key）。三家都是 OpenAI 兼容的 `/chat/completion
 | `KIMI_API_KEY`         | —            | Kimi（月之暗面）的 key                     |
 | `DEEPSEEK_API_KEY`     | —            | DeepSeek 的 key                            |
 | `YINLIANYUN_API_KEY`   | —            | 银联云网关 token（默认模型 `deepseek-v4-flash`）|
-| `POKER_BOT_PROVIDER`   | `auto`       | `kimi` / `deepseek` / `yinlianyun` / `auto`（有哪个用哪个）|
+| `POKER_BOT_PROVIDER`   | `auto`       | `kimi` / `deepseek` / `yinlianyun` / `openrouter` / `auto`（有哪个用哪个）|
 | `POKER_BOT_MODEL`      | 各家默认     | 覆盖模型名。这是**全局**的：多家一起用时会同时盖到每一家头上，而模型名并不通用 |
 | `POKER_BOT_BASE_URL`   | 各家默认     | 覆盖接入点（自建代理、海外站点）。同样是全局的 |
 | `POKER_BOT_TIMEOUT_MS` | 各家默认     | 单次请求超时，超了就走兜底。不填就按各家预设：多数 8000，银联云 30000（它的默认模型带思维链）|
@@ -565,8 +565,34 @@ agent** —— `playHand` 是同步的，多轮工具循环塞不进去。可我
 npm run eval:spots -- --mode rule                   # 纯规则基线，不花钱
 npm run eval:spots -- --mode single --repeat 2      # 旧版单轮
 npm run eval:spots -- --mode agent  --repeat 2      # 多轮工具循环
+npm run eval:spots -- --mode jev    --repeat 3      # Jev 决策模型（TYPESAFE_API_KEY 或 OPENROUTER_API_KEY）
+npm run eval:spots -- --mode jev --provider openrouter   # 指定走 OpenRouter 的 decisions 路由
 npm run eval:spots -- --tag range --repeat 3        # 只跑成对的范围题
 ```
+
+`jev` 模式：TypeSafe 的 Jev 不生成文字，只回带概率的判断。它替掉的是模型的
+判断那一环（对手在五档范围的哪一档、面对某个尺度会不会弃牌、续注的牌强不强），
+跟注 / 开火 / 尺度的算术全在代码里（`server/agent/jev.js`）。一次决策一趟往返，
+整次决策 p50 约 1 秒，一整套题库跑三遍不到一美分。`--raise-tighter off` /
+`--strength off` 是两个开火修正的消融开关；报告里多两行：confidence 分布，以及
+「读数脆弱」的占比和那部分的正确率。`--escalate on --fallback agent` 让脆弱的决策
+真的交给大模型，报告会比回传之后是谁对。数字见 CHANGELOG 的 jev 条目。
+
+### Jev 版人机（配了 key 就是默认）
+
+线上的接法是**分工**，不是替换：
+
+- **Jev 决定动作。** 一秒内的直觉判断是它的长项，算术在代码里，它看不到自己的底牌，
+  所以这条路上没有泄牌的可能。
+- **大模型做 Jev 做不了的三件事，全都不在决策路径上。** 闲聊：动作落地后异步问一句，
+  话晚几秒进聊天区，牌桌不等它，提示词里同样没有底牌。读人笔记：手牌结束后让它从画像和
+  摊牌里归纳一句「这人怎么打」，下一手写进 Jev 的 state，归纳是大模型的活、Jev 不会。
+  兜底：Jev 挂了、或者读数脆弱且开了 `POKER_JEV_ESCALATE`，交给原来的 agent → 单轮 → 规则链。
+- 房主在「设置 → Jev 决策模型」里填 key 即可，OpenRouter 的 key 可以和上面的大模型共用一把。
+  环境变量见 `.env.example` 的 Jev 一节。
+
+题库上量过的分工依据：Jev 的范围读数和大模型一样准、快 6 到 40 倍；带思维链的大模型
+一次要 6 到 40 秒，放在决策路径上会撞行动时限，放在手牌之间就没有延迟压力。
 
 46 个手写局面（33 道判对错、13 道只收指标），每个配一条判据。
 **判据尽量写成「不许做什么」而不是「必须做什么」**——扑克的最优解经常有争议，

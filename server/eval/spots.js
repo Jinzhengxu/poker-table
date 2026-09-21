@@ -1009,13 +1009,16 @@ export const TRIVIAL = {
  *   所以只有 `source === 'llm'` 才算模型答的。v4 那一轮就是栽在这里：92 次决策
  *   里 30 次其实是规则答的，报告却把它们算进了"单轮的正确率"。
  * - `rule`：本来就没有模型，全都算"答了"，否则这条基准线会变成空表。
+ * - `jev`：决策模型答完、动作由代码算出来才算，`source === 'jev'`。confidence 不够
+ *   门槛而交给兜底的那些是 `fallback:*`，同样不算——那正是「Jev 拿不准」的样本。
  *
- * @param {'rule'|'single'|'agent'} mode
+ * @param {'rule'|'single'|'agent'|'jev'} mode
  * @param {string|null} source  驱动返回的 source
  */
 export function modelAnswered(mode, source) {
   if (mode === 'agent') return source === 'agent';
   if (mode === 'single') return source === 'llm';
+  if (mode === 'jev') return source === 'jev';
   return true;
 }
 

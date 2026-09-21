@@ -7,6 +7,14 @@
 //   node scripts/agent-eval.mjs --repeat 3            # 每题 3 次，看稳定性
 //   node scripts/agent-eval.mjs --mode rule           # 纯规则基线，不花钱
 //   node scripts/agent-eval.mjs --mode single         # 旧版单轮 LLM
+//   node scripts/agent-eval.mjs --mode jev            # Jev 决策模型，哪家有 key 用哪家
+//   node scripts/agent-eval.mjs --mode jev --provider openrouter   # 走 OpenRouter，读 OPENROUTER_API_KEY
+//   node scripts/agent-eval.mjs --mode jev --min-confidence 0.5   # 拿不准的交给兜底
+//   node scripts/agent-eval.mjs --mode jev --raise-tighter off --strength off   # 消融两个开火修正
+//   node scripts/agent-eval.mjs --mode jev --escalate on          # 读数脆弱的真的回传兜底
+//   node scripts/agent-eval.mjs --mode jev --escalate on --fallback agent   # 兜底换成 LLM 的 agent
+//       （LLM 的接法读和线上一样的环境变量：POKER_BOT_PROVIDER / <keyEnv> /
+//        POKER_BOT_BASE_URL / POKER_AGENT_MODEL；报告会比「回传之后是谁对」）
 //   node scripts/agent-eval.mjs --model deepseek-v4-pro
 //   node scripts/agent-eval.mjs --provider yinlianyun    # 换一家跑同一套题
 //   node scripts/agent-eval.mjs --think off              # 让模型别想，直接答
@@ -19,8 +27,9 @@
 //   rule    规则策略。免费、确定性，是"不用模型能做到多好"的地板。
 //   single  旧版：我们算好一个胜率塞进提示词，模型单轮出 JSON。
 //   agent   这版：胜率、画像、下注尺度都是工具，模型自己多轮调。
+//   jev     决策模型：一趟往返只答「对手在哪一档」和「他会不会弃」，动作由代码算。
 //
-// 只有三条线都在同一套题上跑过，"agent 这轮改造值多少钱"才有答案。
+// 只有几条线都在同一套题上跑过，"这轮改造值多少钱"才有答案。
 //
 // 环境变量（和线上人机同一套读法，见 server/agent/model.js）：
 //   <供应商的 keyEnv>     必填（rule 模式除外）。默认供应商是 deepseek，
@@ -28,12 +37,16 @@
 //                         YINLIANYUN_API_KEY。
 //   POKER_BOT_BASE_URL    接入点，默认走该供应商的预设
 //   POKER_AGENT_MODEL     模型名，--model 优先
+//   TYPESAFE_API_KEY / OPENROUTER_API_KEY   jev 模式各家的 key（--provider 选家，默认 auto）
+//   POKER_JEV_URL / POKER_JEV_MODEL          jev 模式的接入点 / 模型名，--url / --model 优先
 
 import { writeFileSync, appendFileSync } from 'node:fs';
 
 import { SPOTS, TAGS, pairsOf, TRIVIAL, scoreTrivial, modelAnswered } from '../server/eval/spots.js';
 import { PokerAgent } from '../server/agent/index.js';
-import { buildModel } from '../server/agent/model.js';
+import { buildModel, modelsFromEnv } from '../server/agent/model.js';
+import { clientsFromEnv } from '../server/bot/provider.js';
+import { JevDriver, JevClient, JEV_PROVIDERS } from '../server/agent/jev.js';
 import { BotDriver } from '../server/bot/index.js';
 import { LLMClient, PROVIDERS } from '../server/bot/provider.js';
 
@@ -53,16 +66,55 @@ const tagFilter = arg('tag', null);
 const idFilter = arg('id', null);
 const asJson = flag('json');
 const tracePath = arg('trace', null);
-const providerName = String(arg('provider', 'deepseek')).toLowerCase();
-const preset = PROVIDERS[providerName];
-if (!preset) {
-  console.error(`--provider 只能是 ${Object.keys(PROVIDERS).join(' / ')}，收到 ${providerName}`);
-  process.exit(2);
+// jev 模式不走 PROVIDERS：它不是 OpenAI 兼容接口，key / 接入点 / 模型名各有一套，
+// --provider 在这个模式下选的是 JEV_PROVIDERS 里的家（typesafe / openrouter / auto）。
+const isJev = mode === 'jev';
+const providerName = String(arg('provider', isJev ? (process.env.POKER_JEV_PROVIDER || 'auto') : 'deepseek')).toLowerCase();
+let preset = null;
+if (isJev) {
+  const names = providerName === 'auto' ? Object.keys(JEV_PROVIDERS) : [providerName];
+  for (const n of names) {
+    if (!JEV_PROVIDERS[n]) {
+      console.error(`jev 模式的 --provider 只能是 ${Object.keys(JEV_PROVIDERS).join(' / ')} / auto，收到 ${n}`);
+      process.exit(2);
+    }
+    // auto：哪家有 key 用哪家；都没有就停在第一家，报它的 keyEnv
+    if (process.env[JEV_PROVIDERS[n].keyEnv] || !preset) preset = { name: n, ...JEV_PROVIDERS[n] };
+    if (process.env[JEV_PROVIDERS[n].keyEnv]) break;
+  }
+} else {
+  preset = PROVIDERS[providerName];
+  if (!preset) {
+    console.error(`--provider 只能是 ${Object.keys(PROVIDERS).join(' / ')}，收到 ${providerName}`);
+    process.exit(2);
+  }
 }
 const thinking = String(arg('think', process.env.POKER_BOT_THINKING || 'on')).toLowerCase();
-const modelName = arg('model', process.env.POKER_AGENT_MODEL || preset.model);
-const baseUrl = arg('base-url', process.env.POKER_BOT_BASE_URL || undefined);
-const apiKey = process.env[preset.keyEnv] || '';
+const modelName = isJev
+  ? arg('model', process.env.POKER_JEV_MODEL || preset.model)
+  : arg('model', process.env.POKER_AGENT_MODEL || preset.model);
+const baseUrl = isJev
+  ? arg('url', process.env.POKER_JEV_URL || undefined)
+  : arg('base-url', process.env.POKER_BOT_BASE_URL || undefined);
+const apiKey = isJev
+  ? (process.env[preset.keyEnv] || process.env.POKER_JEV_API_KEY || '')
+  : (process.env[preset.keyEnv] || '');
+const keyEnvName = preset.keyEnv;
+const providerLabel = preset.label;
+// jev 模式：范围判断的 confidence 低于这个数就交给兜底（题库里是规则策略）。
+// 0 = 不分流。定多少要看报告里 confidence 的分布，先跑一遍 0 再说。
+const minConfidence = Number(arg('min-confidence', process.env.POKER_JEV_MIN_CONFIDENCE || 0)) || 0;
+// jev 模式的两个开火修正（默认开）和回传开关（默认只标记不回传）
+const raiseTighter = String(arg('raise-tighter', process.env.POKER_JEV_RAISE_TIGHTER || 'on')).toLowerCase() !== 'off';
+const strength = String(arg('strength', process.env.POKER_JEV_STRENGTH || 'on')).toLowerCase() !== 'off';
+const escalate = String(arg('escalate', process.env.POKER_JEV_ESCALATE || 'off')).toLowerCase() === 'on';
+const minTopProb = Number(arg('min-top-prob', process.env.POKER_JEV_MIN_TOP_PROB || 0.5)) || 0.5;
+// jev 模式的兜底：rule（默认，兜底一眼可见）/ agent / single（后两个从环境变量装 LLM）
+const jevFallback = String(arg('fallback', 'rule')).toLowerCase();
+if (isJev && !['rule', 'agent', 'single'].includes(jevFallback)) {
+  console.error(`--fallback 只能是 rule / agent / single，收到 ${jevFallback}`);
+  process.exit(2);
+}
 // 题库模式下墙钟给得比线上大方：这里不赶 45 秒的行动时限，
 // 要的是"模型想清楚能答成什么样"，被半路掐断的样本没有意义。
 const maxThinkMs = Number(arg('max-ms', 60_000));
@@ -74,12 +126,12 @@ const excludeTools = String(arg('exclude', '')).split(',').map((x) => x.trim()).
 const useTable = String(arg('table', 'on')).toLowerCase() !== 'off';
 const useObvious = String(arg('obvious', 'on')).toLowerCase() !== 'off';
 
-if (!['agent', 'single', 'rule'].includes(mode)) {
-  console.error(`--mode 只能是 agent / single / rule，收到 ${mode}`);
+if (!['agent', 'single', 'rule', 'jev'].includes(mode)) {
+  console.error(`--mode 只能是 agent / single / rule / jev，收到 ${mode}`);
   process.exit(2);
 }
 if (mode !== 'rule' && !apiKey) {
-  console.error(`缺少 ${preset.keyEnv}（rule 模式不需要）`);
+  console.error(`缺少 ${keyEnvName}（rule 模式不需要）`);
   process.exit(2);
 }
 
@@ -130,6 +182,29 @@ function makeDriver(sharedModel, logger = quiet) {
     return new BotDriver({ clients: [client], minThinkMs: 0, maxThinkMs, logger, obvious: useObvious });
   }
 
+  if (mode === 'jev') {
+    // 兜底默认纯规则；--fallback agent/single 时换成 LLM，明显局面那层已经在 Jev 驱动里
+    // 判过，里面这层关掉免得重复算
+    let fallback = rule;
+    if (jevFallback === 'agent') {
+      fallback = new PokerAgent({
+        models: sharedLLM, table: true, obvious: false, fallback: rule, minThinkMs: 0, maxThinkMs, logger,
+      });
+    } else if (jevFallback === 'single') {
+      fallback = new BotDriver({ clients: sharedLLM, minThinkMs: 0, maxThinkMs, logger, obvious: false });
+    }
+    return new JevDriver({
+      client: sharedJev,
+      obvious: useObvious,
+      minConfidence,
+      raiseTighter, strength, escalate, minTopProb,
+      fallback,
+      minThinkMs: 0,
+      maxThinkMs,
+      logger,
+    });
+  }
+
   return new PokerAgent({
     models: [sharedModel],
     excludeTools,
@@ -145,6 +220,20 @@ function makeDriver(sharedModel, logger = quiet) {
 const sharedModel = mode === 'agent'
   ? buildModel({ provider: providerName, apiKey, model: modelName, baseUrl, thinking })
   : null;
+const sharedJev = mode === 'jev'
+  ? new JevClient({ provider: preset.name, apiKey, model: modelName, url: baseUrl, timeoutMs: maxThinkMs })
+  : null;
+// jev 模式的 LLM 兜底，从环境变量装（和线上同一套读法）。没配 key 就直接停，别静默变成规则
+let sharedLLM = null;
+if (isJev && jevFallback !== 'rule') {
+  sharedLLM = jevFallback === 'agent'
+    ? modelsFromEnv(process.env)
+    : clientsFromEnv(process.env).map((c) => Object.assign(c, { timeoutMs: maxThinkMs }));
+  if (!sharedLLM.length) {
+    console.error(`--fallback ${jevFallback} 需要一家 LLM：设 POKER_BOT_PROVIDER 和对应的 key（见 server/agent/model.js）`);
+    process.exit(2);
+  }
+}
 
 // ---------------------------------------------------------------- 判分
 
@@ -235,6 +324,14 @@ async function runOnce(spot, iter) {
     why: out.why || null,
     fellBack: !obvious && !modelAnswered(mode, out.source),
     fallbackReason: log.lines.find((l) => /调用失败|内容审查|兜底/.test(l)) || null,
+    // jev：范围判断的 confidence，以及是不是因为它不够而分流出去的
+    confidence: Number.isFinite(out.confidence) ? out.confidence : null,
+    topProb: Number.isFinite(out.topProb) ? out.topProb : null,
+    fragile: !!out.fragile,
+    escalated: !!out.escalated,
+    // 回传了的话，Jev 本来会打什么、按判据算不算对 —— 「回传之后是谁对」就看这两列
+    jevWould: out.jevWould ? `${out.jevWould.type}${out.jevWould.amount != null ? ` ${out.jevWould.amount}` : ''}` : null,
+    jevWouldOk: out.jevWould ? grade(spot, { action: out.jevWould, trace: [] }).ok : null,
     ok: g.ok, toolOk: g.toolOk, notes: g.notes, adjusted: g.adjusted,
     tools: g.tools,
     // 模型把对手读成了哪一档：工具模式来自 estimate_equity 的参数，
@@ -244,6 +341,7 @@ async function runOnce(spot, iter) {
       .map((c) => c.range),
     steps: st.steps ?? null,
     toolCalls: st.toolCalls ?? null,
+    cost: st.cost ?? 0,
     filtered: st.filtered ?? (log.lines.some((l) => /内容审查|content_filter|451/.test(l)) ? 1 : 0),
     inputTokens: st.inputTokens ?? 0,
     outputTokens: st.outputTokens ?? 0,
@@ -278,6 +376,10 @@ const variant = [
   excludeTools.length ? `摘掉 ${excludeTools.join('/')}` : '',
   mode === 'agent' && !useTable ? '胜率走工具' : '',
   mode !== 'rule' && !useObvious ? '明显局面也问模型' : '',
+  mode === 'jev' && minConfidence > 0 ? `confidence < ${minConfidence} 交给兜底` : '',
+  mode === 'jev' && !raiseTighter ? '加注不收紧' : '',
+  mode === 'jev' && !strength ? '不问续注强度' : '',
+  mode === 'jev' && escalate ? `脆弱读数回传（最高概率 < ${minTopProb}）` : '',
 ].filter(Boolean);
 
 if (!asJson) {
@@ -342,10 +444,11 @@ for (const [key, sides] of pairsOf(spots)) {
   }
 }
 
+const confidences = runs.map((r) => r.confidence).filter((c) => c !== null);
 const summary = {
   mode,
-  provider: mode === 'rule' ? null : providerName,
-  thinking: mode === 'rule' ? null : thinking,
+  provider: mode === 'rule' ? null : isJev ? preset.name : providerName,
+  thinking: mode === 'rule' || isJev ? null : thinking,
   model: mode === 'rule' ? null : modelName, baseUrl: baseUrl || null,
   excludeTools,
   table: mode === 'agent' ? useTable : null,
@@ -365,8 +468,19 @@ const summary = {
   shoved: runs.filter((r) => r.action === 'allin').length,
   p50ms: percentile(runs.map((r) => r.ms), 0.5),
   p95ms: percentile(runs.map((r) => r.ms), 0.95),
+  // jev：范围判断的 confidence 分布。定分流门槛要看这个，不是拍脑袋
+  confidenceP50: confidences.length ? percentile(confidences, 0.5) : null,
+  confidenceP10: confidences.length ? percentile(confidences, 0.1) : null,
+  escalated: runs.filter((r) => r.escalated).length,
+  fragile: runs.filter((r) => r.fragile).length,
+  raiseTighter: isJev ? raiseTighter : null,
+  strength: isJev ? strength : null,
+  escalate: isJev ? escalate : null,
+  minTopProb: isJev ? minTopProb : null,
   inputTokens: runs.reduce((s, r) => s + r.inputTokens, 0),
   outputTokens: runs.reduce((s, r) => s + r.outputTokens, 0),
+  // 美元。只有 OpenRouter 报这个数
+  cost: Number(runs.reduce((s, r) => s + (r.cost || 0), 0).toFixed(6)),
   pairs: pairRows,
 };
 
@@ -377,8 +491,8 @@ if (asJson) {
 
 // 报告头上带供应商：同一个模型名在不同网关后面表现可能差一截，
 // 两份跑分贴在一起时得能认出哪份是哪份。
-console.log(`## ${mode}${mode === 'rule' ? '' : ` · ${preset.label} · ${modelName}` +
-              (thinking === 'off' ? ' · 不思考' : '')}` +
+console.log(`## ${mode}${mode === 'rule' ? '' : ` · ${providerLabel} · ${modelName}` +
+              (!isJev && thinking === 'off' ? ' · 不思考' : '')}` +
             `${variant.length ? ` · ${variant.join(' · ')}` : ''}\n`);
 console.log(`| 指标 | 值 |`);
 console.log(`| --- | --- |`);
@@ -415,10 +529,40 @@ if (mode !== 'rule') {
 if (mode === 'agent') {
   console.log(`| 工具用对 | ${summary.toolOk}/${summary.toolChecked} |`);
 }
+if (isJev && confidences.length) {
+  // 分流门槛该定多少，看的就是这两个数：p10 以下的那些是它自己都觉得拿不准的
+  const wrongC = runs.filter((r) => r.ok === false && r.confidence !== null).map((r) => r.confidence);
+  const rightC = runs.filter((r) => r.ok === true && r.confidence !== null).map((r) => r.confidence);
+  const mean = (a) => (a.length ? (a.reduce((x, y) => x + y, 0) / a.length).toFixed(2) : '—');
+  console.log(`| 范围判断的 confidence | p50 ${summary.confidenceP50.toFixed(2)} / p10 ${summary.confidenceP10.toFixed(2)}，` +
+              `答对的平均 ${mean(rightC)}，答错的平均 ${mean(wrongC)}` +
+              `${summary.escalated ? `；${summary.escalated} 次交给了兜底` : ''} |`);
+  // 回传判据值不值：脆弱的那部分（读数拿不准且换一档结论会变）错得是不是更多。
+  // 只看 Jev 自己答的；escalate 开着时脆弱的已经回传了，这一行就只剩「不脆弱」那半边。
+  const own = runs.filter((r) => r.source === 'jev' && r.ok !== null);
+  const fr = own.filter((r) => r.fragile);
+  const st = own.filter((r) => !r.fragile);
+  const acc = (a) => (a.length ? `${pct(a.filter((r) => r.ok).length, a.length)}（${a.filter((r) => r.ok).length}/${a.length}）` : '—');
+  console.log(`| 读数脆弱（该回传的） | ${summary.fragile} 次（${pct(summary.fragile, runs.length)}）` +
+              `${escalate ? '，已回传兜底' : `，Jev 自己答的正确率 ${acc(fr)}；不脆弱的 ${acc(st)}`} |`);
+  if (escalate) {
+    // 回传之后是谁对：兜底真答的 vs Jev 本来会答的，同一批局面
+    const esc = runs.filter((r) => r.escalated && r.ok !== null);
+    const fbOk = esc.filter((r) => r.ok).length;
+    const jvOk = esc.filter((r) => r.jevWouldOk).length;
+    const srcs = [...new Set(runs.filter((r) => r.escalated).map((r) => r.source))].join('/');
+    console.log(`| 　回传之后是谁对 | 判对错的 ${esc.length} 次里：兜底（${srcs || '—'}）答对 ${fbOk}，` +
+                `Jev 本来会答对 ${jvOk}` +
+                `${esc.length ? `；两边不一样的 ${esc.filter((r) => r.ok !== r.jevWouldOk).length} 次` : ''} |`);
+  }
+}
 console.log(`| 延迟 p50 / p95 | ${(summary.p50ms / 1000).toFixed(1)}s / ${(summary.p95ms / 1000).toFixed(1)}s |`);
 if (summary.inputTokens) {
   console.log(`| token（入/出） | ${summary.inputTokens} / ${summary.outputTokens}，` +
               `每次决策 ${Math.round(summary.inputTokens / runs.length)} / ${Math.round(summary.outputTokens / runs.length)} |`);
+}
+if (summary.cost > 0) {
+  console.log(`| 花费 | $${summary.cost.toFixed(4)}（网关报的数） |`);
 }
 console.log(`| 总耗时 | ${seconds}s |`);
 
@@ -474,6 +618,7 @@ if (wrong.length) {
                 `${r.source && r.source !== 'agent' ? `　[${r.source}]` : ''}`);
     console.log(`  - 题意：${s.why}`);
     if (r.why) console.log(`  - 明显局面的判定理由：${r.why}`);
+    if (r.jevWould) console.log(`  - 这题回传了兜底；Jev 本来会 ${r.jevWould}（${r.jevWouldOk ? '对' : '错'}）`);
     if (r.ranges.length) console.log(`  - 它估的对手范围：${r.ranges.join(' / ')}`);
   }
 }

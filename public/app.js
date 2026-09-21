@@ -129,6 +129,7 @@
   // 人机后端配置存在房主自己的浏览器里，方便服务重启后一键重发。
   // 注意：这是明文存在 localStorage 的，只在你自己信任的设备上勾"记住 key"。
   var LS_BOT = 'poker_bot_cfg';
+  var LS_JEV = 'poker_jev_cfg';
   var LS_MUTED = 'poker_muted';
   var LS_MUSIC = 'poker_music';
 
@@ -347,6 +348,13 @@
     D.botNoThink = $('#botNoThink');
     D.botNoThinkHint = $('#botNoThinkHint');
     D.botRemember = $('#botRemember');
+    D.jevForm = $('#jevForm');
+    D.jevStatus = $('#jevStatus');
+    D.jevProvider = $('#jevProvider');
+    D.jevKey = $('#jevKey');
+    D.jevModel = $('#jevModel');
+    D.jevRemove = $('#jevRemove');
+    D.jevRemember = $('#jevRemember');
     D.seatAdmin = $('#seatAdmin');
 
     D.sitDlg = $('#sitDlg');
@@ -2000,18 +2008,65 @@
     }
   }
 
-  /** 服务端还没有 LLM 时，把本机记住的配置推上去（重启后自动恢复） */
+  /**
+   * Jev 决策模型面板。和大模型面板并列，只有房主看得到。
+   * st.bot.jev 由服务端下发，key 已打码。
+   */
+  function renderJevConfig(st, isHost) {
+    if (!D.jevForm) return;
+    D.jevForm.hidden = !isHost;
+    if (!isHost) return;
+    var j = (st.bot && st.bot.jev) || null;
+    var sig = j ? JSON.stringify([j.enabled, j.provider, j.model, j.maskedKey, j.cooling, j.talk, j.notes]) : 'none';
+    if (D.jevStatus.__sig === sig) return;
+    D.jevStatus.__sig = sig;
+    if (!j || !j.enabled) {
+      D.jevStatus.textContent = '未配置，动作由上面的大模型决定。';
+      D.jevStatus.className = 'bot-status';
+      return;
+    }
+    var jobs = [];
+    if (j.talk) jobs.push('闲聊');
+    if (j.notes) jobs.push('读人笔记');
+    D.jevStatus.textContent = '已启用：' + (j.label || j.provider) + '（' + j.model + '，' + j.maskedKey + '）' +
+      (j.cooling ? ' ⚠ 冷却中' : '') +
+      (jobs.length ? '；' + jobs.join('、') + '交给上面的大模型' : '；没配大模型，人机不说话');
+    D.jevStatus.className = 'bot-status ok';
+  }
+
+  function syncJevProviderUI() {
+    if (!D.jevProvider) return;
+    var opt = D.jevProvider.options[D.jevProvider.selectedIndex];
+    if (!opt) return;
+    D.jevModel.placeholder = opt.getAttribute('data-model') || '';
+    D.jevKey.placeholder = opt.getAttribute('data-key') || '';
+  }
+
+  /** 服务端还没有 LLM 时，把本机记住的配置推上去（重启后自动恢复）。Jev 的同理 */
   function pushRememberedBotConfig(st) {
     if (!st || !st.you || !st.you.isHost) return;
-    if (st.bot && st.bot.hasLLM) return;
-    if (S.botPushed) return;
-    var raw = lsGet(LS_BOT);
-    if (!raw) return;
-    var cfg;
-    try { cfg = JSON.parse(raw); } catch (e) { return; }
-    if (!cfg || !cfg.apiKey || !cfg.provider) return;
-    S.botPushed = true;
-    send({ t: 'botConfig', patch: cfg });
+    if (!S.botPushed && !(st.bot && st.bot.providers && st.bot.providers.length)) {
+      var raw = lsGet(LS_BOT);
+      if (raw) {
+        var cfg = null;
+        try { cfg = JSON.parse(raw); } catch (e) { cfg = null; }
+        if (cfg && cfg.apiKey && cfg.provider) {
+          S.botPushed = true;
+          send({ t: 'botConfig', patch: cfg });
+        }
+      }
+    }
+    if (!S.jevPushed && st.bot && st.bot.jev && !st.bot.jev.enabled) {
+      var rawJ = lsGet(LS_JEV);
+      if (rawJ) {
+        var cfgJ = null;
+        try { cfgJ = JSON.parse(rawJ); } catch (e) { cfgJ = null; }
+        if (cfgJ && cfgJ.provider) {
+          S.jevPushed = true;
+          send({ t: 'botConfig', patch: cfgJ });
+        }
+      }
+    }
   }
 
   function renderConfigPane(st, cfg, seats, you) {
@@ -2020,6 +2075,7 @@
     D.cfgForm.classList.toggle('locked', !isHost);
     if (D.btnAddBot) D.btnAddBot.hidden = !isHost;
     renderBotConfig(st, isHost);
+    renderJevConfig(st, isHost);
 
     // 表单值：正在输入时不覆盖
     var focus = document.activeElement;
@@ -2662,6 +2718,35 @@
         // 输入框里不留 key，避免肩窥
         D.botKey.value = '';
         toast('人机后端已提交', true);
+      });
+    }
+
+    if (D.jevForm) {
+      D.jevProvider.addEventListener('change', syncJevProviderUI);
+      syncJevProviderUI();
+
+      D.jevForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var st = S.state;
+        if (!st || !st.you || !st.you.isHost) { toast('只有房主可以配置人机'); return; }
+        var key = D.jevKey.value.trim();
+        // key 留空：服务端会沿用已有的，或者借上面同一家大模型的（OpenRouter 一把 key 两用）
+        var patch = { jev: true, provider: D.jevProvider.value, model: D.jevModel.value.trim() };
+        if (key) patch.apiKey = key;
+        send({ t: 'botConfig', patch: patch });
+        if (D.jevRemember.checked) lsSet(LS_JEV, JSON.stringify(patch));
+        else lsSet(LS_JEV, '');
+        D.jevKey.value = '';
+        toast('Jev 已提交', true);
+      });
+
+      D.jevRemove.addEventListener('click', function () {
+        var st = S.state;
+        if (!st || !st.you || !st.you.isHost) { toast('只有房主可以配置人机'); return; }
+        send({ t: 'botConfig', patch: { jev: true, remove: true } });
+        lsSet(LS_JEV, '');
+        S.jevPushed = true;   // 别在下一帧又把记住的配置推回去
+        toast('Jev 已停用，动作交回大模型', true);
       });
     }
 

@@ -227,6 +227,8 @@
               <option value="kimi" data-model="moonshot-v1-8k" data-key="sk-...">Kimi（月之暗面）</option>
               <option value="yinlianyun" data-model="deepseek-v4-flash" data-nothink="1"
                 data-key="网关 token（uuid 形式）">银联云（deepseek-v4-flash）</option>
+              <option value="openrouter" data-model="deepseek/deepseek-v4-flash" data-nothink="1"
+                data-key="sk-or-...">OpenRouter（deepseek/deepseek-v4-flash）</option>
             </select>
           </label>
           <label>API Key<input id="botKey" type="password" autocomplete="off"
@@ -244,6 +246,32 @@
           <p class="cfg-hint">
             Key 经加密连接送到服务端，只存在内存里，不会发给牌桌上的其他人，
             也不会写进日志。服务重启后需要重新填。
+          </p>
+        </form>
+
+        <form id="jevForm" class="cfg-form" hidden>
+          <h4>Jev 决策模型</h4>
+          <div id="jevStatus" class="bot-status">未配置，动作由上面的大模型决定。</div>
+          <label>供应商
+            <select id="jevProvider">
+              <option value="openrouter" data-model="typesafe/jev-1.13"
+                data-key="留空 = 沿用上面 OpenRouter 的 key">OpenRouter</option>
+              <option value="typesafe" data-model="jev-latest"
+                data-key="TypeSafe 控制台签发的 key">TypeSafe 直连</option>
+            </select>
+          </label>
+          <label>API Key<input id="jevKey" type="password" autocomplete="off"
+            spellcheck="false" placeholder="留空 = 沿用上面 OpenRouter 的 key"></label>
+          <label>模型（留空用默认）<input id="jevModel" type="text" autocomplete="off"
+            spellcheck="false" placeholder="typesafe/jev-1.13"></label>
+          <div class="cfg-actions">
+            <button type="submit" class="act act-start">保存 Jev</button>
+            <button type="button" id="jevRemove" class="act act-ghost">停用</button>
+            <label class="chk"><input id="jevRemember" type="checkbox" checked><span>记住 key</span></label>
+          </div>
+          <p class="cfg-hint">
+            Jev 只做一秒内的判断：对手范围、弃牌率、续注强度，动作由代码算，一次决策约一秒。
+            闲聊和赛后读人笔记仍由上面的大模型做；Jev 挂了也退回它。
           </p>
         </form>
 

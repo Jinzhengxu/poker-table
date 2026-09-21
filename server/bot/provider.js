@@ -56,6 +56,20 @@ export const PROVIDERS = Object.freeze({
     timeoutMs: 30_000,
     noThinkBody: { thinking: { type: 'disabled' } },
   },
+  // OpenRouter：一把 key 同时能调 DeepSeek（这里，OpenAI 兼容路由）和 Jev
+  // （agent/jev.js，另一条 decisions 路由）。默认模型是 DeepSeek v4 flash，
+  // 带思维链，所以超时和银联云一样给 30 秒。
+  //
+  // 关思维链的写法是 reasoning:{enabled:false}，2026-09-21 实测有效：
+  // 同一句提问 reasoning_tokens 从 17 变 0，响应里也不再带 reasoning 字段。
+  openrouter: {
+    label: 'OpenRouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    model: 'deepseek/deepseek-v4-flash',
+    keyEnv: 'OPENROUTER_API_KEY',
+    timeoutMs: 30_000,
+    noThinkBody: { reasoning: { enabled: false } },
+  },
 });
 
 /** 调用失败时抛出的错误，带一个粗分类便于上层决定要不要退避 */
