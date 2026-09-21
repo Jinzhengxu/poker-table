@@ -42,11 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the masked key; the raw key never leaves the process.
 
   **OpenRouter is also an LLM provider preset now** (`openrouter`, default
-  `deepseek/deepseek-v4-flash`, key `OPENROUTER_API_KEY`), so the same key serves the
-  DeepSeek side. Its no-thinking switch is `reasoning: {enabled: false}`, verified on
-  2026-09-21: `reasoning_tokens` went from 17 to 0 on the same prompt and the response lost
-  its `reasoning` field. Compose passes the Jev variables through; the last time an env
-  block was added without that step the voice settings silently did nothing.
+  `deepseek/deepseek-v4-flash`, key `OPENROUTER_API_KEY`), so the same key can serve the
+  DeepSeek side. It is opt-in: `auto` skips it, because the common setup is the LLM on
+  DeepSeek directly and the OpenRouter key for Jev only — if `auto` picked it up, bots
+  would rotate between the two providers by seat with nothing on screen to say so. Its
+  no-thinking switch is `reasoning: {enabled: false}`, verified on 2026-09-21:
+  `reasoning_tokens` went from 17 to 0 on the same prompt and the response lost its
+  `reasoning` field. Compose passes the Jev variables through; the last time an env block
+  was added without that step the voice settings silently did nothing.
 
 - **A `jev` mode for the spot bank: TypeSafe's Jev decision model answers the two
   judgments, the code does the rest.** `npm run eval:spots -- --mode jev`, with either

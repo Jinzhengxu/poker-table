@@ -19,7 +19,7 @@
 // 要调的是 POKER_AGENT_MAX_MS，不是 POKER_BOT_TIMEOUT_MS（那个只管单轮版）。
 
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { PROVIDERS } from '../bot/provider.js';
+import { PROVIDERS, autoProviders } from '../bot/provider.js';
 
 /**
  * 造一个 AI SDK 的语言模型对象。
@@ -82,7 +82,7 @@ export function buildModel(opts) {
  */
 export function modelsFromEnv(env = process.env) {
   const want = (env.POKER_BOT_PROVIDER || 'auto').toLowerCase();
-  const wanted = want === 'auto' ? Object.keys(PROVIDERS) : [want];
+  const wanted = want === 'auto' ? autoProviders() : [want];
   const out = [];
 
   for (const name of wanted) {

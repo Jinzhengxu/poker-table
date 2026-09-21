@@ -1538,3 +1538,13 @@ test('消融：不传 exclude 时行为和以前完全一样', () => {
     ['act', 'estimate_equity', 'plan_bet', 'read_opponents']);
   assert.ok(buildAgentSystem(P0, 6).includes('plan_bet'));
 });
+
+test('modelsFromEnv：和 clientsFromEnv 一个口径，auto 不选 OpenRouter', () => {
+  assert.deepEqual(modelsFromEnv({ OPENROUTER_API_KEY: 'sk-or-x' }), []);
+  const both = modelsFromEnv({ OPENROUTER_API_KEY: 'sk-or-x', DEEPSEEK_API_KEY: 'sk-d' });
+  assert.deepEqual(both.map((m) => m.provider), ['deepseek']);
+  const explicit = modelsFromEnv({ OPENROUTER_API_KEY: 'sk-or-x', POKER_BOT_PROVIDER: 'openrouter', POKER_BOT_THINKING: 'off' });
+  assert.equal(explicit.length, 1);
+  assert.equal(explicit[0].thinking, 'off');
+  assert.deepEqual(explicit[0].providerOptions, { openrouter: { reasoning: { enabled: false } } });
+});

@@ -60,6 +60,10 @@ export const PROVIDERS = Object.freeze({
   // （agent/jev.js，另一条 decisions 路由）。默认模型是 DeepSeek v4 flash，
   // 带思维链，所以超时和银联云一样给 30 秒。
   //
+  // **auto 不选它**（manual）。这把 key 更常见的用途是只给 Jev 用、大模型仍然直连
+  // DeepSeek；要是 auto 也把它装上，人机就会按座位在两家之间轮流，而这只体现在
+  // 延迟和账单上。想让大模型也走 OpenRouter，POKER_BOT_PROVIDER=openrouter 或在面板上选。
+  //
   // 关思维链的写法是 reasoning:{enabled:false}，2026-09-21 实测有效：
   // 同一句提问 reasoning_tokens 从 17 变 0，响应里也不再带 reasoning 字段。
   openrouter: {
@@ -69,8 +73,14 @@ export const PROVIDERS = Object.freeze({
     keyEnv: 'OPENROUTER_API_KEY',
     timeoutMs: 30_000,
     noThinkBody: { reasoning: { enabled: false } },
+    manual: true,
   },
 });
+
+/** auto 模式会自动装配的供应商名单：预设里标了 manual 的要显式指定才用 */
+export function autoProviders() {
+  return Object.keys(PROVIDERS).filter((k) => !PROVIDERS[k].manual);
+}
 
 /** 调用失败时抛出的错误，带一个粗分类便于上层决定要不要退避 */
 export class ProviderError extends Error {
@@ -291,7 +301,7 @@ export function clientsFromEnv(env = process.env) {
   const timeoutMs = Number(env.POKER_BOT_TIMEOUT_MS) || undefined;
   const thinking = String(env.POKER_BOT_THINKING || 'on').toLowerCase() === 'off' ? 'off' : 'on';
 
-  const wanted = want === 'auto' ? Object.keys(PROVIDERS) : [want];
+  const wanted = want === 'auto' ? autoProviders() : [want];
   const out = [];
   for (const name of wanted) {
     const preset = PROVIDERS[name];

@@ -1946,3 +1946,15 @@ test('status：关不掉的家要如实报 canDisableThinking=false', () => {
   assert.equal(p.canDisableThinking, false);
   assert.equal(p.thinking, 'on', '关不掉就得说关不掉，不能顺着勾选框撒谎');
 });
+
+test('clientsFromEnv：OpenRouter 要显式指定，auto 不会因为有 OPENROUTER_API_KEY 就把它装上', () => {
+  // 那把 key 通常是给 Jev 的；auto 装上它，人机就会按座位在两家之间轮流，页面上看不出来
+  assert.deepEqual(clientsFromEnv({ OPENROUTER_API_KEY: 'sk-or-x' }), []);
+  const both = clientsFromEnv({ OPENROUTER_API_KEY: 'sk-or-x', DEEPSEEK_API_KEY: 'sk-d' });
+  assert.deepEqual(both.map((c) => c.provider), ['deepseek']);
+  const explicit = clientsFromEnv({ OPENROUTER_API_KEY: 'sk-or-x', POKER_BOT_PROVIDER: 'openrouter', POKER_BOT_THINKING: 'off' });
+  assert.equal(explicit.length, 1);
+  assert.equal(explicit[0].provider, 'openrouter');
+  assert.equal(explicit[0].model, 'deepseek/deepseek-v4-flash');
+  assert.equal(explicit[0].thinking, 'off', 'OpenRouter 这家关得掉思维链');
+});

@@ -194,7 +194,7 @@ token，不是上游真 key）、OpenRouter（默认 DeepSeek v4 flash）。都�
 | `KIMI_API_KEY`         | —            | Kimi（月之暗面）的 key                     |
 | `DEEPSEEK_API_KEY`     | —            | DeepSeek 的 key                            |
 | `YINLIANYUN_API_KEY`   | —            | 银联云网关 token（默认模型 `deepseek-v4-flash`）|
-| `POKER_BOT_PROVIDER`   | `auto`       | `kimi` / `deepseek` / `yinlianyun` / `openrouter` / `auto`（有哪个用哪个）|
+| `POKER_BOT_PROVIDER`   | `auto`       | `kimi` / `deepseek` / `yinlianyun` / `openrouter` / `auto`（有哪个用哪个；`openrouter` 要显式指定，auto 不选它，那把 key 通常是给 Jev 的）|
 | `POKER_BOT_MODEL`      | 各家默认     | 覆盖模型名。这是**全局**的：多家一起用时会同时盖到每一家头上，而模型名并不通用 |
 | `POKER_BOT_BASE_URL`   | 各家默认     | 覆盖接入点（自建代理、海外站点）。同样是全局的 |
 | `POKER_BOT_TIMEOUT_MS` | 各家默认     | 单次请求超时，超了就走兜底。不填就按各家预设：多数 8000，银联云 30000（它的默认模型带思维链）|
@@ -588,8 +588,8 @@ npm run eval:spots -- --tag range --repeat 3        # 只跑成对的范围题
   话晚几秒进聊天区，牌桌不等它，提示词里同样没有底牌。读人笔记：手牌结束后让它从画像和
   摊牌里归纳一句「这人怎么打」，下一手写进 Jev 的 state，归纳是大模型的活、Jev 不会。
   兜底：Jev 挂了、或者读数脆弱且开了 `POKER_JEV_ESCALATE`，交给原来的 agent → 单轮 → 规则链。
-- 房主在「设置 → Jev 决策模型」里填 key 即可，OpenRouter 的 key 可以和上面的大模型共用一把。
-  环境变量见 `.env.example` 的 Jev 一节。
+- 房主在「设置 → Jev 决策模型」里填 key 即可。常见搭配是大模型直连 DeepSeek、Jev 走 OpenRouter，
+  两把 key 各管各的；大模型也想走 OpenRouter 的话 key 可以共用一把。环境变量见 `.env.example` 的 Jev 一节。
 
 题库上量过的分工依据：Jev 的范围读数和大模型一样准、快 6 到 40 倍；带思维链的大模型
 一次要 6 到 40 秒，放在决策路径上会撞行动时限，放在手牌之间就没有延迟压力。
