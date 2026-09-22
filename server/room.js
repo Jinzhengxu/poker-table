@@ -1497,6 +1497,27 @@ export class Room {
         model: p.model,
         cooling: p.cooling,
       })),
+      // Jev 决策模型：所有人都看得到「人机是 Jev 在判」和累计的次数 / 往返 / 花费，
+      // 顶栏那个徽标靠它。key 的任何形态都不在这里。
+      jev: st.jev ? {
+        enabled: !!st.jev.enabled,
+        label: st.jev.label,
+        model: st.jev.model,
+        cooling: !!st.jev.cooling,
+        stats: Room.#publicJevStats(st.jev.stats),
+      } : undefined,
+    };
+  }
+
+  /** 顶栏徽标要的几个累计数；其余（笔记、脆弱、回传）只给房主 */
+  static #publicJevStats(stats) {
+    if (!stats) return null;
+    return {
+      calls: Number(stats.calls) || 0,
+      jev: Number(stats.jev) || 0,
+      obvious: Number(stats.obvious) || 0,
+      latencyMs: Number(stats.latencyMs) || 0,
+      cost: Number(stats.cost) || 0,
     };
   }
 

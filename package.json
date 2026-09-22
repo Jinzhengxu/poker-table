@@ -3,14 +3,21 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Self-hosted, no-signup Texas Hold'em table for playing with friends",
+  "description": "Self-hosted, no-signup Texas Hold'em table for playing with friends — the bots are driven by Jev, TypeSafe's System One decision model: table state in, typed opponent reads out, one round trip per decision",
   "keywords": [
     "poker",
     "texas-holdem",
     "websocket",
     "self-hosted",
     "multiplayer",
-    "no-build"
+    "no-build",
+    "jev",
+    "typesafe-jev",
+    "system-one",
+    "decision-model",
+    "poker-bot",
+    "texas-holdem-bot",
+    "guandan"
   ],
   "homepage": "https://github.com/Jinzhengxu/poker-table#readme",
   "bugs": {

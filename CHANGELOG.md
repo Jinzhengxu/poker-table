@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A Jev pill in the top bar, visible to everyone at the table.** When the bots are
+  driven by Jev the hand meta shows `Jev · 37 判断 · 0.9s · $0.002`: decisions so far,
+  average round trip, and spend from OpenRouter's `usage.cost` (TypeSafe direct reports
+  no cost, so that part stays out). Non-host viewers now receive a reduced `bot.jev`
+  block — `enabled`, `label`, `model`, `cooling` and five counters — where before they
+  got nothing about Jev at all; the host keeps the full status. No key material, masked
+  or otherwise, is in it. README and package metadata now lead with the Jev split.
 - **Jev is wired into the live bot, with the language model kept for what Jev cannot do.**
   With a key configured — `TYPESAFE_API_KEY` / `OPENROUTER_API_KEY` in the environment, or
   the new "Jev 决策模型" panel under 设置 — `JevDriver` now wraps the agent chain in

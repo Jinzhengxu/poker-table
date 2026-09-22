@@ -155,7 +155,13 @@ h3, h4 { margin: 0; font-weight: 600; }
 }
 /* 顶栏挤不下的时候，每段各自打省略号；不加这一句就会从半个汉字上切开 */
 .meta > * { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.meta > .sep, .meta > .host-tag, #metaHand, #metaDeal { flex: 0 0 auto; }
+.meta > .sep, .meta > .host-tag, .meta > .jev-tag, #metaHand, #metaDeal { flex: 0 0 auto; }
+.jev-tag {
+  padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700;
+  color: #06201b; letter-spacing: .01em;
+  background: linear-gradient(180deg, #9af5dc, #2fbf9a);
+  box-shadow: 0 0 10px rgba(47, 191, 154, .35);
+}
 .meta .sep { color: var(--txt-faint); }
 .host-tag {
   padding: 2px 7px; border-radius: 999px; font-size: 11px;

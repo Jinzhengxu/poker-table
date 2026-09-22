@@ -3,6 +3,7 @@
 [![CI](https://github.com/Jinzhengxu/poker-table/actions/workflows/ci.yml/badge.svg)](https://github.com/Jinzhengxu/poker-table/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg)](package.json)
+[![Bots by Jev](https://img.shields.io/badge/bots-Jev%20%C2%B7%20System%20One-2fbf9a.svg)](https://typesafe.ai)
 
 Self-hosted, no-signup card tables for playing with friends.
 Open the page, click an empty seat, type a nickname — you're in.
@@ -15,6 +16,14 @@ One service, two tables: **Texas Hold'em** at `/` and **Guandan** (掼蛋) at
 Full no-limit rules: blinds, button rotation, four betting streets, all-ins with
 correctly layered side pots, automatic showdown evaluation and pot distribution.
 
+**The bots think in about a second, and they don't generate a word of text to do it.**
+Seat up to seven of them and every decision is a single round trip to
+[Jev](https://typesafe.ai), TypeSafe's System One model: the table state goes in as plain
+English, a typed read of the opponent comes back with calibrated probabilities, and the
+code turns that read into fold, call, or raise. A language model is kept only for the two
+things Jev cannot do — table talk, and a one-line read on each human between hands — and
+neither is on the decision path. [How the split works →](#jev-bots-the-default-once-a-key-is-configured)
+
 ## Why this exists
 
 Most online poker either wants your money, your phone number, or both. This is a
@@ -26,6 +35,11 @@ from a URL.
 
 - **Three games.** Texas Hold'em (8 seats), Guandan (4 seats, two teams,
   level-climbing), and Hotword (1v1 semantic word race with an audience).
+- **Bots that decide in one round trip.** Up to seven per table, each with a random
+  persona. With a Jev key the read on the opponent comes from TypeSafe's System One
+  model in a few hundred milliseconds, the arithmetic that turns it into an action is
+  plain code, and a language model only does the talking. With no key at all they play
+  by the built-in rules and stay quiet.
 - **No signup.** A nickname is your identity. Avatars are derived from it, and
   both tables share the same avatar rules.
 - **Voice chat at the table.** Audio goes browser-to-browser, never through the
@@ -233,6 +247,11 @@ lifetime, so its style stays consistent hand to hand.
 The persona is more than prompt text: the traits are structured, and the rule
 fallback shifts its thresholds by them — so when the API is down, the
 loose-aggressive bot doesn't suddenly play like a rock.
+
+With a Jev key configured (Settings → Jev, or the environment) the decision itself comes
+from Jev, and the language model described below only talks and takes notes — see
+[Jev bots](#jev-bots-the-default-once-a-key-is-configured). Everything in this section
+about providers, keys and fallbacks still applies: it is the layer Jev falls back to.
 
 Bots run on an LLM when one is configured, and fall back to a built-in rule
 policy (Chen formula preflop, hand category and pot odds postflop) otherwise.
@@ -546,6 +565,57 @@ tokens of single-shot mode plus a few hundred for the table and profiles; with i
 `@ai-sdk/openai-compatible` and `zod` (~21 MB). The table itself still depends only on
 `ws` — those three are pulled in via a dynamic `import()`, and if they are missing the
 server logs it and falls back to single-shot.
+
+### Jev bots (the default once a key is configured)
+
+[Jev](https://typesafe.ai) is TypeSafe's System One model. It generates no text: it takes a
+state and a handful of typed questions, answers all of them in one parallel pass, and each
+answer comes back with a probability attached. Once the equity table had moved into the
+prompt, the language model had exactly two judgements left to make — which of the five
+range buckets the opponent is in, and whether they fold to a given bet size — and those
+are the shape Jev is built for. So `server/agent/jev.js` asks Jev exactly those questions
+and keeps every piece of arithmetic in code.
+
+```
+JevDriver.decide()
+  ├─ five-row equity table (local, 100–300 ms)
+  ├─ obvious spot → the rule acts directly (same classifier as the agent)
+  ├─ one Jev round trip: opponent_range (choice)
+  │                      + fold_to_bet_N (noul) for every candidate size
+  │                      + continue_strength (noul)
+  └─ code turns the read into an action: table lookup → pot odds → EV per size → persona bias
+```
+
+The live table is a **division of labour, not a replacement**:
+
+- **Jev decides the action.** One round trip; about a second wall-clock including the
+  local equity table. Jev never sees the bot's own hole cards or the chat — both questions
+  are about the opponent — so nothing on this path can leak a hand or be prompt-injected.
+- **The language model does the three things Jev cannot, none of them on the decision
+  path.** *Table talk*: after the action is applied, an asynchronous request produces a
+  line that lands in chat a few seconds later; the table never waits for it. *Reads on
+  people*: between hands the model condenses a human's profile and showdowns into one
+  English sentence, which goes into Jev's state as a coach note for the next hand —
+  synthesis is what a language model is for and what Jev is not. *Fallback*: a Jev error,
+  timeout or malformed answer goes to the existing chain, agent → single-shot → rule, so a
+  dead API changes nothing about whether the table keeps dealing.
+- The host pastes a key under **Settings → Jev**. Two routes reach the model: TypeSafe
+  directly (`TYPESAFE_API_KEY`, model `jev-latest`) or OpenRouter's decisions route
+  (`OPENROUTER_API_KEY`, model `typesafe/jev-1.13`). A common pairing is DeepSeek direct
+  for talk and notes with OpenRouter for Jev; one OpenRouter key can also drive both.
+  `POKER_JEV=off` removes the layer entirely; the remaining knobs are in `.env.example`
+  under the Jev heading.
+- Everyone at the table sees a **Jev pill** in the top bar: decisions so far, average
+  round trip, and spend. No key material, masked or otherwise, ever leaves the server.
+
+Measured on the spot bank (`npm run eval:spots -- --mode jev --repeat 3`; 46 hand-written
+spots, `typesafe/jev-1.13` through OpenRouter): Jev's range reads were as accurate as the
+reasoning model's and 6–40× faster — p50 about one second per decision, against 6 s for a
+single-shot call and 35 s for the tool-loop agent — which is why the reasoning model was
+moved *between* hands rather than left in front of the action clock. Running the whole
+bank three times costs under a cent. The full tables, the two arithmetic corrections that
+came out of it (`POKER_JEV_RAISE_TIGHTER`, `POKER_JEV_STRENGTH`) and the "fragile read"
+escalation criterion are in the CHANGELOG under the Jev entries.
 
 ### Evaluation: what is range modelling actually worth
 

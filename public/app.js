@@ -270,6 +270,7 @@
     D.metaHand = $('#metaHand');
     D.metaBlinds = $('#metaBlinds');
     D.metaHost = $('#metaHost');
+    D.metaJev = $('#metaJev');
     D.btnSound = $('#btnSound');
     D.btnMusic = $('#btnMusic');
     D.btnSide = $('#btnSide');
@@ -1247,6 +1248,34 @@
         (ante > 0 ? ' · 前注 ' + fmt(ante) : '');
     }
     if (D.metaHost) D.metaHost.hidden = !you.isHost;
+    renderJevTag(st);
+  }
+
+  /**
+   * 顶栏的 Jev 徽标：人机接了决策模型就亮，带累计判断次数、平均往返和花费。
+   * 数据是 st.bot.jev.stats，服务端给所有人下发（不含 key）。
+   */
+  function renderJevTag(st) {
+    if (!D.metaJev) return;
+    var j = st.bot && st.bot.jev;
+    if (!j || !j.enabled) { D.metaJev.hidden = true; return; }
+    var s = j.stats || {};
+    var calls = Number(s.calls) || 0;
+    var txt = 'Jev';
+    var tip = '人机的动作由 Jev 决策模型（' + (j.label || j.provider || '') + ' · ' + (j.model || '') + '）判断';
+    if (calls > 0) {
+      var avg = (Number(s.latencyMs) || 0) / calls;
+      var avgTxt = avg >= 1000 ? (avg / 1000).toFixed(1) + 's' : Math.round(avg) + 'ms';
+      txt += ' · ' + calls + ' 判断 · ' + avgTxt;
+      var cost = Number(s.cost) || 0;
+      if (cost > 0) txt += ' · $' + (cost < 0.01 ? cost.toFixed(4) : cost.toFixed(3));
+      tip += '；累计 ' + calls + ' 次往返，平均 ' + avgTxt + (cost > 0 ? '，共花 $' + cost.toFixed(4) : '') +
+        (Number(s.obvious) ? '；另有 ' + s.obvious + ' 个明显局面由规则直接出手' : '');
+    }
+    if (j.cooling) { txt += ' · 冷却中'; tip += '；Jev 连续出错，暂时由大模型或规则顶上'; }
+    if (D.metaJev.textContent !== txt) D.metaJev.textContent = txt;
+    if (D.metaJev.title !== tip) D.metaJev.title = tip;
+    D.metaJev.hidden = false;
   }
 
   // ============================ 筹码动画 ============================

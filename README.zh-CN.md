@@ -3,6 +3,7 @@
 [![CI](https://github.com/Jinzhengxu/poker-table/actions/workflows/ci.yml/badge.svg)](https://github.com/Jinzhengxu/poker-table/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen.svg)](package.json)
+[![人机由 Jev 驱动](https://img.shields.io/badge/%E4%BA%BA%E6%9C%BA-Jev%20%C2%B7%20System%20One-2fbf9a.svg)](https://typesafe.ai)
 
 自建的、免登录的在线牌桌，给朋友之间开局用。
 打开网页 → 点空座位 → 输个昵称 → 就能玩。
@@ -14,6 +15,12 @@
 
 完整的无限注规则：盲注、按钮轮转、四条街下注、全下与边池、摊牌自动比大小、自动分配筹码。
 
+**人机一秒出手，而且决策路上一个字都不生成。** 房主最多加 7 个人机，每一次决策都是往
+[Jev](https://typesafe.ai)（TypeSafe 的 System One 决策模型）跑一趟：牌桌状态用英文写进去，
+回来的是「对手落在哪一档范围」「面对这个尺度会不会弃牌」——带概率的类型化答案，再由代码
+算成弃牌 / 跟注 / 加注。大模型只留着做 Jev 做不了的两件事：闲聊，和手牌之间的读人笔记，
+都不在决策路径上。[怎么分工 →](#jev-版人机配了-key-就是默认)
+
 ## 为什么有这个东西
 
 网上的德扑要么要钱，要么要手机号，要么两个都要。这是一张你自己跑的牌桌，
@@ -23,6 +30,9 @@
 ## 特性
 
 - **三种玩法**：德州扑克（8 座）、掼蛋（4 座、两两组队、打级）、热词（1v1 猜词竞速 + 观众席）。
+- **人机一趟往返就出手**：每桌最多 7 个人机，各带随机人格。配了 Jev 的 key，对手的读数由
+  TypeSafe 的 System One 模型几百毫秒给出，把读数算成动作的是代码，大模型只负责说话；
+  一个 key 都不配就按内置规则打、不说话。
 - **免登录**：昵称即身份，头像按昵称自动生成，两张桌子共用同一套头像规则。
 - **语音连麦**：桌上直接开麦聊天，音频浏览器之间点对点直传，不过服务器。
   **三张桌子的语音是分开的**，互不串台。
@@ -180,6 +190,10 @@ node scripts/build-hotword-data.mjs /tmp/tencent.bin
 
 人格不只是提示词里的一段话：特质是结构化的，规则兜底也会跟着偏移阈值，
 所以 API 挂掉退回规则时，「松凶」的人机不会突然打得像块石头。
+
+配了 Jev 的 key（「设置 → Jev 决策模型」或环境变量），动作本身由 Jev 判，下面说的大模型只
+负责闲聊和读人笔记——见 [Jev 版人机](#jev-版人机配了-key-就是默认)。这一节讲的供应商、
+key 和兜底仍然全部成立：它就是 Jev 挂了以后退回的那一层。
 
 配了 LLM 就走大模型，没配就走内置的规则策略（翻牌前 Chen formula，翻牌后牌型类别 +
 底池赔率）。**兜底不只是给"没配 key"用的**——超时、限流、返回内容解析不了，全都落到这里，
@@ -590,6 +604,7 @@ npm run eval:spots -- --tag range --repeat 3        # 只跑成对的范围题
   兜底：Jev 挂了、或者读数脆弱且开了 `POKER_JEV_ESCALATE`，交给原来的 agent → 单轮 → 规则链。
 - 房主在「设置 → Jev 决策模型」里填 key 即可。常见搭配是大模型直连 DeepSeek、Jev 走 OpenRouter，
   两把 key 各管各的；大模型也想走 OpenRouter 的话 key 可以共用一把。环境变量见 `.env.example` 的 Jev 一节。
+- 桌上所有人的顶栏都有一枚 **Jev 徽标**，滚动显示累计判断次数、平均往返和花费；key 的任何形态都不出服务器。
 
 题库上量过的分工依据：Jev 的范围读数和大模型一样准、快 6 到 40 倍；带思维链的大模型
 一次要 6 到 40 秒，放在决策路径上会撞行动时限，放在手牌之间就没有延迟压力。
