@@ -501,7 +501,9 @@ function handleMessage(client, msg, fail) {
   switch (msg.t) {
     case 'hello': {
       const token = typeof msg.token === 'string' ? msg.token : null;
-      room.hello(client, token);
+      // 界面语言（可选）：只认 zh / en，别的当没报
+      const lang = msg.lang === 'en' || msg.lang === 'zh' ? msg.lang : undefined;
+      room.hello(client, token, lang);
       return;
     }
     case 'ping': {

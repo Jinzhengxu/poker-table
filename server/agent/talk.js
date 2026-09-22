@@ -75,6 +75,8 @@ export function buildTalkUser(state, persona, action) {
     others.length ? `桌上其他人：${others.join('，')}。` : '',
     '',
     '只输出一个 JSON 对象：{"say": "一句话"}。say 最多 20 字，可以是空字符串表示不说。',
+    // 房主的界面是英文时，桌上人多半看不懂中文；话按桌子的语言说
+    table?.lang === 'en' ? 'The table speaks English: write "say" in casual, natural English (at most 20 words).' : '',
     '聊气氛、调侃对手、说你要干什么都行；**一个字都不许提你自己的牌**（底牌、牌型、听牌、胜率、是不是在诈唬）。',
     '不要解释，不要加别的字段。',
   ].filter((l) => l !== '').join('\n');

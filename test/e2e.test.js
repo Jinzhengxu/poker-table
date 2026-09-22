@@ -106,7 +106,7 @@ test('HTTP: healthz 与静态资源可访问，且防目录穿越', async () => 
       `${name} 不应引用任何外部资源，发现：${externalRef?.[0]}`);
   }
 
-  for (const p of ['/style.css', '/app.js']) {
+  for (const p of ['/style.css', '/app.js', '/i18n.js', '/voice.js']) {
     const r = await fetch(BASE + p);
     assert.equal(r.status, 200, `${p} 应可访问`);
   }

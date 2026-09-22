@@ -35,6 +35,10 @@ from a URL.
 
 - **Three games.** Texas Hold'em (8 seats), Guandan (4 seats, two teams,
   level-climbing), and Hotword (1v1 semantic word race with an audience).
+- **Chinese or English, picked automatically.** The table follows the browser's language
+  list (any Chinese entry means Chinese, none means English) and a 🌐 button in the top bar
+  overrides it. Everything switches — buttons, dialogs, the hand log, server errors, even
+  the disguised tab title — and bots talk in the host's language.
 - **Bots that decide in one round trip.** Up to seven per table, each with a random
   persona. With a Jev key the read on the opponent comes from TypeSafe's System One
   model in a few hundred milliseconds, the arithmetic that turns it into an action is

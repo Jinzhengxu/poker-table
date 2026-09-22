@@ -13,6 +13,9 @@
 (function () {
   'use strict';
 
+  // 中英文：i18n.js 先加载；万一没有（别的页面单独引用），原样返回中文
+  var tr = (window.I18N && window.I18N.t) || function (zh) { return zh; };
+
   var HAS_RTC = typeof window.RTCPeerConnection === 'function';
 
   function elt(tag, cls, text) {
@@ -71,15 +74,15 @@
     function micError(err) {
       var name = err && err.name ? err.name : '';
       if (name === 'NotAllowedError' || name === 'SecurityError') {
-        return '浏览器不让用麦克风。请在地址栏左边的权限里允许麦克风，然后再试一次。';
+        return tr('浏览器不让用麦克风。请在地址栏左边的权限里允许麦克风，然后再试一次。');
       }
       if (name === 'NotFoundError' || name === 'OverconstrainedError') {
-        return '没找到麦克风设备。';
+        return tr('没找到麦克风设备。');
       }
       if (name === 'NotReadableError') {
-        return '麦克风被别的程序占着，先关掉那个再来。';
+        return tr('麦克风被别的程序占着，先关掉那个再来。');
       }
-      return '打不开麦克风：' + (name || (err && err.message) || '未知错误');
+      return tr('打不开麦克风：{err}', { err: name || (err && err.message) || tr('未知错误') });
     }
 
     function getMic() {
@@ -105,7 +108,7 @@
         stream.getAudioTracks().forEach(function (t) {
           t.addEventListener('ended', function () {
             if (S.want) {
-              toast('麦克风断了，已经下麦');
+              toast(tr('麦克风断了，已经下麦'));
               leave();
             }
           });
@@ -135,8 +138,8 @@
     // ==================== 上麦 / 下麦 ====================
 
     function join() {
-      if (!S.supported) { toast('这个浏览器不支持语音连麦'); return; }
-      if (!S.enabled) { toast('这台服务器没有开语音连麦'); return; }
+      if (!S.supported) { toast(tr('这个浏览器不支持语音连麦')); return; }
+      if (!S.enabled) { toast(tr('这台服务器没有开语音连麦')); return; }
       if (S.busy) return;
       S.busy = true;
       render();
@@ -144,7 +147,7 @@
         S.busy = false;
         S.want = true;
         if (!send({ t: 'voiceJoin' })) {
-          toast('还没连上服务器，稍后再试');
+          toast(tr('还没连上服务器，稍后再试'));
         }
         render();
       }).catch(function (err) {
@@ -152,9 +155,9 @@
         S.want = false;
         dropMic();
         if (err && err.message === 'insecure') {
-          toast('语音需要 HTTPS。用 https 的地址打开，或者在本机 localhost 上测试。');
+          toast(tr('语音需要 HTTPS。用 https 的地址打开，或者在本机 localhost 上测试。'));
         } else if (err && err.message === 'unsupported') {
-          toast('这个浏览器不支持麦克风');
+          toast(tr('这个浏览器不支持麦克风'));
         } else {
           toast(micError(err));
         }
@@ -273,7 +276,7 @@
             // 礼貌的一方不主动重启，所以要等第二次失败再喊——
             // 否则对面重启成功了，这边已经先弹过一次假警报
             S.warnedFail = true;
-            toast('和' + nameOf(id) + '的语音没打通。两边网络之间需要 TURN 中转，详见 README。');
+            toast(tr('和{name}的语音没打通。两边网络之间需要 TURN 中转，详见 README。', { name: nameOf(id) }));
           }
         }
         render();
@@ -484,9 +487,9 @@
 
     function nameOf(id) {
       for (var i = 0; i < S.roster.length; i++) {
-        if (S.roster[i].playerId === id) return S.roster[i].name || '对方';
+        if (S.roster[i].playerId === id) return S.roster[i].name || tr('对方');
       }
-      return '对方';
+      return tr('对方');
     }
 
     /** 吃掉语音相关的服务端消息，返回是否已处理 */
@@ -575,7 +578,7 @@
       box.hidden = true;
 
       var head = elt('div', 'vb-head');
-      var title = elt('span', 'vb-title', '语音连麦');
+      var title = elt('span', 'vb-title', tr('语音连麦'));
       var count = elt('span', 'vb-count', '');
       head.appendChild(title);
       head.appendChild(count);
@@ -589,13 +592,13 @@
       });
       head.appendChild(btnFold);
 
-      var btnMic = elt('button', 'vb-btn vb-mic', '静音');
+      var btnMic = elt('button', 'vb-btn vb-mic', tr('静音'));
       btnMic.type = 'button';
       btnMic.addEventListener('click', toggleMic);
-      var btnQuit = elt('button', 'vb-btn vb-quit', '下麦');
+      var btnQuit = elt('button', 'vb-btn vb-quit', tr('下麦'));
       btnQuit.type = 'button';
       btnQuit.addEventListener('click', leave);
-      var btnJoin = elt('button', 'vb-btn vb-join', '上麦');
+      var btnJoin = elt('button', 'vb-btn vb-join', tr('上麦'));
       btnJoin.type = 'button';
       btnJoin.addEventListener('click', join);
       head.appendChild(btnMic);
@@ -606,7 +609,7 @@
       var tip = elt('div', 'vb-tip');
       tip.hidden = true;
 
-      var gesture = elt('button', 'vb-gesture', '🔈 点这里打开声音');
+      var gesture = elt('button', 'vb-gesture', tr('🔈 点这里打开声音'));
       gesture.type = 'button';
       gesture.hidden = true;
       gesture.addEventListener('click', function () {
@@ -648,10 +651,10 @@
     function stateText(p) {
       switch (p.state) {
         case 'connected': return '';
-        case 'failed': return '连不通';
-        case 'disconnected': return '断开中';
-        case 'closed': return '已关闭';
-        default: return '连接中';
+        case 'failed': return tr('连不通');
+        case 'disconnected': return tr('断开中');
+        case 'closed': return tr('已关闭');
+        default: return tr('连接中');
       }
     }
 
@@ -671,32 +674,32 @@
         S.roster.forEach(function (m) {
           var li = elt('li', 'vb-mem' + (m.muted ? ' is-muted' : ''));
           li.setAttribute('data-pid', m.playerId);
-          li.title = (m.name || '观众') + (m.muted ? '（已静音）' : '');
+          li.title = (m.name || tr('观众')) + (m.muted ? tr('（已静音）') : '');
 
           var av = elt('i', 'vb-av', (m.avatar && m.avatar.glyph) || (m.name || '?').charAt(0));
           if (m.avatar && m.avatar.bg) av.style.background = m.avatar.bg;
           li.appendChild(av);
 
           var main = elt('span', 'vb-main');
-          main.appendChild(elt('span', 'vb-name', m.name || '观众'));
+          main.appendChild(elt('span', 'vb-name', m.name || tr('观众')));
           var sub = elt('span', 'vb-sub');
           sub.textContent = m.seat === null || m.seat === undefined
-            ? '观众' : (m.seat + 1) + ' 号位';
-          if (m.playerId === S.self) sub.textContent += ' · 我';
+            ? tr('观众') : tr('{n} 号位', { n: m.seat + 1 });
+          if (m.playerId === S.self) sub.textContent += tr(' · 我');
           var p = S.peers.get(m.playerId);
           var stx = p ? stateText(p) : '';
           if (stx) sub.textContent += ' · ' + stx;
           main.appendChild(sub);
           li.appendChild(main);
 
-          if (m.muted) li.appendChild(elt('i', 'vb-flag muted', '静音'));
+          if (m.muted) li.appendChild(elt('i', 'vb-flag muted', tr('静音')));
 
           // 别人：可以单独把他关掉（比如那位在敲键盘）
           if (m.playerId !== S.self) {
             var b = elt('button', 'vb-off' + (p && p.localMuted ? ' is-on' : ''),
-              p && p.localMuted ? '已屏蔽' : '屏蔽');
+              p && p.localMuted ? tr('已屏蔽') : tr('屏蔽'));
             b.type = 'button';
-            b.title = '只在你这边把这个人的声音关掉';
+            b.title = tr('只在你这边把这个人的声音关掉');
             b.addEventListener('click', function () {
               var pp = S.peers.get(m.playerId);
               if (!pp) return;
@@ -728,7 +731,7 @@
         button.classList.toggle('is-on', S.want && S.joined);
         button.classList.toggle('is-busy', S.busy);
         var lbl = button.querySelector('.lbl');
-        var txt = S.busy ? '开麦中' : (S.want ? (S.micMuted ? '已静音' : '连麦中') : '连麦');
+        var txt = S.busy ? tr('开麦中') : (S.want ? (S.micMuted ? tr('已静音') : tr('连麦中')) : tr('连麦'));
         if (lbl) lbl.textContent = txt;
         // 手机上标签会被 CSS 藏起来，人数就靠角标传达
         var badge = button.querySelector('.voice-badge');
@@ -742,7 +745,7 @@
       ui.box.hidden = !S.enabled || !S.supported || (!S.want && S.roster.length === 0);
       ui.count.textContent = S.roster.length + ' / ' + S.max;
       ui.btnMic.hidden = !S.want;
-      ui.btnMic.textContent = S.micMuted ? '取消静音' : '静音';
+      ui.btnMic.textContent = S.micMuted ? tr('取消静音') : tr('静音');
       ui.btnMic.classList.toggle('is-on', S.micMuted);
       ui.btnQuit.hidden = !S.want;
       ui.btnJoin.hidden = S.want;
@@ -750,11 +753,11 @@
       ui.gesture.hidden = !S.needGesture;
       ui.box.classList.toggle('is-compact', S.compact);
       ui.btnFold.textContent = S.compact ? '▸' : '▾';
-      ui.btnFold.setAttribute('aria-label', S.compact ? '展开语音名单' : '收起语音名单');
+      ui.btnFold.setAttribute('aria-label', S.compact ? tr('展开语音名单') : tr('收起语音名单'));
 
       var tip = '';
-      if (S.want && !S.joined) tip = '正在上麦…';
-      else if (!S.want && S.roster.length) tip = '他们在语音里聊天，点「上麦」加进去。';
+      if (S.want && !S.joined) tip = tr('正在上麦…');
+      else if (!S.want && S.roster.length) tip = tr('他们在语音里聊天，点「上麦」加进去。');
       ui.tip.textContent = tip;
       ui.tip.hidden = !tip;
 

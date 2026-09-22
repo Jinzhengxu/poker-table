@@ -8,6 +8,12 @@
 (function () {
   'use strict';
 
+  // 中英文：i18n.js 先于本文件加载。tr() 按当前语言取文案（中文原样返回），
+  // tlog() 渲染服务端日志条目（英文按 k/p，中文用 text）。
+  var I18N = window.I18N;
+  var tr = I18N.t;
+  var tlog = I18N.tlog;
+
   // ============================ 常量 ============================
 
   var MAX_SEATS = 8;
@@ -115,13 +121,13 @@
   var SUIT_CH = { s: '♠︎', h: '♥︎', d: '♦︎', c: '♣︎' };
 
   var PHASE_TXT = {
-    waiting: '等待开局',
-    preflop: '翻牌前',
-    flop: '翻牌',
-    turn: '转牌',
-    river: '河牌',
-    showdown: '摊牌',
-    handOver: '本手结束'
+    waiting: tr('等待开局'),
+    preflop: tr('翻牌前'),
+    flop: tr('翻牌'),
+    turn: tr('转牌'),
+    river: tr('河牌'),
+    showdown: tr('摊牌'),
+    handOver: tr('本手结束')
   };
 
   var LS_TOKEN = 'poker_token';
@@ -886,7 +892,7 @@
       try { S.ws.onclose = null; S.ws.close(); } catch (e) { /* 忽略 */ }
       S.ws = null;
     }
-    setConn('connecting', '连接中…');
+    setConn('connecting', tr('连接中…'));
     var ws;
     try {
       ws = new WebSocket(wsUrl());
@@ -898,10 +904,10 @@
 
     ws.onopen = function () {
       S.backoff = 500;
-      setConn('online', '已连接');
+      setConn('online', tr('已连接'));
       // 重连可能意味着服务端重启过（内存态全丢），允许再推一次人机配置
       S.botPushed = false;
-      send({ t: 'hello', token: lsGet(LS_TOKEN) || null });
+      send({ t: 'hello', token: lsGet(LS_TOKEN) || null, lang: I18N.lang });
       startPing();
       sendPresence(true);
     };
@@ -923,7 +929,7 @@
         showFatal(S.fatal.title, S.fatal.text);
         return;
       }
-      setConn('offline', '重连中…');
+      setConn('offline', tr('重连中…'));
       scheduleReconnect();
     };
   }
@@ -971,7 +977,7 @@
 
   function showFatal(title, text) {
     if (!D.fatalMask) return;
-    D.fatalTitle.textContent = title || '连接已断开';
+    D.fatalTitle.textContent = title || tr('连接已断开');
     D.fatalText.textContent = text || '';
     D.fatalMask.hidden = false;
   }
@@ -998,11 +1004,11 @@
 
       case 'error':
         clearPending();
-        toast(m.msg || '操作失败');
+        toast(tr(m.msg || '操作失败'));
         if (typeof m.msg === 'string' && /另一个窗口|请出了牌桌/.test(m.msg)) {
           S.fatal = {
-            title: /窗口/.test(m.msg) ? '牌桌已在其他窗口打开' : '你已离开牌桌',
-            text: m.msg
+            title: tr(/窗口/.test(m.msg) ? '牌桌已在其他窗口打开' : '你已离开牌桌'),
+            text: tr(m.msg)
           };
         }
         break;
@@ -1091,9 +1097,26 @@
   }
 
   function cardLabel(code) {
-    var names = { s: '黑桃', h: '红桃', d: '方块', c: '梅花' };
+    var names = { s: tr('黑桃'), h: tr('红桃'), d: tr('方块'), c: tr('梅花') };
     var r = code.charAt(0);
-    return (names[code.charAt(1)] || '') + (r === 'T' ? '10' : r);
+    var rank = r === 'T' ? '10' : r;
+    var suit = names[code.charAt(1)] || '';
+    return I18N.lang === 'en' ? (rank + ' of ' + suit) : (suit + rank);
+  }
+
+  /** 座位气泡的动作标签。服务端也给了中文 label，但英文得自己拼，所以两种语言都在这里拼 */
+  function actionLabel(a) {
+    if (!a || typeof a !== 'object') return '';
+    var n = fmt(Number.isFinite(a.amount) ? a.amount : 0);
+    switch (a.type) {
+      case 'fold': return tr('弃牌');
+      case 'check': return tr('过牌');
+      case 'call': return tr('跟注 {n}', { n: n });
+      case 'bet': return tr('下注 {n}', { n: n });
+      case 'raise': return tr('加注到 {n}', { n: n });
+      case 'allin': return tr('全下 {n}', { n: n });
+      default: return a.label ? String(a.label) : '';
+    }
   }
 
   /**
@@ -1161,7 +1184,7 @@
       info.appendChild(chips);
       var offDot = elt('i', 'off-dot');
       offDot.hidden = true;
-      var emptyTxt = elt('div', 'empty-txt', '＋ 入座');
+      var emptyTxt = elt('div', 'empty-txt', tr('＋ 入座'));
       emptyTxt.hidden = true;
 
       pod.appendChild(avWrap);
@@ -1240,12 +1263,12 @@
 
   function renderTopbar(st, table, cfg, you) {
     if (D.metaHand) {
-      D.metaHand.textContent = table.handNo ? ('第 ' + table.handNo + ' 手') : '未开局';
+      D.metaHand.textContent = table.handNo ? tr('第 {n} 手', { n: table.handNo }) : tr('未开局');
     }
     if (D.metaBlinds) {
       var ante = Number(cfg.ante) || 0;
-      D.metaBlinds.textContent = '盲注 ' + fmt(cfg.smallBlind || 0) + '/' + fmt(cfg.bigBlind || 0) +
-        (ante > 0 ? ' · 前注 ' + fmt(ante) : '');
+      D.metaBlinds.textContent = tr('盲注 {sb}/{bb}', { sb: fmt(cfg.smallBlind || 0), bb: fmt(cfg.bigBlind || 0) }) +
+        (ante > 0 ? tr(' · 前注 {n}', { n: fmt(ante) }) : '');
     }
     if (D.metaHost) D.metaHost.hidden = !you.isHost;
     renderJevTag(st);
@@ -1262,17 +1285,18 @@
     var s = j.stats || {};
     var calls = Number(s.calls) || 0;
     var txt = 'Jev';
-    var tip = '人机的动作由 Jev 决策模型（' + (j.label || j.provider || '') + ' · ' + (j.model || '') + '）判断';
+    var tip = tr('人机的动作由 Jev 决策模型（{label} · {model}）判断', { label: j.label || j.provider || '', model: j.model || '' });
     if (calls > 0) {
       var avg = (Number(s.latencyMs) || 0) / calls;
       var avgTxt = avg >= 1000 ? (avg / 1000).toFixed(1) + 's' : Math.round(avg) + 'ms';
-      txt += ' · ' + calls + ' 判断 · ' + avgTxt;
+      txt += tr(' · {n} 判断 · {avg}', { n: calls, avg: avgTxt });
       var cost = Number(s.cost) || 0;
       if (cost > 0) txt += ' · $' + (cost < 0.01 ? cost.toFixed(4) : cost.toFixed(3));
-      tip += '；累计 ' + calls + ' 次往返，平均 ' + avgTxt + (cost > 0 ? '，共花 $' + cost.toFixed(4) : '') +
-        (Number(s.obvious) ? '；另有 ' + s.obvious + ' 个明显局面由规则直接出手' : '');
+      tip += tr('；累计 {n} 次往返，平均 {avg}', { n: calls, avg: avgTxt }) +
+        (cost > 0 ? tr('，共花 ${cost}', { cost: cost.toFixed(4) }) : '') +
+        (Number(s.obvious) ? tr('；另有 {n} 个明显局面由规则直接出手', { n: s.obvious }) : '');
     }
-    if (j.cooling) { txt += ' · 冷却中'; tip += '；Jev 连续出错，暂时由大模型或规则顶上'; }
+    if (j.cooling) { txt += tr(' · 冷却中'); tip += tr('；Jev 连续出错，暂时由大模型或规则顶上'); }
     if (D.metaJev.textContent !== txt) D.metaJev.textContent = txt;
     if (D.metaJev.title !== tip) D.metaJev.title = tip;
     D.metaJev.hidden = false;
@@ -1399,10 +1423,10 @@
         node.offDot.hidden = true;
         node.mic.hidden = true;
         node.emptyTxt.hidden = false;
-        node.emptyTxt.textContent = (S.mySeat === null) ? '＋ 入座' : ((seatNum + 1) + ' 号空位');
+        node.emptyTxt.textContent = (S.mySeat === null) ? tr('＋ 入座') : tr('{n} 号空位', { n: seatNum + 1 });
         node.pod.setAttribute('role', S.mySeat === null ? 'button' : 'presentation');
-        node.pod.setAttribute('aria-label', '第 ' + (seatNum + 1) + ' 号座位，空位' +
-          (S.mySeat === null ? '，点击入座' : ''));
+        node.pod.setAttribute('aria-label', tr('第 {n} 号座位，空位', { n: seatNum + 1 }) +
+          (S.mySeat === null ? tr('，点击入座') : ''));
         node.pod.tabIndex = (S.mySeat === null && S.conn === 'online') ? 0 : -1;
         node.tags.textContent = '';
         node.tags.__sig = '';
@@ -1424,7 +1448,7 @@
       node.avatar.setAttribute('data-shape', String(av.shape == null ? 0 : av.shape));
       node.avatar.textContent = av.glyph || (data.name ? data.name.charAt(0) : '?');
 
-      node.name.textContent = data.name || ('座位' + (seatNum + 1));
+      node.name.textContent = data.name || tr('座位{n}', { n: seatNum + 1 });
       node.chips.textContent = fmt(data.chips);
       node.chips.className = 'pod-chips' + ((Number(data.chips) || 0) <= 0 ? ' dim' : '');
       node.offDot.hidden = !!data.connected;
@@ -1434,14 +1458,14 @@
       node.mic.hidden = !mem;
       if (mem) {
         node.mic.classList.toggle('muted', !!mem.muted);
-        node.mic.title = mem.muted ? mem.name + ' 已静音' : mem.name + ' 在语音里';
+        node.mic.title = tr(mem.muted ? '{name} 已静音' : '{name} 在语音里', { name: mem.name });
       }
 
       node.pod.setAttribute('aria-label',
-        (data.name || '') + '，筹码 ' + fmt(data.chips) +
-        (data.state === 'folded' ? '，已弃牌' : '') +
-        (data.state === 'allin' ? '，已全下' : '') +
-        (data.connected ? '' : '，已断线'));
+        tr('{name}，筹码 {chips}', { name: data.name || '', chips: fmt(data.chips) }) +
+        (data.state === 'folded' ? tr('，已弃牌') : '') +
+        (data.state === 'allin' ? tr('，已全下') : '') +
+        (data.connected ? '' : tr('，已断线')));
 
       // 按钮 / 盲注标记
       var tagSig = (data.isButton ? 'D' : '') + (data.isSB ? 'S' : '') + (data.isBB ? 'B' : '') +
@@ -1457,7 +1481,7 @@
       }
 
       // 动作气泡
-      var label = data.lastAction && data.lastAction.label ? data.lastAction.label : '';
+      var label = actionLabel(data.lastAction);
       if (label) {
         if (node.bubble.textContent !== label || node.bubble.hidden) {
           node.bubble.textContent = label;
@@ -1515,7 +1539,7 @@
   function renderCenter(st, table, result) {
     // 阶段
     if (D.phaseTag) {
-      D.phaseTag.textContent = PHASE_TXT[table.phase] || '牌桌';
+      D.phaseTag.textContent = PHASE_TXT[table.phase] || tr('牌桌');
     }
 
     // 底池
@@ -1538,7 +1562,7 @@
             for (var i = 0; i < pots.length; i++) {
               var p = pots[i];
               if (!p) continue;
-              var nm = (i === 0 ? '主池 ' : '边池' + i + ' ') + fmt(p.amount);
+              var nm = (i === 0 ? tr('主池 ') : tr('边池{i} ', { i: i })) + fmt(p.amount);
               D.potSide.appendChild(elt('span', null, nm));
             }
           }
@@ -1579,7 +1603,7 @@
         idx[w.seat] = out.length;
         out.push({
           seat: w.seat,
-          name: w.name || ('座位' + (w.seat + 1)),
+          name: w.name || tr('座位{n}', { n: w.seat + 1 }),
           amount: 0,
           handName: null,
           handNameEn: null,
@@ -1634,19 +1658,19 @@
     var verdict;
     if (!inHand) {
       kind = 'watch';
-      verdict = winners.map(function (w) { return w.name; }).join(' 和 ') + ' 赢了';
+      verdict = winners.map(function (w) { return w.name; }).join(tr(' 和 ')) + tr(' 赢了');
     } else if (iWon && split) {
       kind = net > 0 ? 'win' : 'even';
-      verdict = '平分底池';
+      verdict = tr('平分底池');
     } else if (iWon) {
       kind = 'win';
-      verdict = '你赢了';
+      verdict = tr('你赢了');
     } else if (net < 0) {
       kind = 'lose';
-      verdict = '你输了';
+      verdict = tr('你输了');
     } else {
       kind = 'even';
-      verdict = '这手没输没赢';
+      verdict = tr('这手没输没赢');
     }
 
     // 金额：自己在牌里就报净收支，旁观就报赢家拿走多少。
@@ -1658,16 +1682,16 @@
     // 细节只回答"谁"——"什么牌型"已经是大标题了，别重复
     var detail;
     if (split) {
-      detail = winners.map(function (w) { return w.name; }).join('  ·  ') + ' 平分';
+      detail = winners.map(function (w) { return w.name; }).join('  ·  ') + tr(' 平分');
     } else if (inHand && iWon) {
       detail = '';
     } else {
-      detail = top.name + (result.wentToShowdown ? ' 拿下' : ' 收下底池');
+      detail = top.name + (result.wentToShowdown ? tr(' 拿下') : tr(' 收下底池'));
     }
 
     // 结算大屏的主标题：摊了牌就报英文牌型，没摊牌就是没人跟到底
     var handEn = result.wentToShowdown ? (top.handNameEn || '') : 'UNCONTESTED';
-    var handCn = result.wentToShowdown ? (top.handName || '') : '没人跟到底';
+    var handCn = result.wentToShowdown ? (I18N.lang === 'en' ? '' : (top.handName || '')) : tr('没人跟到底');
     // 牌型档次决定特效强度：顺子(4)起算"大牌"，四条(7)起算"炸场"
     var rank = result.wentToShowdown && typeof top.handRank === 'number' ? top.handRank : -1;
     var hype = rank >= 7 ? 'mega' : (rank >= 4 ? 'big' : 'plain');
@@ -1792,7 +1816,7 @@
       syncCards(D.heroCards, myCards, { hl: hl });
     } else {
       // 占位
-      var phTxt = (S.mySeat === null) ? '观战中' : '等待发牌';
+      var phTxt = (S.mySeat === null) ? tr('观战中') : tr('等待发牌');
       if (D.heroCards.__ph !== phTxt) {
         D.heroCards.textContent = '';
         D.heroCards.__sig = [];
@@ -1810,14 +1834,14 @@
     // canRebuy 由服务端给，别只看 chips —— 全下的时候引擎里的筹码也是 0。
     var busted = !!(mySeatData && (Number(mySeatData.chips) || 0) <= 0 && mySeatData.canRebuy);
     if (S.conn !== 'online') {
-      statusText = (S.conn === 'offline') ? '连接断开，正在重连…' : '正在连接服务器…';
+      statusText = (S.conn === 'offline') ? tr('连接断开，正在重连…') : tr('正在连接服务器…');
     } else if (S.mySeat === null) {
-      statusText = '观战中 · 点击牌桌上的空座位入座';
+      statusText = tr('观战中 · 点击牌桌上的空座位入座');
     } else if (myTurn) {
-      statusText = '轮到你行动';
+      statusText = tr('轮到你行动');
       strong = true;
     } else if (typeof table.actingSeat === 'number' && seats[table.actingSeat]) {
-      statusText = '等待 ' + (seats[table.actingSeat].name || ('座位' + (table.actingSeat + 1))) + ' 行动';
+      statusText = tr('等待 {name} 行动', { name: seats[table.actingSeat].name || tr('座位{n}', { n: table.actingSeat + 1 }) });
     } else if (table.phase === 'handOver') {
       // 大屏两秒后就让开了，结论留在这儿，整个结算窗口都看得到
       var hv = handVerdict(st, seats, st.result);
@@ -1826,25 +1850,25 @@
           + (hv.detail ? ' · ' + hv.detail : '');
         verdictKind = hv.kind;
       } else {
-        statusText = '本手结束';
+        statusText = tr('本手结束');
       }
     } else if (table.phase === 'waiting') {
-      if (table.canStart) statusText = you.isHost ? '人数够了，可以开始' : '等待房主开始';
-      else statusText = '等待更多玩家入座（至少 2 人）';
+      if (table.canStart) statusText = you.isHost ? tr('人数够了，可以开始') : tr('等待房主开始');
+      else statusText = tr('等待更多玩家入座（至少 2 人）');
     } else if (you.sittingOut) {
-      statusText = '你暂时离开了，下一手不参与 · 点「回到牌桌」继续';
+      statusText = tr('你暂时离开了，下一手不参与 · 点「回到牌桌」继续');
     } else {
-      statusText = '牌局进行中';
+      statusText = tr('牌局进行中');
     }
     // 弃牌提示只在牌局还没打完时盖过状态文案；结算阶段要让位给输赢结论
     if (mySeatData && mySeatData.state === 'folded' && table.phase !== 'handOver') {
-      statusText = '你已弃牌，等待本手结束';
+      statusText = tr('你已弃牌，等待本手结束');
     }
     // 没筹码是最要紧的事：不补上就一直坐在场外，这条盖过其他提示
     if (busted && table.phase !== 'handOver') {
       statusText = you.isHost
-        ? '你的筹码用完了，点「补充筹码」接着打'
-        : '你的筹码用完了，让房主给你补充';
+        ? tr('你的筹码用完了，点「补充筹码」接着打')
+        : tr('你的筹码用完了，让房主给你补充');
       verdictKind = '';
       strong = true;
     }
@@ -1876,7 +1900,7 @@
     if (!D.btnRebuy.hidden) D.btnRebuy.setAttribute('data-seat', String(S.mySeat));
     D.btnStart.hidden = !(seated && you.isHost && table.canStart && !myTurn);
     D.btnSitOut.hidden = !seated;
-    D.btnSitOut.textContent = you.sittingOut ? '回到牌桌' : '暂时离开';
+    D.btnSitOut.textContent = you.sittingOut ? tr('回到牌桌') : tr('暂时离开');
     D.btnStand.hidden = !seated;
     D.btnJoin.hidden = seated;
   }
@@ -1893,13 +1917,13 @@
     var callAmt = Number(legal.callAmount) || 0;
     D.btnCall.hidden = !legal.canCall;
     D.btnCall.disabled = disabled;
-    D.btnCall.textContent = legal.isAllInCall ? ('全下跟注 ' + fmt(callAmt)) : ('跟注 ' + fmt(callAmt));
+    D.btnCall.textContent = tr(legal.isAllInCall ? '全下跟注 {n}' : '跟注 {n}', { n: fmt(callAmt) });
     D.btnCall.appendChild(elt('em', null, 'C'));
 
     var canOpen = !!(legal.canBet || legal.canRaise);
     D.btnRaise.hidden = !canOpen;
     D.btnRaise.disabled = disabled;
-    D.btnRaise.textContent = legal.canBet ? '下注' : '加注';
+    D.btnRaise.textContent = legal.canBet ? tr('下注') : tr('加注');
     D.btnRaise.appendChild(elt('em', null, 'R'));
 
     // 只能全下（筹码不够完成最小加注）时单独给一个全下按钮
@@ -1907,7 +1931,7 @@
     var showAllin = !canOpen && maxTo > (Number(table.currentBet) || 0);
     D.btnAllin.hidden = !showAllin;
     D.btnAllin.disabled = disabled;
-    D.btnAllin.textContent = '全下 ' + fmt(maxTo);
+    D.btnAllin.textContent = tr('全下 {n}', { n: fmt(maxTo) });
   }
 
   function renderLog(st) {
@@ -1922,7 +1946,7 @@
     for (var i = 0; i < log.length; i++) {
       var item = log[i];
       if (!item) continue;
-      var li = elt('li', null, String(item.text || ''));
+      var li = elt('li', null, tlog(item));
       if (!prev[keys[i]]) li.classList.add('new');
       if (/赢得|摊牌|开始|重置/.test(String(item.text || ''))) li.classList.add('hi');
       nextSeen[keys[i]] = 1;
@@ -1945,7 +1969,7 @@
       var c = chat[i];
       if (!c) continue;
       var li = elt('li');
-      li.appendChild(elt('span', 'nm', (c.name || '匿名') + '：'));
+      li.appendChild(elt('span', 'nm', (c.name || tr('匿名')) + tr('：')));
       li.appendChild(document.createTextNode(String(c.text || '')));
       D.chatList.appendChild(li);
     }
@@ -1980,7 +2004,7 @@
     D.botStatus.__sig = sig;
 
     if (!info.hasLLM) {
-      D.botStatus.textContent = '未配置，人机将按内置规则打牌。';
+      D.botStatus.textContent = tr('未配置，人机将按内置规则打牌。');
       D.botStatus.className = 'bot-status';
       return;
     }
@@ -1988,10 +2012,10 @@
 
     var parts = info.providers.map(function (p) {
       // 「不思考」要露出来：它同时影响快慢、花多少钱和答得对不对
-      var how = p.model + (p.thinking === 'off' ? '，不思考' : '') + '，' + p.maskedKey;
-      return p.label + '（' + how + '）' + (p.cooling ? ' ⚠ 冷却中' : '');
+      var how = p.model + (p.thinking === 'off' ? tr('，不思考') : '') + tr('，') + p.maskedKey;
+      return p.label + tr('（') + how + tr('）') + (p.cooling ? tr(' ⚠ 冷却中') : '');
     });
-    D.botStatus.textContent = '已启用：' + parts.join('、');
+    D.botStatus.textContent = tr('已启用：') + parts.join(tr('、'));
     D.botStatus.className = 'bot-status ok';
   }
 
@@ -2010,8 +2034,8 @@
     D.botNoThink.disabled = !canDisable;
     if (!canDisable) D.botNoThink.checked = false;
     D.botNoThinkHint.textContent = canDisable
-      ? '关掉思维链，出手快得多，也更省 token。'
-      : '这家的模型本来就不思考，这个开关对它没有意义。';
+      ? tr('关掉思维链，出手快得多，也更省 token。')
+      : tr('这家的模型本来就不思考，这个开关对它没有意义。');
   }
 
   /**
@@ -2050,16 +2074,16 @@
     if (D.jevStatus.__sig === sig) return;
     D.jevStatus.__sig = sig;
     if (!j || !j.enabled) {
-      D.jevStatus.textContent = '未配置，动作由上面的大模型决定。';
+      D.jevStatus.textContent = tr('未配置，动作由上面的大模型决定。');
       D.jevStatus.className = 'bot-status';
       return;
     }
     var jobs = [];
-    if (j.talk) jobs.push('闲聊');
-    if (j.notes) jobs.push('读人笔记');
-    D.jevStatus.textContent = '已启用：' + (j.label || j.provider) + '（' + j.model + '，' + j.maskedKey + '）' +
-      (j.cooling ? ' ⚠ 冷却中' : '') +
-      (jobs.length ? '；' + jobs.join('、') + '交给上面的大模型' : '；没配大模型，人机不说话');
+    if (j.talk) jobs.push(tr('闲聊'));
+    if (j.notes) jobs.push(tr('读人笔记'));
+    D.jevStatus.textContent = tr('已启用：{label}（{model}，{key}）', { label: j.label || j.provider, model: j.model, key: j.maskedKey }) +
+      (j.cooling ? tr(' ⚠ 冷却中') : '') +
+      (jobs.length ? tr('；{jobs}交给上面的大模型', { jobs: jobs.join(tr('、')) }) : tr('；没配大模型，人机不说话'));
     D.jevStatus.className = 'bot-status ok';
   }
 
@@ -2131,7 +2155,7 @@
     D.seatAdmin.__sig = sig;
     D.seatAdmin.textContent = '';
     if (!rows.length) {
-      D.seatAdmin.appendChild(elt('div', 'sa-empty', '还没有人入座。'));
+      D.seatAdmin.appendChild(elt('div', 'sa-empty', tr('还没有人入座。')));
       return;
     }
     for (var s = 0; s < MAX_SEATS; s++) {
@@ -2142,19 +2166,19 @@
       var row = elt('div', 'sa-row' + (broke ? ' is-broke' : ''));
       row.appendChild(elt('span', 'sa-name',
         (s + 1) + '. ' + (data.name || '') +
-        (data.bot ? '（人机）' : '') +
-        (data.connected || data.bot ? '' : '（断线）')));
+        (data.bot ? tr('（人机）') : '') +
+        (data.connected || data.bot ? '' : tr('（断线）'))));
       // 没筹码的人一眼能挑出来，房主不用去数谁是 0
-      row.appendChild(elt('span', 'sa-chips', broke ? '没筹码' : fmt(data.chips)));
+      row.appendChild(elt('span', 'sa-chips', broke ? tr('没筹码') : fmt(data.chips)));
       if (isHost) {
-        var add = elt('button', null, '补充');
+        var add = elt('button', null, tr('补充'));
         add.type = 'button';
-        add.setAttribute('aria-label', '给 ' + (data.name || '') + ' 补充筹码');
+        add.setAttribute('aria-label', tr('给 {name} 补充筹码', { name: data.name || '' }));
         add.setAttribute('data-seat', String(s));
         add.addEventListener('click', onAddChips);
-        var kick = elt('button', 'danger', '踢出');
+        var kick = elt('button', 'danger', tr('踢出'));
         kick.type = 'button';
-        kick.setAttribute('aria-label', '把 ' + (data.name || '') + ' 请出牌桌');
+        kick.setAttribute('aria-label', tr('把 {name} 请出牌桌', { name: data.name || '' }));
         kick.setAttribute('data-seat', String(s));
         kick.addEventListener('click', onKick);
         row.appendChild(add);
@@ -2250,7 +2274,7 @@
     if (!st || !st.table) return;
     var msg = { t: 'action', handNo: st.table.handNo, type: type };
     if (amount != null) msg.amount = Math.round(amount);
-    if (!send(msg)) { toast('连接断开，动作没有发出去'); return; }
+    if (!send(msg)) { toast(tr('连接断开，动作没有发出去')); return; }
     S.pendingAction = true;
     if (S.pendingTimer) clearTimeout(S.pendingTimer);
     S.pendingTimer = setTimeout(function () {
@@ -2333,9 +2357,9 @@
     if (D.raiseRange.value !== String(val)) D.raiseRange.value = String(val);
     if (!silent || document.activeElement !== D.raiseNum) D.raiseNum.value = String(val);
     var legal = currentLegal();
-    var verb = (legal && legal.canBet) ? '下注' : '加注到';
+    var verb = (legal && legal.canBet) ? tr('下注') : tr('加注到');
     var allin = (val >= S.raiseMax && S.raiseMax > 0);
-    D.btnRaiseOk.textContent = allin ? ('全下 ' + fmt(val)) : ('确认' + verb + ' ' + fmt(val));
+    D.btnRaiseOk.textContent = allin ? tr('全下 {n}', { n: fmt(val) }) : tr('确认{verb} {n}', { verb: verb, n: fmt(val) });
   }
 
   function confirmRaise() {
@@ -2353,11 +2377,11 @@
     var name = lsGet(LS_NAME) || '';
     if (!D.sitDlg || !D.sitDlg.showModal) {
       // 极老浏览器兜底
-      var typed = window.prompt('输入昵称（1-12 个字符）', name);
+      var typed = window.prompt(tr('输入昵称（1-12 个字符）'), name);
       if (typed) doSit(seat, typed);
       return;
     }
-    D.sitTitle.textContent = '坐到 ' + (seat + 1) + ' 号座位';
+    D.sitTitle.textContent = tr('坐到 {n} 号座位', { n: seat + 1 });
     D.sitName.value = name;
     D.sitErr.hidden = true;
     D.sitDlg.showModal();
@@ -2367,12 +2391,12 @@
   function doSit(seat, name) {
     name = String(name == null ? '' : name).trim();
     if (!name || Array.from(name).length > 12) {
-      toast('昵称需要 1 到 12 个字符');
+      toast(tr('昵称需要 1 到 12 个字符'));
       return;
     }
     lsSet(LS_NAME, name);
     if (!send({ t: 'sit', seat: seat, name: name })) {
-      toast('还没连上服务器，稍后再试');
+      toast(tr('还没连上服务器，稍后再试'));
       return;
     }
     ensureAudio(); // 借用户手势解锁音频
@@ -2395,11 +2419,11 @@
     var st = S.state;
     var d = st && Array.isArray(st.seats) ? st.seats[seat] : null;
     if (!D.chipsDlg || !D.chipsDlg.showModal) {
-      var v = window.prompt('补充多少筹码？', '1000');
+      var v = window.prompt(tr('补充多少筹码？'), '1000');
       if (v) send({ t: 'addChips', seat: seat, amount: Math.max(1, Math.round(Number(v) || 0)) });
       return;
     }
-    D.chipsTitle.textContent = '给 ' + ((d && d.name) || ((seat + 1) + ' 号座位')) + ' 补充筹码';
+    D.chipsTitle.textContent = tr('给 {name} 补充筹码', { name: (d && d.name) || tr('{n} 号座位', { n: seat + 1 }) });
     D.chipsDlg.__seat = seat;
     var stack = (st && st.config && st.config.startingStack) || 1000;
     D.chipsAmt.value = String(stack);
@@ -2411,7 +2435,7 @@
     if (!(seat >= 0)) return;
     var st = S.state;
     var d = st && Array.isArray(st.seats) ? st.seats[seat] : null;
-    askConfirm('踢出玩家', '确定把 ' + ((d && d.name) || ((seat + 1) + ' 号座位')) + ' 请出牌桌吗？', function () {
+    askConfirm(tr('踢出玩家'), tr('确定把 {name} 请出牌桌吗？', { name: (d && d.name) || tr('{n} 号座位', { n: seat + 1 }) }), function () {
       send({ t: 'kick', seat: seat });
     });
   }
@@ -2508,7 +2532,7 @@
           var sec = Math.ceil(left / 1000);
           if (sec !== lastTimerSec) {
             lastTimerSec = sec;
-            D.heroStatusText.textContent = '轮到你行动 · ' + sec + ' 秒';
+            D.heroStatusText.textContent = tr('轮到你行动 · {s} 秒', { s: sec });
           }
           countdownBeep(sec, total, dl);
         }
@@ -2521,15 +2545,15 @@
         if (leftN !== lastNextSec) {
           lastNextSec = leftN;
           D.nextHandTip.hidden = false;
-          D.nextHandTip.textContent = leftN + ' 秒后开始下一手';
+          D.nextHandTip.textContent = tr('{s} 秒后开始下一手', { s: leftN });
         }
       } else if (table.paused) {
         if (lastNextSec !== -2) {
           lastNextSec = -2;
           D.nextHandTip.hidden = false;
           D.nextHandTip.textContent = table.paused === 'idle'
-            ? '太久没人操作，牌桌先歇着 · 动一下就继续'
-            : '没人在看，牌桌先歇着';
+            ? tr('太久没人操作，牌桌先歇着 · 动一下就继续')
+            : tr('没人在看，牌桌先歇着');
         }
       } else if (!D.nextHandTip.hidden) {
         D.nextHandTip.hidden = true;
@@ -2609,7 +2633,7 @@
       send({ t: 'sitOut', value: !cur });
     });
     D.btnStand.addEventListener('click', function () {
-      askConfirm('退出牌桌', '确定退出、离开座位吗？如果牌局进行中会自动弃牌。', function () {
+      askConfirm(tr('退出牌桌'), tr('确定退出、离开座位吗？如果牌局进行中会自动弃牌。'), function () {
         send({ t: 'stand' });
       });
     });
@@ -2619,7 +2643,7 @@
       for (var s = 0; s < MAX_SEATS; s++) {
         if (!seats[s]) { openSitDialog(s); return; }
       }
-      toast('牌桌已坐满');
+      toast(tr('牌桌已坐满'));
     });
 
     // 座位键盘可达
@@ -2686,14 +2710,14 @@
     D.cfgForm.addEventListener('submit', function (e) {
       e.preventDefault();
       var st = S.state;
-      if (!st || !st.you || !st.you.isHost) { toast('只有房主可以修改设置'); return; }
+      if (!st || !st.you || !st.you.isHost) { toast(tr('只有房主可以修改设置')); return; }
       var sb = Math.round(Number(D.cfgSB.value) || 0);
       var bb = Math.round(Number(D.cfgBB.value) || 0);
       var ante = Math.round(Number(D.cfgAnte.value) || 0);
       var stack = Math.round(Number(D.cfgStack.value) || 0);
       var secs = Math.round(Number(D.cfgTimeout.value) || 0);
       if (!(sb > 0) || !(bb > sb) || !(stack > 0) || !(secs >= 5)) {
-        toast('设置不合法：大盲要大于小盲，时限至少 5 秒');
+        toast(tr('设置不合法：大盲要大于小盲，时限至少 5 秒'));
         return;
       }
       send({
@@ -2704,11 +2728,11 @@
           autoNextHand: !!D.cfgAuto.checked
         }
       });
-      toast('设置已提交', true);
+      toast(tr('设置已提交'), true);
     });
 
     D.btnReset.addEventListener('click', function () {
-      askConfirm('重置牌桌', '所有人的筹码会回到起始值，当前牌局会被清空。确定吗？', function () {
+      askConfirm(tr('重置牌桌'), tr('所有人的筹码会回到起始值，当前牌局会被清空。确定吗？'), function () {
         send({ t: 'reset' });
       });
     });
@@ -2725,7 +2749,7 @@
       D.botForm.addEventListener('submit', function (e) {
         e.preventDefault();
         var st = S.state;
-        if (!st || !st.you || !st.you.isHost) { toast('只有房主可以配置人机'); return; }
+        if (!st || !st.you || !st.you.isHost) { toast(tr('只有房主可以配置人机')); return; }
 
         var key = D.botKey.value.trim();
         var patch = {
@@ -2735,7 +2759,7 @@
         };
         // 留空表示"沿用已有 key，只改模型"
         if (key) patch.apiKey = key;
-        else if (!(st.bot && st.bot.hasLLM)) { toast('请先填 API Key'); return; }
+        else if (!(st.bot && st.bot.hasLLM)) { toast(tr('请先填 API Key')); return; }
 
         send({ t: 'botConfig', patch: patch });
 
@@ -2746,7 +2770,7 @@
         }
         // 输入框里不留 key，避免肩窥
         D.botKey.value = '';
-        toast('人机后端已提交', true);
+        toast(tr('人机后端已提交'), true);
       });
     }
 
@@ -2757,7 +2781,7 @@
       D.jevForm.addEventListener('submit', function (e) {
         e.preventDefault();
         var st = S.state;
-        if (!st || !st.you || !st.you.isHost) { toast('只有房主可以配置人机'); return; }
+        if (!st || !st.you || !st.you.isHost) { toast(tr('只有房主可以配置人机')); return; }
         var key = D.jevKey.value.trim();
         // key 留空：服务端会沿用已有的，或者借上面同一家大模型的（OpenRouter 一把 key 两用）
         var patch = { jev: true, provider: D.jevProvider.value, model: D.jevModel.value.trim() };
@@ -2766,16 +2790,16 @@
         if (D.jevRemember.checked) lsSet(LS_JEV, JSON.stringify(patch));
         else lsSet(LS_JEV, '');
         D.jevKey.value = '';
-        toast('Jev 已提交', true);
+        toast(tr('Jev 已提交'), true);
       });
 
       D.jevRemove.addEventListener('click', function () {
         var st = S.state;
-        if (!st || !st.you || !st.you.isHost) { toast('只有房主可以配置人机'); return; }
+        if (!st || !st.you || !st.you.isHost) { toast(tr('只有房主可以配置人机')); return; }
         send({ t: 'botConfig', patch: { jev: true, remove: true } });
         lsSet(LS_JEV, '');
         S.jevPushed = true;   // 别在下一帧又把记住的配置推回去
-        toast('Jev 已停用，动作交回大模型', true);
+        toast(tr('Jev 已停用，动作交回大模型'), true);
       });
     }
 
@@ -2790,7 +2814,7 @@
     if (D.btnAddBot) {
       D.btnAddBot.addEventListener('click', function () {
         var st = S.state;
-        if (!st || !st.you || !st.you.isHost) { toast('只有房主可以加人机'); return; }
+        if (!st || !st.you || !st.you.isHost) { toast(tr('只有房主可以加人机')); return; }
         // 不传 seat，让服务端挑第一个空位
         send({ t: 'addBot' });
       });

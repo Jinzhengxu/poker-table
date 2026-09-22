@@ -34,6 +34,10 @@
 
     <a class="icon-btn table-link" href="/guandan" title="去掼蛋桌" aria-label="去掼蛋桌"><span class="suit" aria-hidden="true">♥</span><span class="lbl">掼蛋</span></a>
     <a class="icon-btn hw-link" href="/hotword" title="去热词" aria-label="去热词"><span class="suit" aria-hidden="true">🔥</span><span class="lbl">热词</span></a>
+    <!-- 中英文切换：标签写的是切过去的语言，i18n.js 负责填字和响应点击 -->
+    <button id="btnLang" class="icon-btn" type="button" aria-label="切换语言" title="切换语言">
+      <span class="suit" aria-hidden="true">🌐</span><span class="lbl">EN</span>
+    </button>
     <button id="btnSound" class="icon-btn" type="button" aria-label="提示音开关" aria-pressed="true">
       <span class="ico-snd" aria-hidden="true"></span><span class="lbl">音效</span>
     </button>
@@ -348,6 +352,8 @@
      preload=none —— 音乐文件不该抢开局时的带宽，等用户第一次交互再拉。 -->
 <audio id="bgm" preload="none"></audio>
 
+<!-- i18n.js 必须最先：它把静态文案翻好、给后面两个脚本提供 t() -->
+<script src="/i18n.js"></script>
 <script src="/voice.js"></script>
 <script src="/app.js"></script>
 </body>

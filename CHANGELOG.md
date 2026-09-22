@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Hold'em table now switches between Chinese and English on its own.** `public/i18n.js`
+  loads before `app.js`, picks the language from the browser's language list (any Chinese
+  entry wins; only an all-non-Chinese list gets English; a manual choice in `localStorage`
+  overrides both) and a 🌐 button in the top bar flips it with a reload — the seat token
+  survives the reload, so nobody loses their seat. The dictionary is keyed by the Chinese
+  source text, so the HTML stays Chinese and is translated in place at load (text nodes plus
+  `title` / `aria-label` / `placeholder` / `data-key`), and the two client scripts wrap
+  their dynamic strings in `tr()`. Server-side text needed a real change: every engine event
+  and every room log line now carries a stable key `k` and template params `p` (SPEC §6.2),
+  and the English client renders the log from those while the Chinese one keeps using `text`
+  — the 21 engine tests that pin the Chinese `text` are untouched. Server error messages are
+  looked up by their Chinese text. `hello` gained an optional `lang`; the host's language
+  becomes `table.lang` and the bots' table talk follows it. `test/i18n.test.js` scans the
+  page, both scripts and the server sources and fails on any Chinese string without an
+  English entry, so the dictionary cannot silently drift. Guandan and Hotword are still
+  Chinese only.
 - **A Jev pill in the top bar, visible to everyone at the table.** When the bots are
   driven by Jev the hand meta shows `Jev · 37 判断 · 0.9s · $0.002`: decisions so far,
   average round trip, and spend from OpenRouter's `usage.cost` (TypeSafe direct reports

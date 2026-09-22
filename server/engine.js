@@ -295,17 +295,17 @@ export class Hand {
       for (const seat of this._orderFrom(this._nextSeat(this._buttonSeat))) {
         const p = this._players.get(seat);
         const paid = this._commit(p, ante, false);
-        if (paid > 0) this._pushEvent('ante', seat, paid, `${nameOf(p)} 前注 ${paid}`);
+        if (paid > 0) this._pushEvent('ante', seat, paid, `${nameOf(p)} 前注 ${paid}`, { k: 'ante', p: { name: nameOf(p), amount: paid } });
       }
     }
 
     // 盲注（不足则全下，不视为加注）
     const sb = this._players.get(this._sbSeat);
     const sbPaid = this._commit(sb, smallBlind);
-    if (sbPaid > 0) this._pushEvent('blind', sb.seat, sbPaid, `${nameOf(sb)} 下小盲 ${sbPaid}`);
+    if (sbPaid > 0) this._pushEvent('blind', sb.seat, sbPaid, `${nameOf(sb)} 下小盲 ${sbPaid}`, { k: 'sb', p: { name: nameOf(sb), amount: sbPaid } });
     const bb = this._players.get(this._bbSeat);
     const bbPaid = this._commit(bb, bigBlind);
-    if (bbPaid > 0) this._pushEvent('blind', bb.seat, bbPaid, `${nameOf(bb)} 下大盲 ${bbPaid}`);
+    if (bbPaid > 0) this._pushEvent('blind', bb.seat, bbPaid, `${nameOf(bb)} 下大盲 ${bbPaid}`, { k: 'bb', p: { name: nameOf(bb), amount: bbPaid } });
 
     this._currentBet = 0;
     for (const p of this._players.values()) {
@@ -318,7 +318,7 @@ export class Hand {
     for (let round = 0; round < 2; round++) {
       for (const seat of dealOrder) this._players.get(seat).holeCards.push(this._draw());
     }
-    this._pushEvent('deal', null, null, '发底牌');
+    this._pushEvent('deal', null, null, '发底牌', { k: 'deal' });
 
     // 翻牌前从大盲左手第一位开始行动（单挑时该位置即按钮/小盲）
     this._progress(this._nextSeat(this._bbSeat));
@@ -394,7 +394,7 @@ export class Hand {
       const total = (this._refunds.get(top.seat) || 0) + back;
       this._refunds.set(top.seat, total);
       this._uncalled = { seat: top.seat, amount: total };
-      this._pushEvent('return', top.seat, back, `${nameOf(top)} 收回未被跟注的 ${back}`);
+      this._pushEvent('return', top.seat, back, `${nameOf(top)} 收回未被跟注的 ${back}`, { k: 'return', p: { name: nameOf(top), amount: back } });
     }
     for (const p of arr) p.committedRound = 0;
   }
@@ -417,17 +417,17 @@ export class Hand {
       const cards = [this._draw(), this._draw(), this._draw()];
       this._board.push(...cards);
       this._phase = PHASES.FLOP;
-      this._pushEvent('flop', null, null, `翻牌 ${fmtCards(cards)}`);
+      this._pushEvent('flop', null, null, `翻牌 ${fmtCards(cards)}`, { k: 'flop', p: { cards: fmtCards(cards) } });
     } else if (this._phase === PHASES.FLOP) {
       const card = this._draw();
       this._board.push(card);
       this._phase = PHASES.TURN;
-      this._pushEvent('turn', null, null, `转牌 ${fmtCard(card)}`);
+      this._pushEvent('turn', null, null, `转牌 ${fmtCard(card)}`, { k: 'turn', p: { cards: fmtCard(card) } });
     } else if (this._phase === PHASES.TURN) {
       const card = this._draw();
       this._board.push(card);
       this._phase = PHASES.RIVER;
-      this._pushEvent('river', null, null, `河牌 ${fmtCard(card)}`);
+      this._pushEvent('river', null, null, `河牌 ${fmtCard(card)}`, { k: 'river', p: { cards: fmtCard(card) } });
     }
   }
 
@@ -530,7 +530,7 @@ export class Hand {
 
     pots.forEach((pot, i) => {
       const label = i === 0 ? '主池' : `边池${i}`;
-      this._pushEvent('pot', null, pot.amount, `${label} ${pot.amount}`);
+      this._pushEvent('pot', null, pot.amount, `${label} ${pot.amount}`, { k: i === 0 ? 'potMain' : 'potSide', p: { i, amount: pot.amount } });
     });
 
     if (!wentToShowdown) {
@@ -572,7 +572,8 @@ export class Hand {
       });
       for (const s of showdown) {
         const p = this._players.get(s.seat);
-        this._pushEvent('showdown', s.seat, null, `${nameOf(p)} 亮牌 ${fmtCards(s.cards)}（${s.handName}）`);
+        this._pushEvent('showdown', s.seat, null, `${nameOf(p)} 亮牌 ${fmtCards(s.cards)}（${s.handName}）`,
+          { k: 'showdown', p: { name: nameOf(p), cards: fmtCards(s.cards), hand: s.handName, handEn: s.handNameEn } });
       }
 
       pots.forEach((pot, i) => {
@@ -611,7 +612,8 @@ export class Hand {
         amount,
         wentToShowdown
           ? `${nameOf(p)} 赢得 ${amount}`
-          : `${nameOf(p)} 赢得 ${amount}（其他人已弃牌）`
+          : `${nameOf(p)} 赢得 ${amount}（其他人已弃牌）`,
+        { k: wentToShowdown ? 'win' : 'winUncontested', p: { name: nameOf(p), amount } }
       );
     }
 
@@ -693,14 +695,14 @@ export class Hand {
         p.folded = true;
         p.hasActed = true;
         p.lastAction = { type: 'fold', amount: 0 };
-        this._pushEvent('action', seat, 0, `${nameOf(p)} 弃牌`, { type: 'fold' });
+        this._pushEvent('action', seat, 0, `${nameOf(p)} 弃牌`, { type: 'fold', k: 'fold', p: { name: nameOf(p) } });
         break;
       }
       case 'check': {
         if (!legal.canCheck) return { ok: false, error: '当前有下注，不能过牌' };
         p.hasActed = true;
         p.lastAction = { type: 'check', amount: 0 };
-        this._pushEvent('action', seat, 0, `${nameOf(p)} 过牌`, { type: 'check' });
+        this._pushEvent('action', seat, 0, `${nameOf(p)} 过牌`, { type: 'check', k: 'check', p: { name: nameOf(p) } });
         break;
       }
       case 'call': {
@@ -708,7 +710,7 @@ export class Hand {
         const paid = this._commit(p, legal.callAmount);
         p.hasActed = true;
         p.lastAction = { type: 'call', amount: paid };
-        this._pushEvent('action', seat, paid, `${nameOf(p)} 跟注 ${paid}`, { type: 'call' });
+        this._pushEvent('action', seat, paid, `${nameOf(p)} 跟注 ${paid}`, { type: 'call', k: 'call', p: { name: nameOf(p), amount: paid } });
         break;
       }
       case 'bet': {
@@ -738,7 +740,8 @@ export class Hand {
           this._commit(p, p.chips);
           p.hasActed = true;
           p.lastAction = { type: 'allin', amount: p.committedRound };
-          this._pushEvent('action', seat, p.committedRound, `${nameOf(p)} 全下 ${p.committedRound}`, { type: 'allin' });
+          this._pushEvent('action', seat, p.committedRound, `${nameOf(p)} 全下 ${p.committedRound}`,
+            { type: 'allin', k: 'allin', p: { name: nameOf(p), amount: p.committedRound } });
         } else {
           this._applyAggression(p, to, 'allin');
         }
@@ -784,7 +787,8 @@ export class Hand {
     if (allIn) text = `${nameOf(p)} 全下 ${p.committedRound}`;
     else if (kind === 'bet') text = `${nameOf(p)} 下注 ${p.committedRound}`;
     else text = `${nameOf(p)} 加注到 ${p.committedRound}`;
-    this._pushEvent('action', p.seat, p.committedRound, text, { type: p.lastAction.type });
+    this._pushEvent('action', p.seat, p.committedRound, text,
+      { type: p.lastAction.type, k: p.lastAction.type, p: { name: nameOf(p), amount: p.committedRound } });
   }
 
   /** 超时自动动作：能过牌就过牌，否则弃牌 */
@@ -810,7 +814,7 @@ export class Hand {
     p.folded = true;
     p.hasActed = true;
     p.lastAction = { type: 'fold', amount: 0 };
-    this._pushEvent('action', seat, 0, `${nameOf(p)} 弃牌`, { type: 'fold' });
+    this._pushEvent('action', seat, 0, `${nameOf(p)} 弃牌`, { type: 'fold', k: 'fold', p: { name: nameOf(p) } });
     this._progress(this._actingSeat !== null ? this._actingSeat : this._nextSeat(seat));
     return { ok: true, events: this._events.slice(mark) };
   }

@@ -152,6 +152,9 @@ export class Room {
 
     /** 这张桌子的语音频道。掼蛋那张桌子有它自己的一个，两边互不相通。 */
     this.voice = new VoiceChannel(this, { label: '德州语音', ...(opts.voice || {}) });
+
+    /** 牌桌语言 = 房主的界面语言。人机闲聊按它选语言；日志和报错前端自己翻。 */
+    this.lang = 'zh';
   }
 
   // ==================== 连接管理 ====================
@@ -220,7 +223,7 @@ export class Room {
     if (!p) return;
     p.dropTimer = null;
     if (p.connected || p.seat === null) return;
-    this.#pushLog(`${p.name} 长时间掉线，已自动离座`);
+    this.#pushLog(`${p.name} 长时间掉线，已自动离座`, 'dropped', { name: p.name });
     this.#vacate(p);
     this.broadcast();
   }
@@ -248,6 +251,8 @@ export class Room {
       connected: true,
       sittingOut: false,
       isHost: false,
+      /** 界面语言（真人在 hello 里报；人机没有）。房主的语言决定人机闲聊说什么话 */
+      lang: 'zh',
       dropTimer: null,
       /** 连续几手全靠超时代打（见 #noteTimeout） */
       idleHands: 0,
@@ -262,7 +267,7 @@ export class Room {
    * 处理 hello：用 token 恢复身份，或建立新身份。
    * 会直接向该连接下发 welcome，并广播一次状态。
    */
-  hello(client, token) {
+  hello(client, token, lang) {
     let player = null;
     if (typeof token === 'string' && /^[0-9a-f]{32}$/.test(token)) {
       const id = this.tokens.get(token);
@@ -284,6 +289,10 @@ export class Room {
 
     client.playerId = player.id;
     player.connected = true;
+    if (lang === 'en' || lang === 'zh') {
+      player.lang = lang;
+      if (player.isHost) this.lang = lang;
+    }
     this.#clearDropTimer(player);
     // 新连接意味着旧的 WebRTC 连接已经作废（刷新页面、或断线重连）。
     // 先把人从麦上摘掉，让其他人拆干净；前端如果本来就在连麦，会自己再上一次麦。
@@ -328,7 +337,7 @@ export class Room {
     p.idleHands = 0;
     this.seats[s] = p.id;
     this.#ensureHost();
-    this.#pushLog(`${p.name} 坐到 ${s + 1} 号座位`);
+    this.#pushLog(`${p.name} 坐到 ${s + 1} 号座位`, 'sit', { name: p.name, seat: s + 1 });
     client.send({ t: 'welcome', playerId: p.id, token: p.token, seat: p.seat });
     this.#maybeAutoStart();
     this.broadcast();
@@ -339,7 +348,7 @@ export class Room {
   stand(client) {
     const p = this.#playerOf(client);
     if (!p || p.seat === null) return { ok: false, code: 'NOT_SEATED', msg: '你还没有入座' };
-    this.#pushLog(`${p.name} 离开了牌桌`);
+    this.#pushLog(`${p.name} 离开了牌桌`, 'leave', { name: p.name });
     this.#vacate(p);
     this.broadcast();
     return { ok: true };
@@ -403,7 +412,8 @@ export class Room {
         const p = this.players.get(id);
         if (p && !p.bot) {
           p.isHost = true;
-          this.#pushLog(`${p.name} 成为房主`);
+          this.lang = p.lang || 'zh';
+          this.#pushLog(`${p.name} 成为房主`, 'host', { name: p.name });
           return;
         }
       }
@@ -417,7 +427,7 @@ export class Room {
     const v = !!value;
     if (p.sittingOut !== v) {
       p.sittingOut = v;
-      this.#pushLog(`${p.name} ${v ? '暂时离开' : '回到牌局'}`);
+      this.#pushLog(`${p.name} ${v ? '暂时离开' : '回到牌局'}`, v ? 'sitOut' : 'back', { name: p.name });
       if (!v) {
         p.idleHands = 0;
         this.#maybeAutoStart();
@@ -488,7 +498,8 @@ export class Room {
       return { ok: false, code: 'ILLEGAL_ACTION', msg: '大盲注不能小于小盲注' };
     }
     this.config = next;
-    this.#pushLog(`房主更新了设置：盲注 ${next.smallBlind}/${next.bigBlind}，前注 ${next.ante}`);
+    this.#pushLog(`房主更新了设置：盲注 ${next.smallBlind}/${next.bigBlind}，前注 ${next.ante}`,
+      'config', { sb: next.smallBlind, bb: next.bigBlind, ante: next.ante });
     this.broadcast();
     return { ok: true };
   }
@@ -522,7 +533,7 @@ export class Room {
       };
     }
     p.chips += amt;
-    this.#pushLog(`房主给 ${p.name} 补充了 ${amt} 筹码`);
+    this.#pushLog(`房主给 ${p.name} 补充了 ${amt} 筹码`, 'topup', { name: p.name, amount: amt });
     this.#maybeAutoStart();
     this.broadcast();
     return { ok: true };
@@ -538,7 +549,7 @@ export class Room {
     const target = id ? this.players.get(id) : null;
     if (!target) return { ok: false, code: 'NOT_SEATED', msg: '该座位没有人' };
     if (target.id === host.id) return { ok: false, code: 'ILLEGAL_ACTION', msg: '不能踢自己，请用离座' };
-    this.#pushLog(`${target.name} 被房主请出了牌桌`);
+    this.#pushLog(`${target.name} 被房主请出了牌桌`, 'kicked', { name: target.name });
     this.voice.remove(target.id);
     for (const c of this.clients) {
       if (c.playerId === target.id) {
@@ -592,7 +603,7 @@ export class Room {
     }
     const hp = this.hand.players.get(p.seat);
     this.shownSeats.add(p.seat);
-    this.#pushLog(`${p.name} 亮牌：${hp.holeCards.join(' ')}`);
+    this.#pushLog(`${p.name} 亮牌：${hp.holeCards.join(' ')}`, 'show', { name: p.name, cards: hp.holeCards.join(' ') });
     this.broadcast();
     return { ok: true };
   }
@@ -617,7 +628,7 @@ export class Room {
 
     if (patch.remove) {
       this.botDriver.removeProvider(String(patch.provider || '').toLowerCase());
-      this.#pushLog('房主移除了一个人机后端');
+      this.#pushLog('房主移除了一个人机后端', 'botRemoved');
       this.broadcast();
       return { ok: true };
     }
@@ -626,7 +637,7 @@ export class Room {
     if (!res.ok) return { ok: false, code: 'ILLEGAL_ACTION', msg: res.msg };
 
     // 日志里只提供应商名字，不提 key 的任何部分
-    this.#pushLog(`房主配置了人机后端：${this.botDriver.describe()}`);
+    this.#pushLog(`房主配置了人机后端：${this.botDriver.describe()}`, 'botConfigured', { desc: this.botDriver.describe() });
     this.broadcast();
     return { ok: true };
   }
@@ -647,6 +658,8 @@ export class Room {
       connected: true,
       sittingOut: false,
       isHost: false,
+      /** 界面语言（真人在 hello 里报；人机没有）。房主的语言决定人机闲聊说什么话 */
+      lang: 'zh',
       dropTimer: null,
       bot: true,
       persona,
@@ -694,7 +707,7 @@ export class Room {
     p.seat = s;
     p.chips = this.config.startingStack;
     this.seats[s] = p.id;
-    this.#pushLog(`房主在 ${s + 1} 号座位加入了人机「${p.name}」`);
+    this.#pushLog(`房主在 ${s + 1} 号座位加入了人机「${p.name}」`, 'botAdded', { name: p.name, seat: s + 1 });
     this.#maybeAutoStart();
     this.broadcast();
     return { ok: true, seat: s };
@@ -734,7 +747,7 @@ export class Room {
     this.#clearTableState();
     this.log = [];
     this.chat = [];
-    this.#pushLog('真人都离开了，已请走所有人机并清空牌桌');
+    this.#pushLog('真人都离开了，已请走所有人机并清空牌桌', 'allLeft');
   }
 
   /** 取消正在飞行中的人机请求（手牌结束、被踢、重置时） */
@@ -874,7 +887,7 @@ export class Room {
       if (p) p.chips = this.config.startingStack;
     }
     this.log = [];
-    this.#pushLog('房主重置了牌桌，所有人筹码已还原');
+    this.#pushLog('房主重置了牌桌，所有人筹码已还原', 'reset');
     this.broadcast();
     return { ok: true };
   }
@@ -995,7 +1008,7 @@ export class Room {
     if (Number.isInteger(this.hand.bbSeat)) this.bbSeat = this.hand.bbSeat;
     if (Number.isInteger(this.hand.buttonSeat)) this.buttonSeat = this.hand.buttonSeat;
 
-    this.#pushLog(`—— 第 ${this.handNo} 手 ——`);
+    this.#pushLog(`—— 第 ${this.handNo} 手 ——`, 'hand', { n: this.handNo });
     this.#pump();
     return { ok: true };
   }
@@ -1052,7 +1065,7 @@ export class Room {
       const raw = evts[this.eventCursor++];
       if (!raw || typeof raw !== 'object') continue;
       const e = this.#sanitizeEvent(raw);
-      if (e.text) this.#pushLog(e.text);
+      if (e.text) this.#pushLog(e.text, e.k, e.p);
       const out = { t: 'event', kind: e.kind, text: e.text };
       if (e.seat !== undefined && e.seat !== null) out.seat = e.seat;
       if (e.amount !== undefined && e.amount !== null) out.amount = e.amount;
@@ -1071,7 +1084,7 @@ export class Room {
    */
   #sanitizeEvent(e) {
     if (e.kind === 'deal') {
-      return { kind: 'deal', seat: e.seat, amount: null, text: '发底牌' };
+      return { kind: 'deal', k: 'deal', seat: e.seat, amount: null, text: '发底牌' };
     }
     const out = {
       kind: e.kind,
@@ -1079,6 +1092,10 @@ export class Room {
       amount: e.amount,
       text: typeof e.text === 'string' ? e.text : '',
     };
+    // 日志键和参数（引擎给的，见 SPEC §6.2）：英文界面靠它们渲染。参数里只有名字、
+    // 金额、已公开的牌——showdown 的牌本来就在 text 里。
+    if (typeof e.k === 'string') out.k = e.k;
+    if (e.p && typeof e.p === 'object') out.p = { ...e.p };
     // action 事件带上具体动作类型（引擎给的），前端做音效区分、人机做行动历史
     if (e.kind === 'action' && typeof e.type === 'string') out.type = e.type;
     return out;
@@ -1261,15 +1278,25 @@ export class Room {
     if (p.idleHands >= IDLE_HANDS_TO_SIT_OUT && !p.sittingOut) {
       p.sittingOut = true;
       p.idleHands = 0;
-      this.#pushLog(`${p.name} 连续 ${IDLE_HANDS_TO_SIT_OUT} 手没有操作，已自动坐出`);
+      this.#pushLog(`${p.name} 连续 ${IDLE_HANDS_TO_SIT_OUT} 手没有操作，已自动坐出`, 'idleOut', { name: p.name, n: IDLE_HANDS_TO_SIT_OUT });
     }
   }
 
   // ==================== 日志 / 广播 ====================
 
-  #pushLog(text) {
+  /**
+   * @param {string} text 中文原文，中文界面直接显示
+   * @param {string} [k]  日志键（SPEC §6.2），英文界面按它和 p 渲染
+   * @param {object} [p]  模板参数
+   */
+  #pushLog(text, k, p) {
     if (!text) return;
-    this.log.push({ ts: Date.now(), text: String(text) });
+    const entry = { ts: Date.now(), text: String(text) };
+    if (typeof k === 'string' && k) {
+      entry.k = k;
+      if (p && typeof p === 'object') entry.p = { ...p };
+    }
+    this.log.push(entry);
     if (this.log.length > MAX_LOG) this.log.splice(0, this.log.length - MAX_LOG);
   }
 
@@ -1440,6 +1467,7 @@ export class Room {
     const table = {
       phase: this.phase,
       handNo: this.handNo,
+      lang: this.lang,
       buttonSeat: this.buttonSeat,
       board: hand && Array.isArray(hand.board) ? [...hand.board] : [],
       pots: hand && Array.isArray(hand.pots)

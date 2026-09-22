@@ -273,10 +273,19 @@ export class Hand {
 事件用于前端日志与动画，结构：`{ kind, seat?, amount?, text }`，`text` 是可直接展示的中文。
 必须产生的 kind：`blind` `ante` `deal` `action` `flop` `turn` `river` `showdown` `pot` `win` `return`。
 
-示例：`{kind:'action', seat:3, amount:80, type:'raise', text:'小明 加注到 80'}`
+示例：`{kind:'action', seat:3, amount:80, type:'raise', text:'小明 加注到 80', k:'raise', p:{name:'小明', amount:80}}`
 
 `action` 事件额外带 `type` 字段（`fold`/`check`/`call`/`bet`/`raise`/`allin`）。
-前端只用 `text`；人机需要结构化的行动历史，从中文 `text` 反解太脆。
+中文前端只用 `text`；人机需要结构化的行动历史，从中文 `text` 反解太脆。
+
+**日志键 `k` 与参数 `p`**：每个事件（以及 `Room` 自己写的日志）都带一个稳定的键和模板参数，
+英文界面按 `public/i18n.js` 的 `LOG_EN[k]` 填 `p` 渲染，中文界面直接用 `text`。
+键的取值：引擎 `ante` `sb` `bb` `deal` `return` `flop` `turn` `river` `potMain` `potSide`
+`showdown` `win` `winUncontested` `fold` `check` `call` `bet` `raise` `allin`；
+房间 `dropped` `sit` `leave` `host` `sitOut` `back` `config` `topup` `kicked` `show`
+`botRemoved` `botConfigured` `botAdded` `allLeft` `reset` `hand` `idleOut`。
+`p` 里只有名字、金额、座位号和**已经公开**的牌（摊牌 / 主动亮牌），永远不含底牌。
+新增一个日志就要新增一个键和英文模板，`test/i18n.test.js` 会扫源码核对。
 
 中文动作用词：弃牌 / 过牌 / 跟注 {n} / 下注 {n} / 加注到 {n} / 全下 {n}。
 
@@ -317,7 +326,8 @@ export class Hand {
 ### 8.1 客户端 → 服务端
 
 ```jsonc
-{"t":"hello","token":"<之前的token或null>"}
+{"t":"hello","token":"<之前的token或null>","lang":"zh"|"en"}   // lang 可选：界面语言。
+                                             // 房主的语言就是牌桌语言（table.lang），人机闲聊按它选语言
 {"t":"sit","seat":3,"name":"小明"}          // seat 为 0..7；name 1..12 字符
 {"t":"stand"}                                // 站起离座（牌局中则先自动弃牌）
 {"t":"start"}                                // 房主手动开始下一手
@@ -372,6 +382,7 @@ export class Hand {
   "table": {
     "phase": "waiting",
     "handNo": 12,
+    "lang": "zh",
     "buttonSeat": 0,
     "board": ["Ah","Kd","7c"],
     "pots": [{"amount":300,"eligibleSeats":[0,2,5]}],
@@ -412,7 +423,7 @@ export class Hand {
                "canRaise":true,"minRaiseTo":80,"maxRaiseTo":960,"isAllInCall":false }
   },
   "result": null,
-  "log": [{"ts":1734000000000,"text":"小明 加注到 80"}],
+  "log": [{"ts":1734000000000,"text":"小明 加注到 80","k":"raise","p":{"name":"小明","amount":80}}],
   "chat": [{"ts":1734000000000,"seat":1,"name":"小明","text":"gg"}]
 }
 ```
@@ -422,7 +433,9 @@ export class Hand {
 - `you.legal` 仅在轮到自己时非 `null`。
 - `result` 在 `phase === 'handOver'` 时非 `null`，结构见 §6 的 `Hand.result`，
   外加每个 winner 的 `name` 字段方便前端直接展示。
-- `log` 保留最近 40 条，`chat` 保留最近 50 条。
+- `log` 保留最近 40 条，`chat` 保留最近 50 条。每条日志的 `text` 是中文原文，
+  `k` / `p` 是日志键和模板参数（§6.2），英文界面靠它们渲染；老条目可能没有 `k`，那就显示 `text`。
+- `table.lang` 是牌桌语言（`zh` / `en`），等于房主在 `hello` 里报的界面语言；人机闲聊按它选语言。
 - `table.history` 是本手牌的行动序列，按街道分段，每条只有 `seat`/`type`/`amount`。
   **不含任何牌面**，所以给谁看都安全。金额语义沿用引擎约定：
   `bet`/`raise`/`allin` 是本轮总投入额，`call` 是增量——渲染给人看之前要换算，
@@ -1040,6 +1053,12 @@ botDriver.forget?.(name)       // #vacate() 里对人机调，防名字回收
 8. 断线自动重连（指数退避，最长 5s 间隔），重连时用保存的 token 恢复。
 9. 侧栏：牌局日志 + 聊天输入；房主可见设置面板（盲注、起始筹码、超时、自动开局、补充筹码、踢人、重置）。
 10. **不得引用任何外部 CDN / 字体 / 图片**（服务器在境外且前端需离线自洽）。牌面用 CSS 绘制。
+11. **中英文自动切换**（`public/i18n.js`，在 `app.js` 之前加载）：浏览器语言列表里有任何一种中文
+    就用中文，一种都没有才用英文；顶栏 🌐 按钮手动切换，选择存 `localStorage`（`poker_lang`）后刷新，
+    座位令牌还在所以不丢座。词典的键是中文原文：HTML 照旧写中文，加载时按词典替换文本节点与
+    `title` / `aria-label` / `placeholder` / `data-key`；脚本里的动态文案走 `tr('中文', 参数)`；
+    服务端日志按 `k` / `p` 渲染，服务端报错按原文查表，查不到就原样显示。标签页伪装的标题也跟着换。
+    掼蛋和热词两页暂不切换。
 
 ## 11. 部署
 
