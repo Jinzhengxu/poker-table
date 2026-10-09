@@ -289,7 +289,10 @@ and with only Claude configured the agent falls back to the single-shot path:
 | `POKER_BOT_OBVIOUS`    | `on`             | Skip the model on spots where the answer does not depend on the opponent's range — trash preflop facing a raise, or a postflop call that loses even against two random cards. Those fold by rule in under a second instead of after a 5–20s model call. `off` sends every spot to the model (ablation) |
 
 Set several keys and bots alternate between providers by seat; if one starts
-failing it is benched for 60 seconds and another takes over.
+failing it is benched for 60 seconds and another takes over. To pin a bot to one
+provider instead, pick it in the dropdown next to **＋ Add bot** before adding it
+(only configured providers are listed); the seat list then shows which one it uses.
+A pinned bot falls back to rotation only while its provider is benched or removed.
 
 **Obvious spots never reach the model.** A reasoning model takes 5–8 seconds per
 call, and a good share of poker decisions do not need one: 72o facing a raise

@@ -680,13 +680,20 @@ export class Room {
 
   /**
    * 房主往指定座位加一个人机。seat 传 null 表示挑第一个空位。
+   * provider 给了就让这个人机一直用那家大模型（必须是已经配好的那几家之一）；
+   * 不给就和以前一样，按座位在已配的几家之间轮流。
    * @returns {{ok:true, seat:number}|{ok:false, code:string, msg:string}}
    */
-  addBot(client, seat = null) {
+  addBot(client, seat = null, provider = null) {
     const { err } = this.#requireHost(client);
     if (err) return err;
     if (!this.botDriver) {
       return { ok: false, code: 'ILLEGAL_ACTION', msg: '本服务没有启用人机' };
+    }
+    const want = provider ? String(provider).toLowerCase() : null;
+    const configured = this.botDriver.status?.().providers || [];
+    if (want && !configured.some((x) => x.provider === want)) {
+      return { ok: false, code: 'ILLEGAL_ACTION', msg: '这家大模型还没配置' };
     }
 
     let s;
@@ -700,8 +707,9 @@ export class Room {
     }
 
     // 每个人机随机抽一套人格（风格 + 结构化特质），加入时定下来就不再变
-    const persona = randomPersona(this.#usedNames());
-    if (!persona) return { ok: false, code: 'TABLE_FULL', msg: '没有可用的人机名字了' };
+    const drawn = randomPersona(this.#usedNames());
+    if (!drawn) return { ok: false, code: 'TABLE_FULL', msg: '没有可用的人机名字了' };
+    const persona = want ? { ...drawn, provider: want } : drawn;
 
     const p = this.#newBotPlayer(persona);
     p.seat = s;
@@ -1413,6 +1421,8 @@ export class Room {
         connected: !!p.connected,
         isHost: !!p.isHost,
         bot: !!p.bot,
+        // 房主加这个人机时指定的大模型供应商；null = 按座位轮流
+        botProvider: p.bot ? (p.persona?.provider || null) : null,
         sittingOut: !!p.sittingOut,
         isButton: this.handNo > 0 && s === this.buttonSeat,
         isSB: !!hand && s === this.sbSeat,

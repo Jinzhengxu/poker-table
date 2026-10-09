@@ -648,7 +648,9 @@ export class JevDriver {
   async talk(state, persona, out) {
     if (!this.talkOn || !state || !out || out.say) return null;
     if (out.source !== 'jev' && out.source !== 'obvious') return null;
-    const client = this.#llmClients()[0];
+    // 房主给这个人机指定了供应商，闲聊也用那家，免得「Claude 人机」说 DeepSeek 的话
+    const clients = this.#llmClients();
+    const client = clients.find((c) => c.provider === persona?.provider) || clients[0];
     if (!client) return null;
     if (!shouldTalk(persona, out.action, this.talkRand)) return null;
     const text = await askForSay({

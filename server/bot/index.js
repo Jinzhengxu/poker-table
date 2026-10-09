@@ -267,11 +267,20 @@ export class BotDriver {
   }
 
   /** 挑一个当前没在冷却里的客户端；全在冷却就返回 null */
-  #pick(seed) {
+  /**
+   * @param {number} seed
+   * @param {string} [prefer] 房主加人机时给它指定的供应商。那家能用就用它；
+   *                          冷却中或已被移除就照常轮转，别让这个人机因此变成规则人机
+   */
+  #pick(seed, prefer) {
     if (!this.clients.length) return null;
     const now = Date.now();
     const usable = this.clients.filter((c) => (this.health.get(c)?.until ?? 0) <= now);
     if (!usable.length) return null;
+    if (prefer) {
+      const hit = usable.find((c) => c.provider === prefer);
+      if (hit) return hit;
+    }
     // 按座位轮转，多个人机不会全压在同一家上
     return usable[Math.abs(seed) % usable.length];
   }
@@ -325,7 +334,7 @@ export class BotDriver {
     const equity = await this.#equityFor(state, signal);
 
     let out = null;
-    const client = this.#pick(seed);
+    const client = this.#pick(seed, persona?.provider);
 
     if (client && state?.you?.legal) {
       try {

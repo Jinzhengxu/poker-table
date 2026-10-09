@@ -1452,6 +1452,12 @@ h3, h4 { margin: 0; font-weight: 600; }
 .cfg-form input[type="checkbox"] { width: 18px; height: 18px; accent-color: #c9a44d; }
 .cfg-actions { display: flex; gap: 8px; margin-top: 4px; }
 .cfg-actions .act { flex: 1 1 auto; min-height: 38px; font-size: 13px; }
+.add-bot-provider {
+  flex: 1 1 0; min-width: 0; min-height: 38px; padding: 0 8px;
+  border-radius: 8px; font-size: 13px;
+  background: rgba(0, 0, 0, .4);
+  border: 1px solid var(--line-soft);
+}
 .cfg-hint { font-size: 11.5px; color: var(--txt-faint); margin: 0; }
 /* 音乐署名：CC BY 要求的，跟牌桌设置隔开一点 */
 .music-credit { margin-top: 4px; }

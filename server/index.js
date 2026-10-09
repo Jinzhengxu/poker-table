@@ -572,7 +572,11 @@ function handleMessage(client, msg, fail) {
       if (msg.seat !== undefined && msg.seat !== null && !validSeat(msg.seat)) {
         return fail('ILLEGAL_ACTION', '座位号不合法');
       }
-      return reply(client, room.addBot(client, msg.seat ?? null));
+      if (msg.provider !== undefined && msg.provider !== null &&
+          (typeof msg.provider !== 'string' || msg.provider.length > 32)) {
+        return fail('ILLEGAL_ACTION', '供应商不合法');
+      }
+      return reply(client, room.addBot(client, msg.seat ?? null, msg.provider || null));
     }
     case 'reset':
       return reply(client, room.reset(client));

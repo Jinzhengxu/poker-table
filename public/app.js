@@ -348,6 +348,7 @@
     D.cfgAuto = $('#cfgAuto');
     D.btnReset = $('#btnReset');
     D.btnAddBot = $('#btnAddBot');
+    D.addBotProvider = $('#addBotProvider');
     D.botForm = $('#botForm');
     D.botStatus = $('#botStatus');
     D.botProvider = $('#botProvider');
@@ -2145,11 +2146,53 @@
     }
   }
 
+  /** 供应商键 -> 展示名。只认服务端已配的那几家，没配的显示键本身 */
+  function providerLabel(st, key) {
+    var list = (st && st.bot && st.bot.providers) || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].provider === key) return list[i].label || key;
+    }
+    return key;
+  }
+
+  /**
+   * 「加入人机」旁边那个下拉框：自动轮流 + 已配好的每一家。
+   * 只列已配的 —— 选了没配的家，服务端会拒绝，与其报错不如不给选。
+   */
+  function renderAddBotProvider(st, isHost) {
+    var sel = D.addBotProvider;
+    if (!sel) return;
+    sel.hidden = !isHost;
+    if (!isHost) return;
+    var list = (st.bot && st.bot.providers) || [];
+    var sig = list.map(function (p) { return p.provider + ':' + p.model; }).join('|');
+    if (sel.__sig === sig) return;
+    sel.__sig = sig;
+    var keep = sel.value;
+    sel.textContent = '';
+    var auto = document.createElement('option');
+    auto.value = '';
+    auto.textContent = tr('自动轮流');
+    sel.appendChild(auto);
+    for (var i = 0; i < list.length; i++) {
+      var o = document.createElement('option');
+      o.value = list[i].provider;
+      o.textContent = (list[i].label || list[i].provider) + ' · ' + list[i].model;
+      sel.appendChild(o);
+    }
+    // 之前选的那家还在就保持选中，被移除了就回到自动
+    sel.value = keep;
+    if (sel.value !== keep) sel.value = '';
+    // 一家都没配就只有「自动轮流」（其实是规则人机），没什么可选的
+    sel.disabled = list.length < 1;
+  }
+
   function renderConfigPane(st, cfg, seats, you) {
     var isHost = !!you.isHost;
     D.cfgHostOnly.hidden = isHost;
     D.cfgForm.classList.toggle('locked', !isHost);
     if (D.btnAddBot) D.btnAddBot.hidden = !isHost;
+    renderAddBotProvider(st, isHost);
     renderBotConfig(st, isHost);
     renderJevConfig(st, isHost);
 
@@ -2171,7 +2214,7 @@
       var d = seats[i];
       if (!d) continue;
       rows.push(i + ':' + d.name + ':' + d.chips + ':' + (d.connected ? 1 : 0) + ':' + (d.bot ? 1 : 0)
-        + ':' + (d.canRebuy ? 1 : 0));
+        + ':' + (d.canRebuy ? 1 : 0) + ':' + (d.botProvider || ''));
     }
     var sig = rows.join('|') + '|' + (isHost ? 'h' : '-');
     if (D.seatAdmin.__sig === sig) return;
@@ -2189,7 +2232,9 @@
       var row = elt('div', 'sa-row' + (broke ? ' is-broke' : ''));
       row.appendChild(elt('span', 'sa-name',
         (s + 1) + '. ' + (data.name || '') +
-        (data.bot ? tr('（人机）') : '') +
+        (data.bot
+          ? (data.botProvider ? tr('（人机 · {label}）', { label: providerLabel(st, data.botProvider) }) : tr('（人机）'))
+          : '') +
         (data.connected || data.bot ? '' : tr('（断线）'))));
       // 没筹码的人一眼能挑出来，房主不用去数谁是 0
       row.appendChild(elt('span', 'sa-chips', broke ? tr('没筹码') : fmt(data.chips)));
@@ -2850,8 +2895,10 @@
       D.btnAddBot.addEventListener('click', function () {
         var st = S.state;
         if (!st || !st.you || !st.you.isHost) { toast(tr('只有房主可以加人机')); return; }
-        // 不传 seat，让服务端挑第一个空位
-        send({ t: 'addBot' });
+        // 不传 seat，让服务端挑第一个空位；不选供应商就不传，按座位轮流
+        var msg = { t: 'addBot' };
+        if (D.addBotProvider && D.addBotProvider.value) msg.provider = D.addBotProvider.value;
+        send(msg);
       });
     }
 

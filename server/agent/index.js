@@ -302,12 +302,32 @@ export class PokerAgent {
   }
 
   /** 挑一个不在冷却里的模型 */
-  #pick(seed) {
+  /**
+   * @param {number} seed
+   * @param {string} [prefer] 房主给这个人机指定的供应商。
+   *   agent 里有这家：能用就用它，冷却中就照常轮转。
+   *   agent 里没有这家（Claude 这种只走单轮的，或者没配）：返回 null，
+   *   整次决策交给 BotDriver，那边会按同一个 prefer 挑 —— 不能悄悄换成别家的 agent。
+   */
+  #pick(seed, prefer) {
     if (!this.models.length) return null;
+    if (prefer && !this.models.some((m) => m.provider === prefer)) {
+      return this.fallback.clients?.some((c) => c.provider === prefer) ? null : this.#rotate(seed);
+    }
     const now = Date.now();
     const usable = this.models.filter((m) => (this.health.get(m)?.until ?? 0) <= now);
     if (!usable.length) return null;
+    if (prefer) {
+      const hit = usable.find((m) => m.provider === prefer);
+      if (hit) return hit;
+    }
     return usable[Math.abs(seed) % usable.length];
+  }
+
+  #rotate(seed) {
+    const now = Date.now();
+    const usable = this.models.filter((m) => (this.health.get(m)?.until ?? 0) <= now);
+    return usable.length ? usable[Math.abs(seed) % usable.length] : null;
   }
 
   #onFailure(model, err) {
@@ -343,7 +363,7 @@ export class PokerAgent {
 
     const seat = state?.you?.seat ?? 0;
     const handNo = state?.table?.handNo ?? 0;
-    const model = this.#pick(handNo * 8 + seat);
+    const model = this.#pick(handNo * 8 + seat, persona?.provider);
 
     if (!model || !state?.you?.legal) {
       return this.#viaFallback(state, persona, signal, started);

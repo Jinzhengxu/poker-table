@@ -337,7 +337,9 @@ export class Hand {
                        "actionTimeoutMs":45000,"autoNextHand":true,"ante":0}}  // 仅房主，仅两手牌之间
 {"t":"addChips","seat":3,"amount":1000}      // 仅房主：给某座位补充筹码
 {"t":"kick","seat":3}                        // 仅房主，人机也用它移除
-{"t":"addBot","seat":3}                      // 仅房主：加一个人机。seat 可省略 = 挑第一个空位
+{"t":"addBot","seat":3,"provider":"claude"}  // 仅房主：加一个人机。seat 可省略 = 挑第一个空位；
+                                             // provider 可省略 = 按座位轮流，给了就一直用那家
+                                             // （必须是 bot.providers 里已配的，否则报错）
 {"t":"botConfig","patch":{"provider":"deepseek","apiKey":"sk-...","model":"..."}}
                                              // 仅房主：配置人机的 LLM 后端。
                                              // provider: kimi | deepseek | yinlianyun。
@@ -405,7 +407,7 @@ export class Hand {
     { "seat":1, "name":"小明",
       "avatar":{"bg":"#c2410c","fg":"#ffffff","glyph":"小","shape":2},
       "chips":960, "committedRound":40, "committedTotal":60,
-      "state":"in", "connected":true, "isHost":true, "bot":false, "sittingOut":false,
+      "state":"in", "connected":true, "isHost":true, "bot":false, "botProvider":null, "sittingOut":false,
       "isButton":false, "isSB":true, "isBB":false,
       "cards":["??","??"],
       "lastAction":{"type":"raise","amount":80,"label":"加注到 80"},
@@ -1175,7 +1177,7 @@ engine 负责：抗贡判定（进贡方合计两张 `jr`）、强制交出最�
 | `play` | `cards: string[]`, `as?: Combo`, `dealNo?` | `as` 是前端声明的牌型，可省略 |
 | `pass` | `dealNo?` | 本轮第一个出牌的人不能 pass |
 | `returnTribute` | `card` | 必须是 `returnCandidates` 里的 |
-| `addBot` | `seat?` | 仅房主 |
+| `addBot` | `seat?`, `provider?` | 仅房主 |
 | `kick` | `seat` | 仅房主 |
 | `config` | `patch` | 仅房主：`actionTimeoutMs` 10~300s、`autoNextDealMs` 2~60s、`autoNextDeal` |
 | `chat` | `text` | ≤ 200 字 |

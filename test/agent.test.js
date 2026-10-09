@@ -1563,3 +1563,64 @@ test('Claude：不进 agent 的工具循环，只在 BotDriver 单轮那边', ()
   assert.equal(agent.fallback.clients[0].provider, 'claude');
   assert.equal(agent.hasLLM, true);
 });
+
+// ==================== 房主加人机时指定供应商 ====================
+
+/** 假的单轮客户端：只记自己被问了几次 */
+function fakeClient(provider) {
+  const c = {
+    provider, label: provider, model: 'm', apiKey: `${provider}-key-1234567890`, thinking: 'on',
+    canDisableThinking: false, calls: 0,
+    async completeJSON() { c.calls++; return { action: 'call', say: '' }; },
+  };
+  return c;
+}
+
+test('指定供应商：BotDriver 不管座位怎么轮，都用这个人机自己那家', async () => {
+  const ds = fakeClient('deepseek');
+  const kimi = fakeClient('kimi');
+  const d = new BotDriver({ clients: [ds, kimi], minThinkMs: 0, obvious: false, equitySims: 0, logger: quiet() });
+  for (const seat of [0, 1, 2, 3]) {
+    await d.decide(agentState({ you: { ...agentState().you, seat } }), { ...P0, provider: 'kimi' });
+  }
+  assert.equal(kimi.calls, 4);
+  assert.equal(ds.calls, 0);
+});
+
+test('指定供应商：agent 里没有的家（Claude）整次交给单轮那家，不悄悄换成别家的 agent', async () => {
+  const seen = [];
+  const claude = fakeClient('claude');
+  const agent = new PokerAgent({
+    models: [fakeModelEntry([{ tool: 'act', args: { action: 'call' } }], seen)],
+    fallback: new BotDriver({ clients: [fakeClient('deepseek'), claude], minThinkMs: 0, obvious: false, equitySims: 0, logger: quiet() }),
+    minThinkMs: 0, equitySims: 500, equityMs: 200, obvious: false, logger: quiet(),
+  });
+  await agent.decide(agentState(), { ...P0, provider: 'claude' });
+  assert.equal(seen.length, 0, 'DeepSeek 的 agent 一次都不该被问');
+  assert.equal(claude.calls, 1);
+
+  // 没指定的照旧走 agent
+  await agent.decide(agentState(), P0);
+  assert.equal(seen.length, 1);
+});
+
+test('addBot：provider 必须是已配的那几家，人机的座位上看得见它用哪家', () => {
+  const driver = new BotDriver({ clients: [fakeClient('deepseek')], minThinkMs: 0, logger: quiet() });
+  const room = new Room({ botDriver: driver });
+  const host = stubClient();
+  room.attach(host);
+  room.hello(host, null);
+  room.sit(host, 0, '房主');
+
+  const bad = room.addBot(host, null, 'claude');
+  assert.equal(bad.ok, false);
+  assert.match(bad.msg, /还没配置/);
+
+  const ok = room.addBot(host, null, 'deepseek');
+  assert.equal(ok.ok, true);
+  const auto = room.addBot(host, null);
+  const seats = room.buildStateFor(host.playerId).seats;
+  assert.equal(seats[ok.seat].botProvider, 'deepseek');
+  assert.equal(seats[auto.seat].botProvider, null, '不指定 = 按座位轮流');
+  assert.equal(seats[0].botProvider, null, '真人没有这个');
+});

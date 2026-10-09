@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pick the LLM provider when adding a bot.** A dropdown next to *＋ Add bot* lists
+  "rotate automatically" plus every configured provider; `addBot` takes an optional
+  `provider` (must be one of `bot.providers`, otherwise rejected) and the seat snapshot gains
+  `botProvider`. A pinned bot uses that provider for its decisions in both the agent loop and
+  single-shot, and for its table talk under Jev; if the provider is agent-incapable (Claude)
+  the whole decision goes single-shot to it instead of silently using another provider's agent.
+  It only rotates while its provider is cooling down or removed.
+
 - **The host chooses whether Jev or the LLM decides bot actions.** A *Who decides bot actions*
   dropdown at the top of Settings → Jev switches between Jev and the LLM chain (agent loop,
   or single-shot when no agent-capable provider is configured). It applies immediately via
