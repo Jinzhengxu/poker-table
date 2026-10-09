@@ -615,3 +615,38 @@ test('Room：走 Jev 的人机动作先落地，闲聊几秒后才进聊天区',
   assert.ok(last && last.chat.some((c) => /来呀/.test(c.text)), '广播的快照里该有这句话');
   room.shutdown();
 });
+
+// ==================== 房主在页面上选：动作由 Jev 判还是交给大模型 ====================
+
+test('jev 决策方：切到 agent 就不问 Jev、不算兜底，key 留着，切回来照常问', async () => {
+  const { calls, fetch } = mockFetch((body) => answersFor(body, { bucket: 'top35' }));
+  const d = driverWith(fetch);
+  const spot = byId('range-prof-nit');
+  assert.equal(d.status().jev.decider, 'jev', '默认 Jev');
+
+  assert.equal(d.configure({ decider: 'agent' }).ok, true);
+  assert.equal(d.status().jev.decider, 'agent');
+  assert.equal(d.status().jev.enabled, true, 'Jev 的配置不能因为切换丢掉');
+  assert.match(d.describe(), /Jev 暂停/);
+
+  const out = await d.decide(spot.state, spot.persona);
+  assert.equal(calls.length, 0, '选了大模型就一次都不该问 Jev');
+  assert.equal(out.source, 'rule', '下面那层的 source 原样透出，不加 fallback: 前缀');
+  assert.equal(d.stats.fallback, 0, '房主选的不算退回兜底');
+
+  assert.equal(d.configure({ decider: 'jev' }).ok, true);
+  const back = await d.decide(spot.state, spot.persona);
+  assert.equal(calls.length, 1);
+  assert.equal(back.source, 'jev');
+});
+
+test('jev 决策方：只收 jev / agent，环境变量 POKER_DECIDER 给默认值', () => {
+  const rule = new BotDriver({ clients: [], minThinkMs: 0, logger: quiet(), obvious: false });
+  const d = new JevDriver({ client: null, fallback: rule, minThinkMs: 0, logger: quiet() });
+  const bad = d.configure({ decider: 'gpt' });
+  assert.equal(bad.ok, false);
+  assert.equal(d.decider, 'jev', '配错了不能改动原值');
+
+  const e = new JevDriver({ client: null, fallback: rule, env: { POKER_DECIDER: 'agent' }, logger: quiet() });
+  assert.equal(e.decider, 'agent');
+});

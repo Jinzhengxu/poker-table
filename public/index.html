@@ -260,6 +260,13 @@
 
         <form id="jevForm" class="cfg-form" hidden>
           <h4>Jev 决策模型</h4>
+          <!-- 选了就立即生效（app.js 监听 change），不用点下面的保存；Jev 的 key 不受影响 -->
+          <label>人机动作由谁判断
+            <select id="jevDecider">
+              <option value="jev">Jev 决策模型</option>
+              <option value="agent">大模型（agent 循环）</option>
+            </select>
+          </label>
           <div id="jevStatus" class="bot-status">未配置，动作由上面的大模型决定。</div>
           <label>供应商
             <select id="jevProvider">

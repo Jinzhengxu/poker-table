@@ -136,6 +136,7 @@
   // 注意：这是明文存在 localStorage 的，只在你自己信任的设备上勾"记住 key"。
   var LS_BOT = 'poker_bot_cfg';
   var LS_JEV = 'poker_jev_cfg';
+  var LS_DECIDER = 'poker_decider';
   var LS_MUTED = 'poker_muted';
   var LS_MUSIC = 'poker_music';
 
@@ -358,6 +359,7 @@
     D.jevForm = $('#jevForm');
     D.jevStatus = $('#jevStatus');
     D.jevProvider = $('#jevProvider');
+    D.jevDecider = $('#jevDecider');
     D.jevKey = $('#jevKey');
     D.jevModel = $('#jevModel');
     D.jevRemove = $('#jevRemove');
@@ -2072,9 +2074,20 @@
     D.jevForm.hidden = !isHost;
     if (!isHost) return;
     var j = (st.bot && st.bot.jev) || null;
-    var sig = j ? JSON.stringify([j.enabled, j.provider, j.model, j.maskedKey, j.cooling, j.talk, j.notes]) : 'none';
+    // 没有 Jev 这一层（POKER_JEV=off）就没什么可选的
+    if (D.jevDecider) {
+      D.jevDecider.disabled = !j;
+      if (j && document.activeElement !== D.jevDecider) D.jevDecider.value = j.decider || 'jev';
+    }
+    var sig = j ? JSON.stringify([j.decider, j.enabled, j.provider, j.model, j.maskedKey, j.cooling, j.talk, j.notes]) : 'none';
     if (D.jevStatus.__sig === sig) return;
     D.jevStatus.__sig = sig;
+    if (j && j.decider === 'agent') {
+      D.jevStatus.textContent = tr('已暂停：动作由上面的大模型（agent 循环）判断。') +
+        (j.enabled ? tr('Jev 的 key 还在，切回来即可。') : '');
+      D.jevStatus.className = 'bot-status';
+      return;
+    }
     if (!j || !j.enabled) {
       D.jevStatus.textContent = tr('未配置，动作由上面的大模型决定。');
       D.jevStatus.className = 'bot-status';
@@ -2109,6 +2122,14 @@
           S.botPushed = true;
           send({ t: 'botConfig', patch: cfg });
         }
+      }
+    }
+    // 决策方：服务重启会回到环境变量的默认，房主上次选的和它不一样就推回去
+    if (!S.deciderPushed && st.bot && st.bot.jev) {
+      S.deciderPushed = true;
+      var d = lsGet(LS_DECIDER);
+      if ((d === 'jev' || d === 'agent') && d !== st.bot.jev.decider) {
+        send({ t: 'botConfig', patch: { decider: d } });
       }
     }
     if (!S.jevPushed && st.bot && st.bot.jev && !st.bot.jev.enabled) {
@@ -2773,6 +2794,18 @@
         // 输入框里不留 key，避免肩窥
         D.botKey.value = '';
         toast(tr('人机后端已提交'), true);
+      });
+    }
+
+    if (D.jevDecider) {
+      D.jevDecider.addEventListener('change', function () {
+        var st = S.state;
+        if (!st || !st.you || !st.you.isHost) { toast(tr('只有房主可以配置人机')); return; }
+        var v = D.jevDecider.value;
+        send({ t: 'botConfig', patch: { decider: v } });
+        lsSet(LS_DECIDER, v);
+        S.deciderPushed = true;
+        toast(v === 'agent' ? tr('人机动作改由大模型判断') : tr('人机动作改由 Jev 判断'), true);
       });
     }
 

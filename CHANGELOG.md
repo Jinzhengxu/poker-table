@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The host chooses whether Jev or the LLM decides bot actions.** A *Who decides bot actions*
+  dropdown at the top of Settings → Jev switches between Jev and the LLM chain (agent loop,
+  or single-shot when no agent-capable provider is configured). It applies immediately via
+  `botConfig {decider}`, keeps Jev's key, is remembered in the host's browser and pushed back
+  after a restart; `POKER_DECIDER=jev|agent` sets the default. In LLM mode Jev is never
+  called, the decision is not counted as a fallback (source has no `fallback:` prefix), and
+  opponent notes are not written since only Jev reads them.
+
 - **Claude as a fifth LLM provider.** `POKER_BOT_PROVIDER=claude` / `ANTHROPIC_API_KEY`, also
   pickable in the bot panel, and picked up by `auto`. It goes through the official
   `@anthropic-ai/sdk` (Messages API) behind the same `LLMClient#completeJSON`, so table talk,

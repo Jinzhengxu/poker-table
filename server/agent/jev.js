@@ -526,6 +526,10 @@ export class JevDriver {
     this.equityMs = Math.max(1, Number(opts.equityMs ?? env.POKER_AGENT_EQUITY_MS ?? 1200));
     this.equityChunkMs = Math.max(1, Number(opts.equityChunkMs ?? env.POKER_BOT_EQUITY_CHUNK_MS ?? 8));
 
+    // 动作由谁判：jev（默认）| agent（跳过 Jev，整个交给下面那层：agent 循环，
+    // 没有 agent 模型时就是单轮大模型）。房主可以在页面上切，key 不丢。
+    this.decider = String(opts.decider ?? env.POKER_DECIDER ?? 'jev').toLowerCase() === 'agent' ? 'agent' : 'jev';
+
     this.health = { fails: 0, until: 0 };
     this.stats = {
       jev: 0,          // Jev 答了、动作由代码算出来的次数
@@ -559,6 +563,7 @@ export class JevDriver {
   }
 
   describe() {
+    if (this.decider === 'agent') return `${this.fallback.describe()}（房主选了大模型判断，Jev 暂停）`;
     if (!this.client) return `${this.fallback.describe()}（Jev 未配置）`;
     const llm = this.#llmClients().length > 0;
     const jobs = [this.talkOn && llm ? '闲聊' : '', this.notesOn && llm ? '读人笔记' : ''].filter(Boolean);
@@ -580,9 +585,18 @@ export class JevDriver {
    * @returns {{ok:true}|{ok:false,msg:string}}
    */
   configure(patch) {
+    if (patch && patch.decider !== undefined) return this.#setDecider(patch.decider);
     if (patch && patch.jev) return this.#configureJev(patch);
     if (typeof this.fallback.configure !== 'function') return { ok: false, msg: '兜底驱动不支持配置' };
     return this.fallback.configure(patch);
+  }
+
+  /** 切换动作由谁判。只动开关，Jev 的 key 和大模型的配置都原样留着 */
+  #setDecider(value) {
+    const v = String(value || '').toLowerCase();
+    if (v !== 'jev' && v !== 'agent') return { ok: false, msg: '决策方只能是 jev 或 agent' };
+    this.decider = v;
+    return { ok: true };
   }
 
   #configureJev(patch) {
@@ -655,6 +669,7 @@ export class JevDriver {
       ...base,
       hasLLM: !!base.hasLLM || !!this.client,
       jev: {
+        decider: this.decider,
         enabled: !!this.client,
         provider: this.client?.provider || null,
         label: this.client?.label || null,
@@ -686,7 +701,8 @@ export class JevDriver {
     }
     // 读人笔记只在**手牌结束**那次 observe 上写（房间用旁观者视角调，快照里没有 you.legal）；
     // decide() 开头那次 observe 是正在决策，不写。后台跑，不等。
-    if (this.notesOn && !state?.you?.legal) {
+    // 笔记只喂给 Jev（buildJevState），大模型判断时写了也没人看，白花钱
+    if (this.notesOn && this.decider === 'jev' && !state?.you?.legal) {
       try {
         this.notes.onHandEnd(state);
       } catch (e) {
@@ -706,7 +722,7 @@ export class JevDriver {
   }
 
   #usable() {
-    if (!this.client) return false;
+    if (this.decider !== 'jev' || !this.client) return false;
     return this.health.until <= Date.now();
   }
 
@@ -1035,10 +1051,12 @@ export class JevDriver {
 
   /** 退回兜底（BotDriver 或 PokerAgent），它自己保证一定返回合法动作 */
   async #viaFallback(state, persona, signal, started) {
-    this.stats.fallback++;
+    // 房主选了大模型判断时，交给下面那层是本分，不算「退回兜底」
+    const chosen = this.decider === 'agent';
+    if (!chosen) this.stats.fallback++;
     try {
       const out = await this.fallback.decide(state, persona, signal);
-      return { ...out, source: `fallback:${out.source}` };
+      return chosen ? out : { ...out, source: `fallback:${out.source}` };
     } catch (e) {
       this.logger.error(`[jev] 兜底也失败了，用纯规则：${e.message}`);
       await this.#pace(started, signal);

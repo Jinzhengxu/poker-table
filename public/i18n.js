@@ -181,6 +181,13 @@
     '这家的模型本来就不思考，这个开关对它没有意义。': "This provider's model does not reason to begin with; the switch does nothing here.",
     'Claude 的思考关不掉，已按最省的一档（effort low）调用。': "Claude's thinking can't be turned off; it already runs at the cheapest level (effort low).",
     '保存后端': 'Save backend',
+    '人机动作由谁判断': 'Who decides bot actions',
+    '大模型（agent 循环）': 'LLM (agent loop)',
+    '已暂停：动作由上面的大模型（agent 循环）判断。': 'Paused: bot actions are decided by the LLM above (agent loop).',
+    'Jev 的 key 还在，切回来即可。': " Jev's key is kept; switch back any time.",
+    '人机动作改由大模型判断': 'Bot actions now decided by the LLM',
+    '人机动作改由 Jev 判断': 'Bot actions now decided by Jev',
+    '决策方只能是 jev 或 agent': 'Decider must be jev or agent',
     '记住 key': 'Remember key',
     'Key 经加密连接送到服务端，只存在内存里，不会发给牌桌上的其他人， 也不会写进日志。服务重启后需要重新填。':
       'The key travels over the encrypted connection and lives only in server memory. It is never sent to other players or written to logs. After a server restart you will need to enter it again.',

@@ -614,6 +614,10 @@ The live table is a **division of labour, not a replacement**:
   for talk and notes with OpenRouter for Jev; one OpenRouter key can also drive both.
   `POKER_JEV=off` removes the layer entirely; the remaining knobs are in `.env.example`
   under the Jev heading.
+- **The host picks who decides.** The same panel has a *Who decides bot actions* dropdown:
+  Jev, or the LLM (agent loop — single-shot when no agent-capable provider is set). It takes
+  effect immediately, keeps Jev's key, and is remembered in the host's browser across
+  restarts. `POKER_DECIDER=jev|agent` sets the server default.
 - Everyone at the table sees a **Jev pill** in the top bar: decisions so far, average
   round trip, and spend. No key material, masked or otherwise, ever leaves the server.
 

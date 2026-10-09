@@ -610,6 +610,9 @@ npm run eval:spots -- --tag range --repeat 3        # 只跑成对的范围题
   兜底：Jev 挂了、或者读数脆弱且开了 `POKER_JEV_ESCALATE`，交给原来的 agent → 单轮 → 规则链。
 - 房主在「设置 → Jev 决策模型」里填 key 即可。常见搭配是大模型直连 DeepSeek、Jev 走 OpenRouter，
   两把 key 各管各的；大模型也想走 OpenRouter 的话 key 可以共用一把。环境变量见 `.env.example` 的 Jev 一节。
+- **动作由谁判，房主说了算。** 同一个面板顶上有「人机动作由谁判断」：Jev，或者大模型（agent 循环；
+  没有能接 agent 的大模型时就是单轮）。选了立即生效，Jev 的 key 不丢，房主浏览器会记住，
+  服务重启后自动推回去。`POKER_DECIDER=jev|agent` 设服务端默认值。
 - 桌上所有人的顶栏都有一枚 **Jev 徽标**，滚动显示累计判断次数、平均往返和花费；key 的任何形态都不出服务器。
 
 题库上量过的分工依据：Jev 的范围读数和大模型一样准、快 6 到 40 倍；带思维链的大模型
