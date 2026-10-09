@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A deploy no longer leaves browsers on stale JS/CSS for hours.** Cloudflare's Browser Cache
+  TTL rewrites the origin's `max-age=60` on `.js`/`.css` to `max-age=14400`, while HTML is
+  `no-cache` — so after a deploy browsers ran the new HTML against a cached old `app.js` (the
+  new *Add bot* provider dropdown showed only "rotate automatically" because no script filled
+  it). HTML pages are now served with every `src="/x.js"` / `href="/x.css"` rewritten to
+  `?v=<content hash>` (`server/assets.js`), and versioned URLs are cached for a year as
+  immutable. Files imported from inside ES modules still use the short cache.
+
 ### Added
 
 - **Pick the LLM provider when adding a bot.** A dropdown next to *＋ Add bot* lists

@@ -10,6 +10,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
+import { versionAssets } from './assets.js';
 import { Room } from './room.js';
 import { MAX_SEATS } from './protocol.js';
 import { BotDriver } from './bot/index.js';
@@ -205,8 +206,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     let pathname;
+    let versioned = false;
     try {
-      pathname = new URL(req.url || '/', 'http://localhost').pathname;
+      const u = new URL(req.url || '/', 'http://localhost');
+      pathname = u.pathname;
+      versioned = u.searchParams.has('v');
     } catch {
       sendText(res, 400, '请求地址不合法');
       return;
@@ -237,13 +241,18 @@ const server = http.createServer(async (req, res) => {
 
     const ext = path.extname(filePath).toLowerCase();
     const type = MIME[ext] || 'application/octet-stream';
+    // 页面里引用的 js/css 换成带内容哈希的地址（见 assets.js：Cloudflare 会把短缓存改成 4 小时）
+    if (ext === '.html') data = Buffer.from(await versionAssets(data.toString('utf8'), PUBLIC_DIR));
     const headers = {
       'Content-Type': type,
       'Content-Length': data.length,
-      // HTML 不缓存；音频是几 MB 的固定资源，缓一天，不然每分钟重下一次背景音乐；其余短缓存
+      // HTML 不缓存；带 ?v= 的地址内容永远不变，缓一年；音频是几 MB 的固定资源，缓一天，
+      // 不然每分钟重下一次背景音乐；其余短缓存（ES 模块里互相 import 的那几个走这条）
       'Cache-Control': ext === '.html'
         ? 'no-cache'
-        : (ext === '.mp3' ? 'public, max-age=86400' : 'public, max-age=60'),
+        : versioned && (ext === '.js' || ext === '.css')
+          ? 'public, max-age=31536000, immutable'
+          : (ext === '.mp3' ? 'public, max-age=86400' : 'public, max-age=60'),
       'X-Content-Type-Options': 'nosniff',
     };
     res.writeHead(200, headers);
