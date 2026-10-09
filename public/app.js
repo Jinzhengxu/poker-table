@@ -2033,9 +2033,11 @@
     var canDisable = opt.getAttribute('data-nothink') === '1';
     D.botNoThink.disabled = !canDisable;
     if (!canDisable) D.botNoThink.checked = false;
+    // 关不掉的原因不止一种（本来就不想 / 想但关不掉），选项上可以自带一句
+    var hint = opt.getAttribute('data-nothink-hint');
     D.botNoThinkHint.textContent = canDisable
       ? tr('关掉思维链，出手快得多，也更省 token。')
-      : tr('这家的模型本来就不思考，这个开关对它没有意义。');
+      : tr(hint || '这家的模型本来就不思考，这个开关对它没有意义。');
   }
 
   /**

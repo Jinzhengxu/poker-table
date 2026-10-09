@@ -234,6 +234,10 @@
                 data-key="网关 token（uuid 形式）">银联云（deepseek-v4-flash）</option>
               <option value="openrouter" data-model="deepseek/deepseek-v4-flash" data-nothink="1"
                 data-key="sk-or-...">OpenRouter（deepseek/deepseek-v4-flash）</option>
+              <!-- 思维链关不掉，所以没有 data-nothink；data-nothink-hint 换掉默认那句
+                   「本来就不思考」，那句对它不成立 -->
+              <option value="claude" data-model="claude-opus-5-5" data-key="sk-ant-..."
+                data-nothink-hint="Claude 的思考关不掉，已按最省的一档（effort low）调用。">Claude（claude-opus-5-5）</option>
             </select>
           </label>
           <label>API Key<input id="botKey" type="password" autocomplete="off"

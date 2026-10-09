@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// LLM 供应商适配：Kimi(Moonshot)、DeepSeek，以及银联云网关。
+// LLM 供应商适配：Kimi(Moonshot)、DeepSeek、银联云网关、OpenRouter，以及 Claude。
 //
-// 三家都提供 OpenAI 兼容的 /chat/completions，请求体和响应体结构一致，
-// 所以这里只有一个客户端，差异全部收敛成 baseUrl / model / apiKey 三个字段。
-// 用 Node 22 自带的全局 fetch，不引入任何依赖（见 CONTRIBUTING.md 的约定）。
+// 前四家都提供 OpenAI 兼容的 /chat/completions，请求体和响应体结构一致，
+// 差异全部收敛成 baseUrl / model / apiKey 三个字段，用 Node 22 自带的全局 fetch。
+// Claude 走 Anthropic 官方 SDK 调原生的 Messages API（预设里 api:'anthropic'），
+// 对外仍然是同一个 completeJSON，上层不用分辨是哪一家。
+
+import Anthropic from '@anthropic-ai/sdk';
 
 /**
  * 各供应商的默认接入点与模型。
@@ -75,6 +78,33 @@ export const PROVIDERS = Object.freeze({
     noThinkBody: { reasoning: { enabled: false } },
     manual: true,
   },
+  // Claude：走 Anthropic 官方 SDK（Messages API），不是 OpenAI 兼容接口，
+  // 所以 baseUrl 是 SDK 的根地址，不带 /v1。
+  //
+  // Opus 5.5 的思维链【关不掉】：thinking:{type:'disabled'} 在任何 effort 下都是 400。
+  // 能调的只有 effort（思考深浅），默认 medium。这里固定压到 low：动作 JSON、
+  // 一句闲聊、一条读人笔记都用不着深想，而 effort 越低出手越快、token 越省。
+  // 所以没有 noThinkBody —— 「不思考」那个勾选框对它是灰的，status() 照实显示 on。
+  //
+  // 两个和别家不一样的地方：
+  //   - 不发 temperature：Opus 5.5 不收采样参数，发了就是 400
+  //   - 没有 JSON 模式：靠提示词要 JSON，parseJSONObject 兜住代码块包裹
+  //
+  // 只接单轮这一路（闲聊、读人笔记、兜底决策）。agent 那条多轮工具循环走的是
+  // AI SDK 的 openai-compatible，接不了它，见 agent/model.js。
+  claude: {
+    label: 'Claude',
+    baseUrl: 'https://api.anthropic.com',
+    model: 'claude-opus-5-5',
+    keyEnv: 'ANTHROPIC_API_KEY',
+    api: 'anthropic',
+    effort: 'low',
+    // 闲聊给 120、读人笔记给 200，那是按「不思考的模型」定的上限；思维链也记在
+    // max_tokens 里，effort low 偶尔也会想几百个 token，正文就被截没了。
+    // 抬高下限不多花钱：按实际生成的 token 计费，上限只决定答不答得完。
+    minMaxTokens: 2048,
+    timeoutMs: 30_000,
+  },
 });
 
 /** auto 模式会自动装配的供应商名单：预设里标了 manual 的要显式指定才用 */
@@ -135,7 +165,7 @@ export function isContentFilterError(err) {
 export class LLMClient {
   /**
    * @param {object} opts
-   * @param {string} opts.provider   PROVIDERS 的键（kimi / deepseek / yinlianyun）
+   * @param {string} opts.provider   PROVIDERS 的键（kimi / deepseek / yinlianyun / openrouter / claude）
    * @param {string} opts.apiKey
    * @param {string} [opts.baseUrl]  覆盖默认接入点（自建代理 / 海外站点时用）
    * @param {string} [opts.model]
@@ -162,6 +192,15 @@ export class LLMClient {
     this.noThinkBody = opts.thinking === 'off' ? (preset.noThinkBody || null) : null;
     this.thinking = this.noThinkBody ? 'off' : 'on';
     this.canDisableThinking = !!preset.noThinkBody;
+
+    // Claude 那一路：SDK 自己的重试关掉（重试和冷却是 BotDriver 的事），
+    // 超时由下面的合成信号管，和 fetch 那一路同一个口径。
+    this.api = preset.api || 'openai';
+    this.effort = preset.effort || null;
+    this.minMaxTokens = preset.minMaxTokens || 0;
+    this.anthropic = this.api === 'anthropic'
+      ? new Anthropic({ apiKey: this.apiKey, baseURL: this.baseUrl, maxRetries: 0 })
+      : null;
   }
 
   /**
@@ -179,6 +218,8 @@ export class LLMClient {
     // 自己的超时 + 外部取消信号，任一触发都要中断请求
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const composed = signal ? AbortSignal.any([timeout, signal]) : timeout;
+
+    if (this.anthropic) return this.#completeClaude({ system, user, maxTokens, composed, timeout });
 
     let res;
     try {
@@ -239,6 +280,58 @@ export class LLMClient {
 
     return parseJSONObject(text, this.label);
   }
+
+  /** completeJSON 的 Claude 版：同样的入参和错误分类，只是换成 Messages API */
+  async #completeClaude({ system, user, maxTokens, composed, timeout }) {
+    let msg;
+    try {
+      msg = await this.anthropic.messages.create(
+        {
+          model: this.model,
+          max_tokens: Math.max(maxTokens, this.minMaxTokens),
+          system,
+          messages: [{ role: 'user', content: user }],
+          ...(this.effort ? { output_config: { effort: this.effort } } : {}),
+        },
+        { signal: composed, timeout: this.timeoutMs }
+      );
+    } catch (err) {
+      // 合成信号被我们自己的超时触发时，SDK 报的是"用户取消"，得从信号本身分辨
+      if (timeout.aborted || err instanceof Anthropic.APIConnectionTimeoutError) {
+        throw new ProviderError(`${this.label} 请求超时（${this.timeoutMs}ms）`, 'timeout');
+      }
+      if (err instanceof Anthropic.APIUserAbortError) {
+        throw new ProviderError(`${this.label} 请求被取消`, 'network');
+      }
+      if (err instanceof Anthropic.APIConnectionError) {
+        throw new ProviderError(`${this.label} 网络错误: ${err.message}`, 'network');
+      }
+      if (err instanceof Anthropic.APIError && err.status) {
+        throw new ProviderError(
+          `${this.label} HTTP ${err.status}: ${String(err.message).slice(0, 200)}`,
+          'http',
+          err.status
+        );
+      }
+      throw new ProviderError(`${this.label} 网络错误: ${err?.message || err}`, 'network');
+    }
+
+    // 安全分类器拒答是 HTTP 200 + stop_reason:'refusal'，content 可能是空的
+    if (msg?.stop_reason === 'refusal') {
+      const why = msg.stop_details?.category || '未注明';
+      throw new ProviderError(`${this.label} 拒绝回答（${why}）`, 'format');
+    }
+
+    const text = (msg?.content || [])
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+    if (!text.trim()) {
+      const hint = msg?.stop_reason === 'max_tokens' ? '，token 上限被思考用完了' : '';
+      throw new ProviderError(`${this.label} 返回内容为空${hint}`, 'format');
+    }
+    return parseJSONObject(text, this.label);
+  }
 }
 
 /**
@@ -285,8 +378,9 @@ function tryParse(s) {
 /**
  * 从环境变量装配客户端列表。
  *
- *   POKER_BOT_PROVIDER   kimi | deepseek | yinlianyun | auto（默认 auto：有哪个 key 用哪个）
- *   KIMI_API_KEY / DEEPSEEK_API_KEY / YINLIANYUN_API_KEY
+ *   POKER_BOT_PROVIDER   kimi | deepseek | yinlianyun | openrouter | claude | auto
+ *                        （默认 auto：有哪个 key 用哪个，openrouter 除外）
+ *   KIMI_API_KEY / DEEPSEEK_API_KEY / YINLIANYUN_API_KEY / ANTHROPIC_API_KEY
  *   POKER_BOT_MODEL      覆盖模型名
  *   POKER_BOT_BASE_URL   覆盖接入点
  *   POKER_BOT_TIMEOUT_MS 单次请求超时，不填就按供应商预设（多数是 8000）

@@ -43,6 +43,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.44",
+    "@anthropic-ai/sdk": "^0.128.0",
     "ai": "^7.0.93",
     "ws": "^8.18.0",
     "zod": "^4.5.4"

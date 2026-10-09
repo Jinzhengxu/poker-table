@@ -14,12 +14,22 @@
 // 最合适的那个，可以用 POKER_AGENT_MODEL 覆盖。模型不支持工具时，
 // 这一路会调用失败，然后由 index.js 退回原来的 BotDriver。
 //
+// Claude（预设里 api:'anthropic'）不在这一路：它不是 OpenAI 兼容接口，而且
+// Opus 5.5 不收强制 tool_choice，index.js 最后一步那个「强制调 act」会直接 400。
+// 只配了 Claude 时 agent 列表是空的，决策整个退回 BotDriver 的单轮版，
+// 那边的 LLMClient 走官方 SDK，能用。
+//
 // 另外这边【没有】单次请求超时可言：AI SDK 那侧不设超时，整条决策链只被
 // POKER_AGENT_MAX_MS 一个墙钟闸门管着。所以接银联云这类带思维链的模型时，
 // 要调的是 POKER_AGENT_MAX_MS，不是 POKER_BOT_TIMEOUT_MS（那个只管单轮版）。
 
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { PROVIDERS, autoProviders } from '../bot/provider.js';
+
+/** 这一家能不能接进 agent 的多轮工具循环（只有 OpenAI 兼容的那几家能） */
+export function agentCapable(provider) {
+  return !!PROVIDERS[provider] && !PROVIDERS[provider].api;
+}
 
 /**
  * 造一个 AI SDK 的语言模型对象。
@@ -38,6 +48,7 @@ export function buildModel(opts) {
   const preset = PROVIDERS[opts?.provider];
   if (!preset) throw new Error(`未知的 LLM 供应商: ${opts?.provider}`);
   if (!opts.apiKey) throw new Error(`${preset.label} 缺少 API key`);
+  if (!agentCapable(opts.provider)) throw new Error(`${preset.label} 不走 agent 这一路，只用单轮`);
 
   const modelId = opts.model || preset.model;
   const baseURL = (opts.baseUrl || preset.baseUrl).replace(/\/+$/, '');
@@ -70,7 +81,8 @@ export function buildModel(opts) {
  * 从环境变量装配模型列表。键的读法和 bot/provider.js 的 clientsFromEnv 一致，
  * 这样切到 agent 不用改任何已有的部署配置。
  *
- *   POKER_BOT_PROVIDER   kimi | deepseek | yinlianyun | auto（默认 auto）
+ *   POKER_BOT_PROVIDER   kimi | deepseek | yinlianyun | openrouter | claude | auto（默认 auto）
+ *                        claude 只走单轮，这里会跳过它
  *   KIMI_API_KEY / DEEPSEEK_API_KEY / YINLIANYUN_API_KEY
  *   POKER_AGENT_MODEL    覆盖模型名（agent 专用，要支持 function calling）
  *   POKER_BOT_MODEL      同上，POKER_AGENT_MODEL 没给时的退路
@@ -96,6 +108,8 @@ export function modelsFromEnv(env = process.env) {
       if (want !== 'auto') console.error(`[agent] 已指定 ${name} 但没有设置 ${preset.keyEnv}`);
       continue;
     }
+    // 不报错：单轮那边（clientsFromEnv）照样会把它装上
+    if (!agentCapable(name)) continue;
     try {
       out.push(buildModel({
         provider: name,

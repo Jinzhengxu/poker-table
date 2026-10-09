@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Claude as a fifth LLM provider.** `POKER_BOT_PROVIDER=claude` / `ANTHROPIC_API_KEY`, also
+  pickable in the bot panel, and picked up by `auto`. It goes through the official
+  `@anthropic-ai/sdk` (Messages API) behind the same `LLMClient#completeJSON`, so table talk,
+  opponent notes and the single-shot decision path all work unchanged. Defaults to
+  `claude-opus-5-5` at `effort: low` with a 30s timeout; thinking cannot be disabled on that
+  model, so the "no thinking" box stays grey and status reports `on`. No `temperature` is
+  sent (Opus 5.5 rejects sampling params) and `max_tokens` is floored at 2048 so the chat
+  and notes caps (120 / 200) are not eaten by thinking. Claude is kept out of the agent's AI
+  SDK tool loop — it is not OpenAI-compatible and rejects the forced `act` tool choice on the
+  last step — so with only Claude configured the agent falls back to single-shot.
+
 - **The Hold'em table now switches between Chinese and English on its own.** `public/i18n.js`
   loads before `app.js`, picks the language from the browser's language list (any Chinese
   entry wins; only an all-non-Chinese list gets English; a manual choice in `localStorage`

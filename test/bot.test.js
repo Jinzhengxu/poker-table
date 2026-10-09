@@ -1958,3 +1958,100 @@ test('clientsFromEnv：OpenRouter 要显式指定，auto 不会因为有 OPENROU
   assert.equal(explicit[0].model, 'deepseek/deepseek-v4-flash');
   assert.equal(explicit[0].thinking, 'off', 'OpenRouter 这家关得掉思维链');
 });
+
+// ==================== Claude（官方 SDK，Messages API） ====================
+//
+// 这一家不是 OpenAI 兼容接口，请求体长得完全不一样。守的是几个会 400 或静默退化的点：
+// 不能发 temperature、不能发关思维链的字段、闲聊那 120 的上限得抬高。
+
+/** SDK 在构造时就取走了 fetch，所以要先换 fetch 再造客户端 */
+async function withFakeFetch(respond, run) {
+  const realFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), headers: new Headers(init.headers), body: JSON.parse(init.body) });
+    return respond();
+  };
+  try {
+    await run(seen);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  return seen;
+}
+
+function claudeReply(body, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+}
+
+test('Claude：走 Messages API，带 effort low，不发 temperature / response_format', async () => {
+  const seen = await withFakeFetch(
+    () => claudeReply({
+      id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-opus-5-5',
+      content: [{ type: 'thinking', thinking: '', signature: 'x' }, { type: 'text', text: '{"action":"call","say":"跟"}' }],
+      stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 5 },
+    }),
+    async () => {
+      const c = new LLMClient({ provider: 'claude', apiKey: 'sk-ant-x' });
+      assert.deepEqual(await c.completeJSON({ system: 's', user: 'u', maxTokens: 120 }), { action: 'call', say: '跟' });
+    });
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].url, 'https://api.anthropic.com/v1/messages');
+  assert.equal(seen[0].headers.get('x-api-key'), 'sk-ant-x');
+  const b = seen[0].body;
+  assert.equal(b.model, 'claude-opus-5-5');
+  assert.equal(b.system, 's');
+  assert.deepEqual(b.messages, [{ role: 'user', content: 'u' }]);
+  assert.deepEqual(b.output_config, { effort: 'low' });
+  assert.ok(b.max_tokens >= 2048, '思维链也记在 max_tokens 里，闲聊那 120 不够');
+  assert.equal('temperature' in b, false, 'Opus 5.5 不收采样参数');
+  assert.equal('thinking' in b, false, '关思维链在 Opus 5.5 上是 400');
+  assert.equal('response_format' in b, false);
+});
+
+test('Claude：思考关不掉，要 off 也照实停在 on', () => {
+  const c = new LLMClient({ provider: 'claude', apiKey: 'sk-ant-x', thinking: 'off' });
+  assert.equal(c.thinking, 'on');
+  assert.equal(c.canDisableThinking, false);
+});
+
+test('Claude：HTTP 错误和拒答都归成 ProviderError，429 可重试、400 不可', async () => {
+  const errBody = (type) => ({ type: 'error', error: { type, message: 'nope' } });
+
+  await withFakeFetch(() => claudeReply(errBody('rate_limit_error'), 429), async () => {
+    const c = new LLMClient({ provider: 'claude', apiKey: 'sk-ant-x' });
+    const err = await c.completeJSON({ system: 's', user: 'u' }).catch((e) => e);
+    assert.equal(err.kind, 'http');
+    assert.equal(err.status, 429);
+    assert.equal(isRetryable(err), true);
+  });
+
+  await withFakeFetch(() => claudeReply(errBody('invalid_request_error'), 400), async () => {
+    const c = new LLMClient({ provider: 'claude', apiKey: 'sk-ant-x' });
+    const err = await c.completeJSON({ system: 's', user: 'u' }).catch((e) => e);
+    assert.equal(err.status, 400);
+    assert.equal(isRetryable(err), false);
+  });
+
+  await withFakeFetch(
+    () => claudeReply({
+      id: 'msg_2', type: 'message', role: 'assistant', model: 'claude-opus-5-5', content: [],
+      stop_reason: 'refusal', stop_details: { type: 'refusal', category: 'cyber', explanation: null },
+      usage: { input_tokens: 10, output_tokens: 0 },
+    }),
+    async () => {
+      const c = new LLMClient({ provider: 'claude', apiKey: 'sk-ant-x' });
+      const err = await c.completeJSON({ system: 's', user: 'u' }).catch((e) => e);
+      assert.equal(err.kind, 'format');
+      assert.match(err.message, /拒绝/);
+    });
+});
+
+test('Claude：auto 会装上它，key 读 ANTHROPIC_API_KEY', () => {
+  const both = clientsFromEnv({ ANTHROPIC_API_KEY: 'sk-ant-x', DEEPSEEK_API_KEY: 'sk-d' });
+  assert.deepEqual(both.map((c) => c.provider).sort(), ['claude', 'deepseek']);
+  const only = clientsFromEnv({ ANTHROPIC_API_KEY: 'sk-ant-x', POKER_BOT_PROVIDER: 'claude', POKER_BOT_MODEL: 'claude-haiku-5-5' });
+  assert.equal(only.length, 1);
+  assert.equal(only[0].model, 'claude-haiku-5-5');
+});

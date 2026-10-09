@@ -29,7 +29,7 @@ import { BotDriver } from '../bot/index.js';
 import { buildUser, coerceAction, fallbackAction, sanitizeName } from '../bot/decide.js';
 import { isContentFilterError } from '../bot/provider.js';
 import { equityTable, classifyObvious, rangesForObvious } from '../bot/table.js';
-import { modelsFromEnv, buildModel } from './model.js';
+import { modelsFromEnv, buildModel, agentCapable } from './model.js';
 import { OpponentMemory } from './memory.js';
 import { buildTools, collectProfiles } from './tools.js';
 
@@ -229,6 +229,8 @@ export class PokerAgent {
     const provider = String(patch?.provider || '').toLowerCase();
     const client = this.fallback.clients.find((c) => c.provider === provider);
     if (!client) return res;
+    // Claude 只走单轮：存进 BotDriver 就够了，agent 选不到它时自然退回那边
+    if (!agentCapable(provider)) return res;
 
     try {
       const m = buildModel({

@@ -202,19 +202,22 @@ key 和兜底仍然全部成立：它就是 Jev 挂了以后退回的那一层�
 底池赔率）。**兜底不只是给"没配 key"用的**——超时、限流、返回内容解析不了，全都落到这里，
 所以外部 API 抽风不会拖慢牌桌。一个 key 都不配也能用，只是人机按规则打、不说话。
 
-内置支持四家：Kimi（月之暗面）、DeepSeek、银联云（走 code-tool 网关，填的是网关签发的
-token，不是上游真 key）、OpenRouter（默认 DeepSeek v4 flash）。都是 OpenAI 兼容的 `/chat/completions`，所以只有一个客户端实现，
-也不需要引入任何 SDK：
+内置支持五家：Kimi（月之暗面）、DeepSeek、银联云（走 code-tool 网关，填的是网关签发的
+token，不是上游真 key）、OpenRouter（默认 DeepSeek v4 flash）、Claude。前四家都是 OpenAI 兼容的
+`/chat/completions`，共用一个 fetch 客户端；Claude 走 Anthropic 官方 SDK（Messages API），对外是同一个接口。
+Claude 默认 `claude-opus-5-5`、`effort: low`（它的思考关不掉，只能调深浅），而且**只走单轮**——
+agent 的多轮工具循环只接 OpenAI 兼容的几家，只配了 Claude 时 agent 自动退回单轮：
 
 | 变量                   | 默认值       | 含义                                       |
 | ---------------------- | ------------ | ------------------------------------------ |
 | `KIMI_API_KEY`         | —            | Kimi（月之暗面）的 key                     |
 | `DEEPSEEK_API_KEY`     | —            | DeepSeek 的 key                            |
 | `YINLIANYUN_API_KEY`   | —            | 银联云网关 token（默认模型 `deepseek-v4-flash`）|
-| `POKER_BOT_PROVIDER`   | `auto`       | `kimi` / `deepseek` / `yinlianyun` / `openrouter` / `auto`（有哪个用哪个；`openrouter` 要显式指定，auto 不选它，那把 key 通常是给 Jev 的）|
+| `ANTHROPIC_API_KEY`    | —            | Claude 的 key（默认模型 `claude-opus-5-5`；想省钱就 `POKER_BOT_MODEL=claude-haiku-5-5`）|
+| `POKER_BOT_PROVIDER`   | `auto`       | `kimi` / `deepseek` / `yinlianyun` / `openrouter` / `claude` / `auto`（有哪个用哪个；`openrouter` 要显式指定，auto 不选它，那把 key 通常是给 Jev 的）|
 | `POKER_BOT_MODEL`      | 各家默认     | 覆盖模型名。这是**全局**的：多家一起用时会同时盖到每一家头上，而模型名并不通用 |
 | `POKER_BOT_BASE_URL`   | 各家默认     | 覆盖接入点（自建代理、海外站点）。同样是全局的 |
-| `POKER_BOT_TIMEOUT_MS` | 各家默认     | 单次请求超时，超了就走兜底。不填就按各家预设：多数 8000，银联云 30000（它的默认模型带思维链）|
+| `POKER_BOT_TIMEOUT_MS` | 各家默认     | 单次请求超时，超了就走兜底。不填就按各家预设：多数 8000，银联云和 Claude 30000（它们的默认模型带思维链）|
 | `POKER_BOT_THINKING`   | `on`         | `off` = 让会思考的模型别想，直接答。只有声明了开关的家关得掉（目前只有银联云）；对另外两家填 off 只会记一行日志、请求一个字不改，因为它们的默认模型本来就不思考 |
 | `POKER_BOT_MAX_TOKENS` | `4096`       | 单轮回答的 token 上限。**接推理模型时别调小**：思维链和正文共用这个预算，不够就答到一半被截断、整手退回规则策略 |
 | `POKER_BOT_OBVIOUS`    | `on`         | 明显局面不问模型：翻牌前垃圾牌面对加注、翻牌后对任意两张牌都跟不起价、面对全下拿着对最紧范围也稳赢的牌。这类局面不管把对手读成什么结论都一样，按规则一秒内出手，不等模型 5~20 秒。能过牌的局面一律不判（下不下注是模型的活），判定宁可漏判不错判。`off` = 每个局面都问模型（消融用）|

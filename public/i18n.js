@@ -174,10 +174,12 @@
     '网关 token（uuid 形式）': 'gateway token (uuid)',
     '银联云（deepseek-v4-flash）': 'UnionPay Cloud (deepseek-v4-flash)',
     'OpenRouter（deepseek/deepseek-v4-flash）': 'OpenRouter (deepseek/deepseek-v4-flash)',
+    'Claude（claude-opus-5-5）': 'Claude (claude-opus-5-5)',
     '模型（留空用默认）': 'Model (blank = default)',
     '不思考': 'No thinking',
     '关掉思维链，出手快得多，也更省 token。': 'Turns off chain-of-thought: much faster to act and cheaper in tokens.',
     '这家的模型本来就不思考，这个开关对它没有意义。': "This provider's model does not reason to begin with; the switch does nothing here.",
+    'Claude 的思考关不掉，已按最省的一档（effort low）调用。': "Claude's thinking can't be turned off; it already runs at the cheapest level (effort low).",
     '保存后端': 'Save backend',
     '记住 key': 'Remember key',
     'Key 经加密连接送到服务端，只存在内存里，不会发给牌桌上的其他人， 也不会写进日志。服务重启后需要重新填。':

@@ -1548,3 +1548,18 @@ test('modelsFromEnv：和 clientsFromEnv 一个口径，auto 不选 OpenRouter',
   assert.equal(explicit[0].thinking, 'off');
   assert.deepEqual(explicit[0].providerOptions, { openrouter: { reasoning: { enabled: false } } });
 });
+
+test('Claude：不进 agent 的工具循环，只在 BotDriver 单轮那边', () => {
+  // 它不是 OpenAI 兼容接口，Opus 5.5 也不收强制 tool_choice（最后一步强制调 act 会 400）
+  assert.throws(() => buildModel({ provider: 'claude', apiKey: 'sk-ant-x' }), /单轮/);
+  assert.deepEqual(modelsFromEnv({ ANTHROPIC_API_KEY: 'sk-ant-x' }), []);
+  assert.deepEqual(
+    modelsFromEnv({ ANTHROPIC_API_KEY: 'sk-ant-x', DEEPSEEK_API_KEY: 'sk-d' }).map((m) => m.provider),
+    ['deepseek']);
+
+  const agent = new PokerAgent({ env: {}, logger: { log() {}, error() {} } });
+  assert.equal(agent.configure({ provider: 'claude', apiKey: 'sk-ant-1234567890' }).ok, true);
+  assert.equal(agent.models.length, 0, 'agent 那边不该多出一个调不通的模型');
+  assert.equal(agent.fallback.clients[0].provider, 'claude');
+  assert.equal(agent.hasLLM, true);
+});

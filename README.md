@@ -264,21 +264,26 @@ unparseable response all land there too, so a flaky API slows nothing down. With
 no key configured at all, bots still work; they just play by the rules engine and
 stay quiet.
 
-Three providers are supported out of the box: Kimi (Moonshot), DeepSeek, and
+Five providers are supported out of the box: Kimi (Moonshot), DeepSeek,
 UnionPay Cloud (`yinlianyun`, reached through the code-tool gateway — its key is
-a gateway-issued token, not the upstream key). All three speak the
-OpenAI-compatible `/chat/completions` shape, so there is one client for all of
-them and no SDK dependency:
+a gateway-issued token, not the upstream key), OpenRouter, and Claude. The first
+four speak the OpenAI-compatible `/chat/completions` shape and share one
+fetch-based client; Claude goes through the official Anthropic SDK (Messages API)
+behind the same interface. Claude defaults to `claude-opus-5-5` at `effort: low`
+(its thinking cannot be turned off, so effort is the dial) and is single-shot
+only — the agent's multi-turn tool loop runs on the OpenAI-compatible providers,
+and with only Claude configured the agent falls back to the single-shot path:
 
 | Variable               | Default          | Meaning                                        |
 | ---------------------- | ---------------- | ---------------------------------------------- |
 | `KIMI_API_KEY`         | —                | Kimi (Moonshot) key                            |
 | `DEEPSEEK_API_KEY`     | —                | DeepSeek key                                   |
 | `YINLIANYUN_API_KEY`   | —                | UnionPay Cloud gateway token (default model `deepseek-v4-flash`) |
-| `POKER_BOT_PROVIDER`   | `auto`           | `kimi`, `deepseek`, `yinlianyun`, or `auto` (use what's set) |
+| `ANTHROPIC_API_KEY`    | —                | Claude key (default model `claude-opus-5-5`; `POKER_BOT_MODEL=claude-haiku-5-5` is far cheaper) |
+| `POKER_BOT_PROVIDER`   | `auto`           | `kimi`, `deepseek`, `yinlianyun`, `openrouter`, `claude`, or `auto` (use what's set; `openrouter` must be named explicitly) |
 | `POKER_BOT_MODEL`      | per-provider     | Override the model name. **Global** — with several providers active it hits all of them, and model names are not interchangeable |
 | `POKER_BOT_BASE_URL`   | per-provider     | Override the endpoint (proxy, overseas region). Global, same caveat |
-| `POKER_BOT_TIMEOUT_MS` | per-provider     | Per-request timeout before falling back. Unset means each provider's own preset: 8000 for most, 30000 for `yinlianyun`, whose default model reasons before it answers |
+| `POKER_BOT_TIMEOUT_MS` | per-provider     | Per-request timeout before falling back. Unset means each provider's own preset: 8000 for most, 30000 for `yinlianyun` and `claude`, whose default models reason before they answer |
 | `POKER_BOT_THINKING`   | `on`             | `off` tells a reasoning model not to think first. Only providers that declare a switch can do it (today: `yinlianyun`); asking the others to turn it off logs a line and changes nothing, because their default models do not reason at all |
 | `POKER_BOT_MAX_TOKENS` | `4096`           | Cap on a single-shot reply. **Do not lower it for a reasoning model** — the chain of thought comes out of the same budget, and a short cap truncates the answer and drops the hand to the rule policy |
 | `POKER_BOT_OBVIOUS`    | `on`             | Skip the model on spots where the answer does not depend on the opponent's range — trash preflop facing a raise, or a postflop call that loses even against two random cards. Those fold by rule in under a second instead of after a 5–20s model call. `off` sends every spot to the model (ablation) |
